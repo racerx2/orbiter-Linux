@@ -3,10 +3,10 @@
 # This is meant to be a complete line-by-line rewrite of the server and client for linux using vulkan
 Tested on: 
 
-13th Gen Intel(R) Core(TM) i9-13900K
-GeForce RTX 5070 Ti
-32g ram
-Kubuntu 26.04.1 (kde/plasma/wayland) with Kernel:7.0.0-30-generic
+# 13th Gen Intel(R) Core(TM) i9-13900K
+# GeForce RTX 5070 Ti
+# 32g ram
+# Kubuntu 26.04.1 (kde/plasma/wayland) with Kernel:7.0.0-30-generic
 
 
 # Orbiter Space Flight Simulator
