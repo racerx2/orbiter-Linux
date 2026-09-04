@@ -1,5 +1,7 @@
 ![Orbiter logo](./Src/Orbiter/Bitmaps/banner.png)
 
+This is meant to be a complete line-by-line rewrite of the server and client for linux using vulkan
+
 # Orbiter Space Flight Simulator
 
 Orbiter is a spaceflight simulator based on Newtonian mechanics. Its playground
