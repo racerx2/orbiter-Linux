@@ -403,7 +403,15 @@ Planet::Planet (char *fname)
 	nlabellist = 0;
 	labelpath = 0;
 	if (GetItemString (ifs, "MarkerPath", cbuf)) {
+		// Same trailing-separator issue as PlanetarySystem::Read: a backslash
+		// leaves this planet's marker directory unopenable, so none of its
+		// surface labels load.
+#ifdef _WIN32
 		if (cbuf[strlen(cbuf)-1] != '\\') strcat (cbuf, "\\");
+#else
+		if (cbuf[strlen(cbuf)-1] != '/' && cbuf[strlen(cbuf)-1] != '\\')
+			strcat (cbuf, "/");
+#endif
 		labelpath = new char[strlen(cbuf)+1]; TRACENEW
 		strcpy (labelpath, cbuf);
 	}
@@ -486,6 +494,28 @@ void Planet::ScanBases (char *path)
 	}
 
 	sprintf (spath, "%s/dummy", path);
+#ifndef _WIN32
+	// The directory comes from the planet .cfg, which spells it the Windows
+	// way -- Earth.cfg says
+	//     DIR Earth\Base
+	// so the join yields "./Config/Earth\Base/dummy.cfg", whose parent_path()
+	// is a directory that does not exist. directory_iterator then reports an
+	// error into `ec`, the loop body never runs, and all 37 surface bases
+	// disappear without a word -- which is why every scenario placing a
+	// vessel on a base failed with "base 'Habana' not found on body 'Earth'".
+	//
+	// `path` itself is converted, not just the scan copy: it is used again
+	// below to build each base's own path, and converting only the copy left
+	// Base() opening "./Config/Earth\Base/Habana.cfg" and failing exactly as
+	// before -- the directory listing worked while every base in it still
+	// failed to load.
+	//
+	// The .cfg files are data shared with the Windows build and are not ours
+	// to rewrite, so the separator is translated on the way in.
+	for (char *q = path; *q; ++q)
+		if (*q == '\\') *q = '/';
+	sprintf (spath, "%s/dummy", path);
+#endif
 	strcpy (cbuf, g_pOrbiter->ConfigPath(spath));
 	fs::path configdir = fs::path(cbuf).parent_path();
 	std::error_code ec;
@@ -498,7 +528,11 @@ void Planet::ScanBases (char *path)
 				pc = trim_string(cbuf);
 			} while (!pc[0]);
 			if (_strnicmp(pc, "BASE-V2.0", 9)) continue;
-			sprintf(spath, "%s\\%s", path, entry.path().stem().string().c_str());
+			// Forward slash: this path is handed to Base(), which opens it.
+			// A backslash here leaves every surface base unloadable on Linux.
+			// The literal escaped the tree-wide separator conversion because
+			// it is a printf format containing %s.
+			sprintf(spath, "%s/%s", path, entry.path().stem().string().c_str());
 			Base* base = new Base(spath, this); TRACENEW
 			if (!AddBase(base))
 				delete base;

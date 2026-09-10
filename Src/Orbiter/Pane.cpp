@@ -50,6 +50,33 @@ Pane::Pane (oapi::GraphicsClient *gclient, HWND hwnd, int width, int height, int
 		mfd[i].exist     = false;
 		mfd[i].active    = false;
 		mfd[i].upDTscale = 1.0;
+
+		// `prm` WAS THE ONE FIELD THIS LOOP DID NOT TOUCH, and it is read for
+		// slots that never get one.
+		//
+		// MFDspec::prm is an EXTMFDSPEC, a plain POD in a plain member array,
+		// so an unregistered slot held whatever was on the heap. Measured for
+		// ids 2..11 in a Delta-glider session: nbtr = -134154240,
+		// flag = 0xf800f800.
+		//
+		// THE READ THAT MAKES IT LIVE is Pane::GetMFDSurface below:
+		//
+		//     else if (id < MAXMFD && mfd[id].prm.flag & MFD_TRANSPARENT_WHEN_OFF)
+		//         return 0;
+		//
+		// -- the `else` branch, i.e. exactly a slot with NO instrument, which
+		// is exactly the slot whose prm was never written. MFD_TRANSPARENT_
+		// WHEN_OFF is 0x0002 (OrbiterAPI.h:1616), so roughly half of all
+		// possible garbage values make this hand the graphics client a NULL
+		// surface instead of mfdTex_blank, non-deterministically, from run to
+		// run. GraphicsClient::GetMFDSurface (GraphicsAPI.cpp:296) is public
+		// and both clients call it every frame they draw a panel MFD area.
+		//
+		// Pane.cpp is pristine upstream, so Windows has the same read; it has
+		// simply never been noticed there. Zeroing costs nothing and cannot
+		// change any path that assigns prm -- RegisterMFD (:993) and
+		// RegisterVCMFD (:1088) both overwrite every field they use.
+		memset (&mfd[i].prm, 0, sizeof(EXTMFDSPEC));
 	}
 	nemfd = 0;
 
@@ -840,7 +867,20 @@ bool Pane::OpenMFD (INT_PTR id, int type, ifstream *ifs)
 
 	if (mfd[id].instr && mfd[id].instr->Type() == type) return false; // nothing to do
 
-	Instrument::Spec spec;
+	// VALUE-INITIALISED, not left as the reference has it.
+	//
+	// `Instrument::Spec` is a seven-field POD and the switch below does not
+	// assign it on every path: `case 2` writes nothing at all when both
+	// `panel` and `panel2d` are null, and a panelmode outside 1..3 matches no
+	// case whatsoever. `Instrument::Create` is then handed a Spec of stack
+	// garbage, and the pow2 block immediately underneath reads `spec.h` into
+	// `h` and DIVIDES BY IT -- undefined behaviour on a value nothing wrote,
+	// including a division by zero whenever the garbage happens to be 0.
+	//
+	// Zeroing cannot change a path that assigns it, which is every path that
+	// is meant to be taken. See the guard on the division below for the other
+	// half of making this function total.
+	Instrument::Spec spec{};
 	switch (panelmode) {
 	case 1:
 		spec = defpanel->GetMFDSpec();
@@ -868,11 +908,21 @@ bool Pane::OpenMFD (INT_PTR id, int type, ifstream *ifs)
 	}
 
 	// force pow2 texture size for MFD displays
+	//
+	// `h != 0` IS THE PORT'S, and it is the other half of value-initialising
+	// spec above. The two lines that follow divide by the ORIGINAL height, so
+	// a Spec that no case assigned -- see the note on the declaration -- makes
+	// this an integer division by zero, which on x86 is SIGFPE and not a wrong
+	// number. Upstream relies on every path having assigned it; the guard
+	// costs a compare and removes the assumption. When h is 0 the button
+	// offsets stay as they are, which is what they already were.
 	if (panelmode != 3 && mfdsize_pow2) {
 		int h = spec.h;
 		spec.w = spec.h = (spec.w >= mfd_hires_threshold ? 512:256);
-		spec.bt_y0 = (spec.bt_y0*spec.h)/h;
-		spec.bt_dy = (spec.bt_dy*spec.h)/h;
+		if (h) {
+			spec.bt_y0 = (spec.bt_y0*spec.h)/h;
+			spec.bt_dy = (spec.bt_dy*spec.h)/h;
+		}
 	}
 
 	// Try to create a new mode with this key

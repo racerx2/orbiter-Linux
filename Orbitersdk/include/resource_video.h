@@ -5,6 +5,20 @@
 #define IDD_PAGE_DEV      180 ///< video parameter subdialog
 
 #define IDC_VID_DEVICE   1602 ///< video device list
+// The three group boxes. Defined in Src/Orbiter/resource.h as well, with the
+// same values -- an identical macro redefinition, which is legal and silent.
+// They belong here for the same reason IDC_VID_STATIC5..9 do: a graphics
+// client relabels them (D3D9Client's VideoTab renames STATIC6 to "Full Screen
+// Mode"), and a client cannot include Orbiter's private resource header.
+#ifndef IDC_VID_STATIC1
+#define IDC_VID_STATIC1  1623 ///< "3D device" group box
+#endif
+#ifndef IDC_VID_STATIC2
+#define IDC_VID_STATIC2  1624 ///< left (fullscreen) group box
+#endif
+#ifndef IDC_VID_STATIC3
+#define IDC_VID_STATIC3  1625 ///< right (window) group box
+#endif
 #define IDC_VID_FULL     1603 ///< "fullscreen" button
 #define IDC_VID_WINDOW   1604 ///< "window" button
 #define IDC_VID_STATIC5  1605

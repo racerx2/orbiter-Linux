@@ -869,7 +869,15 @@ istream &operator>> (istream &is, Mesh &mesh)
 			} else if (!_strnicmp (cbuf, "NONORMAL", 8)) {
 				bnormal = false; calcnml = true;
 			} else if (!_strnicmp (cbuf, "FLAG", 4)) {
-				sscanf (cbuf+4, "%lx", &uflag);
+				// "%x", not "%lx": uflag is a DWORD, which is 32 bits on both
+				// platforms, but "%l" means unsigned long -- 32 bits under
+				// Windows' LLP64 and 64 bits under Linux' LP64. So on Linux
+				// sscanf wrote EIGHT bytes into a four-byte variable and
+				// smashed the stack beyond it, on every mesh carrying a FLAG
+				// line. AddressSanitizer caught it as
+				//     stack-buffer-overflow ... WRITE of size 8
+				//     'uflag' (line 820) <== overflows this variable
+				sscanf (cbuf+4, "%x", &uflag);
 			} else if (!_strnicmp (cbuf, "FLIP", 4)) {
 				flipidx = true;
 			} else if (!_strnicmp (cbuf, "LABEL", 5)) {
@@ -1149,13 +1157,13 @@ bool LoadMesh (const char *meshname, Mesh &mesh)
 
 // =======================================================================
 // Create a sphere patch.
-// nlng is the number of patches required to span the full 360° in longitude
-// nlat is the number of patches required to span the latitude range from 0 to 90°
+// nlng is the number of patches required to span the full 360ï¿½ in longitude
+// nlat is the number of patches required to span the latitude range from 0 to 90ï¿½
 // 0 <= ilat < nlat is the actual latitude strip the patch is to cover
 // res >= 1 is the resolution of the patch (= number of internal latitude strips in the patch)
 // bseg, if given, is the number of of polygon segments on the lower base line of the patch.
 // Default is (nlat-ilat)*res. bseg is ignored for triangular patches (i.e. where upper
-// latitude is 90°)
+// latitude is 90ï¿½)
 
 void CreateSpherePatch (Mesh &mesh, int nlng, int nlat, int ilat, int res, int bseg, bool reduce, bool outside)
 {

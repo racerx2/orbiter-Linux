@@ -404,7 +404,7 @@ void DefaultPanel::DestroyDeviceObjects ()
 
 SURFHANDLE DefaultPanel::LoadTexture (int idx)
 {
-	char cbuf[64] = "Cockpit\\Glasspit";
+	char cbuf[64] = "Cockpit/Glasspit";
 	switch (idx) {
 		case 1: strcat (cbuf, "_red"); break;
 		case 2: strcat (cbuf, "_yellow"); break;

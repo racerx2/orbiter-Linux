@@ -50,31 +50,47 @@ void LogOut (const char *msg, ...)
 
 void LogOutVA(const char *format, va_list ap)
 {
+	// A va_list is consumed by the first v*printf that reads it and must not
+	// be reused. MSVC's x64 va_list is a bare pointer, so reading it twice
+	// happens to work there; the SysV ABI makes it a struct carrying
+	// register-save and overflow-area state, and the second read walks off
+	// into whatever follows -- which is why the console showed
+	//     SATSAT SATSAT %s: Terms %d: Terms 32
+	//     VSOP87(?) Uranus: Precision 0.0e+00, Terms 1500496496/0
+	// while the log file, written by the FIRST read, was correct.
+	//
+	// va_copy gives the second consumer its own list.
+	va_list ap2;
+	va_copy(ap2, ap);
+
 	FILE *f = fopen(logname, "a+t");
 	fprintf(f, "%010.3f: ", (timeGetTime() - t0) * 1e-3);
 	vfprintf(f, format, ap);
 	fputc('\n', f);
 	fclose(f);
 	if (logOut) {
-		vsnprintf(logs, 255, format, ap);
+		vsnprintf(logs, 255, format, ap2);
 		(*logOut)(logs);
 	}
+	va_end(ap2);
 }
 
 void LogOutFine (const char *msg, ...)
 {
 	if (finelog) {
-		va_list ap;
+		va_list ap, ap2;
 		va_start (ap, msg);
+		va_copy (ap2, ap);           // same reuse bug as LogOutVA above
 		FILE *f = fopen (logname, "a+t");
 		fprintf (f, "%010.3f: ", (timeGetTime() - t0) * 1e-3);
 		vfprintf (f, msg, ap);
 		fputc ('\n', f);
 		fclose (f);
 		if (logOut) {
-			vsnprintf (logs, 255, msg, ap);
+			vsnprintf (logs, 255, msg, ap2);
 			(*logOut)(logs);
 		}
+		va_end (ap2);
 		va_end (ap);
 	}
 }

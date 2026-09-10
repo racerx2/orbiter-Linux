@@ -32,7 +32,7 @@ oapi::CelestialSphere::CelestialSphere(oapi::GraphicsClient* gc)
 	m_skyBrt = 0.0;
 	m_meshGridLabel = 0;
 
-	m_dataDir = std::string(g_pOrbiter->Cfg()->CfgDirPrm.ConfigDir) + std::string("CSphere\\Data\\");
+	m_dataDir = std::string(g_pOrbiter->Cfg()->CfgDirPrm.ConfigDir) + std::string("CSphere/Data/");
 	LoadConstellationLabels();
 }
 

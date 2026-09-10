@@ -53,6 +53,15 @@ target_include_directories(DeltaGlider
 	PUBLIC ${CMAKE_CURRENT_BINARY_DIR}                 # for the dynamically generated header files
 )
 
+# DeltaGlider.rc is listed above as a source, which rc.exe acts on and Linux
+# ignores. The vessel's own Scenario Editor pages come from it: secInit
+# (DeltaGlider.cpp:1954) hands the editor IDD_EDITOR_PG1..PG3 and the editor
+# opens them with CreateDialogParam(g_Param.hDLL, ...). With no templates
+# registered those ids were answered out of the EXECUTABLE's table -- 174 is a
+# core dialog too -- so "Animations" opened with the wrong layout and
+# "Passengers" and "Damage" could not open at all.
+orbiter_module_resources(DeltaGlider ${CMAKE_CURRENT_SOURCE_DIR}/DeltaGlider.rc)
+
 target_link_libraries(DeltaGlider
 	${ORBITER_LIB}
 	${ORBITER_SDK_LIB}

@@ -22,6 +22,16 @@
 #include "DeltaGlider.h"
 #include "DGSubsys.h"
 
+// Forward declarations.
+//
+// ScramThrottle names ScramThrottleLever as a member pointer before that class
+// is defined further down this header. MSVC accepts it because a `friend
+// class` injects the name into the enclosing namespace, which the standard
+// does not permit; GCC reports
+//     error: 'ScramThrottleLever' does not name a type
+// See also RcsSubsys.h, which had the same problem.
+class ScramThrottleLever;
+
 // ==============================================================
 // Scramjet logic
 // ==============================================================

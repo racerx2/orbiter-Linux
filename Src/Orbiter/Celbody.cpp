@@ -13,6 +13,17 @@
 #include "Orbiter.h"
 #include "Element.h"
 #include "Celbody.h"
+
+// Shared-module file extension. Defined the same way in Orbiter.cpp and
+// TabModule.cpp; kept local rather than hoisted into a header so the change
+// stays additive.
+#ifndef MODULE_EXT
+#ifdef _WIN32
+#define MODULE_EXT ".dll"
+#else
+#define MODULE_EXT ".so"
+#endif
+#endif
 #include "Log.h"
 #include "Orbitersdk.h"
 #include "PinesGrav.h"
@@ -716,10 +727,19 @@ void CelestialBody::RegisterModule (char *dllname)
 	char cbuf[256];
 	module = 0;                              // reset new interface
 	memset (&modIntf, 0, sizeof (modIntf));  // reset old interface
-	sprintf (cbuf, "Modules\\Celbody\\%s.dll", dllname); // try new module location
+	// Forward slash, and MODULE_EXT rather than a hardcoded ".dll".
+	//
+	// These two literals are why NO celbody module loaded at all: every
+	// planet and moon silently lost its ephemeris and fell back to whatever
+	// the core does without one. Nothing reported it -- RegisterModule just
+	// returns when both loads fail -- so the sessions appeared to run clean
+	// while Vsop87, ELP82, Galsat and Satsat were never once consulted.
+	//
+	// Windows accepts the forward slash too, so this is portable both ways.
+	sprintf (cbuf, "Modules/Celbody/%s" MODULE_EXT, dllname); // new location
 	hMod = LoadLibrary (cbuf);
 	if (!hMod) {
-		sprintf (cbuf, "Modules\\%s.dll", dllname);  // try legacy module location
+		sprintf (cbuf, "Modules/%s" MODULE_EXT, dllname);  // legacy location
 		hMod = LoadLibrary (cbuf);
 	}
 	if (!hMod) return;
@@ -893,7 +913,7 @@ void CELBODY2::clbkInit (FILEHANDLE cfg)
 		// 1: try Config\<Name>\Atmosphere.cfg for interactive setting
 		char fname[256], name[256];
 		oapiGetObjectName (hBody, name, 256);
-		strcat (name, "\\Atmosphere.cfg");
+		strcat (name, "/Atmosphere.cfg");
 		FILEHANDLE hFile = oapiOpenFile (name, FILE_IN, CONFIG);
 		if (oapiReadItem_string (hFile, (char*)"MODULE_ATM", fname) || oapiReadItem_string (cfg, (char*)"MODULE_ATM", fname)) {
 			if (_stricmp (fname, "[None]"))
@@ -935,7 +955,7 @@ bool CELBODY2::LoadAtmosphereModule (const char *fname)
 {
 	char path[256], name[256];
 	oapiGetObjectName (hBody, name, 256);
-	sprintf (path, "Modules\\Celbody\\%s\\Atmosphere", name);
+	sprintf (path, "Modules/Celbody/%s/Atmosphere", name);
 	if (!(hAtmModule = g_pOrbiter->LoadModule (path, fname))) return false;
 	ATMOSPHERE *(*func)(CELBODY2*) = (ATMOSPHERE*(*)(CELBODY2*))GetProcAddress (hAtmModule, "CreateAtmosphere");
 	if (!func) {

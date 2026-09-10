@@ -38,9 +38,18 @@ extern "C" {
 }
 
 // Assumes MS VC++ compiler. Modify these statements for other compilers
+#ifdef _WIN32
 #define DLLEXPORT __declspec(dllexport)
 #define DLLIMPORT __declspec(dllimport)
 #define DLLCLBK extern "C" __declspec(dllexport)
+#else
+// ELF has no import decoration: the executable exports with default
+// visibility and modules bind at load time, so DLLIMPORT is empty and
+// DLLEXPORT maps to a visibility attribute.
+#define DLLEXPORT __attribute__((visibility("default")))
+#define DLLIMPORT
+#define DLLCLBK extern "C" __attribute__((visibility("default")))
+#endif
 
 #ifdef OAPI_IMPLEMENTATION
 #define OAPIFUNC DLLEXPORT
@@ -51,7 +60,42 @@ extern "C" {
 #pragma warning(disable: 4201)
 
 // Message loop return type - maintain backward compatibility for 32-bit
-#ifdef _WIN64
+//
+// THE TEST IS "64-BIT", AND `_WIN64` IS ONLY HOW MSVC SPELLS IT.
+//
+// On Linux `_WIN64` is never defined, so a 64-bit build took the 32-bit branch
+// and every MFD message proc returned `int`. An MFD module answers
+// OAPI_MSG_MFD_OPENED by returning `(int)new MyMFD(...)`, so the top 32 bits
+// of that pointer were discarded — and Instrument_User then cast the truncated
+// value back to `MFD*` and dynamic_cast'd it.
+//
+// MEASURED, in the frame that crashed:
+//
+//     $1 = (MFD *) 0x5785cb50           <- the returned pointer, 32 bits
+//     $2 = (MFDMODESPECEX *) 0x555555f4c9e0   <- a real pointer in the same frame
+//
+// Every genuine heap pointer in this process is 0x5555_xxxxxxxx; the MFD's had
+// lost its high half. Reading a vtable through it faulted inside
+// __dynamic_cast, which is why the backtrace named RTTI and not the cast site.
+//
+// It killed `Delta-glider/Atmospheric autopilot` and every other scenario that
+// saves a user MFD, and it is NOT limited to loading: Instrument_User's
+// constructor makes the identical call, so opening a plugin MFD by hand from
+// the keyboard truncates the same pointer.
+//
+// THIS IS AN ABI CHANGE AND EVERY MODULE MUST BE REBUILT WITH IT. The return
+// type of a function the core calls through a pointer is part of the calling
+// convention; a plugin compiled against the old `int` and a core compiled
+// against `LRESULT` would disagree, and the symptom would be corruption of
+// exactly this shape somewhere else.
+//
+// There is only ONE copy of this header to keep in step, which is worth
+// stating because the tree looks as though there are two:
+// `Src/Orbiter/Linux/orbiterapi.h` is a SYMLINK to this file. Both spellings
+// are on the include path and both resolve here, so the core and the modules
+// cannot drift apart.
+#if defined(_WIN64) || defined(__LP64__) || defined(_LP64) || \
+    (defined(__SIZEOF_POINTER__) && __SIZEOF_POINTER__ == 8)
 #define OAPI_MSGTYPE LRESULT
 #else
 #define OAPI_MSGTYPE int
@@ -6388,7 +6432,12 @@ OAPIFUNC void oapiWriteLogV (const char *format, ...);
 	* \param ... List of output parameters. Must match the parameter flags in the format string.
 	* \sa oapiWriteLog, oapiWriteLogV
 	*/
-#define oapiWriteLogError(format, ...) __writeLogError(__FUNCTION__,__FILE__,__LINE__, format, __VA_ARGS__)
+// ##__VA_ARGS__ swallows the preceding comma when the variadic list is empty,
+// which is how Galsat.cpp calls this -- with a format string and no arguments.
+// MSVC removes the comma implicitly; GCC and Clang require the ## form, and no
+// compiler flag relaxes it (-fpermissive and -std=c++20 both still reject the
+// bare form). The ## spelling is accepted by MSVC too.
+#define oapiWriteLogError(format, ...) __writeLogError(__FUNCTION__,__FILE__,__LINE__, format, ##__VA_ARGS__)
 OAPIFUNC void __writeLogError(const char *func, const char *file, int line, const char *format, ...);
 
    /**

@@ -11,6 +11,7 @@
 #include <direct.h>
 #include <stdio.h>
 #include <time.h>
+#include <chrono>
 #include <fstream>
 #include <process.h> 
 #include "cmdline.h"
@@ -178,8 +179,8 @@ INT WINAPI WinMain (HINSTANCE hInstance, HINSTANCE, LPSTR strCmdLine, INT nCmdSh
 	GetCurrentDirectory(1024, dir);
 	// If the server version was launched from its own subdirectory, step back
 	// up to the Orbiter main directory
-	if (strlen(dir) >= 15 && !stricmp (dir+strlen(dir)-15, "\\Modules\\Server"))
-		SetCurrentDirectory("..\\..");
+	if (strlen(dir) >= 15 && !stricmp (dir+strlen(dir)-15, "/Modules/Server"))
+		SetCurrentDirectory("../..");
 
     // If we're not running from actual console, hide the window
     if (ConsoleManager::IsConsoleExclusive())
@@ -364,6 +365,21 @@ Orbiter::~Orbiter ()
 	CloseApp ();
 }
 
+#ifndef _WIN32
+// Implemented in Src/Orbiter/Linux/UIHost.cpp, which owns the Vulkan device.
+// Declared here rather than in a header because it is the only thing this
+// translation unit needs from the host, and a linkage-specification is only
+// legal at namespace scope -- it cannot go inside Create() where it is used.
+extern "C" void orbiter_SetPreferredGpuIndex(int idx);
+
+// The Linux UI host posts the mouse messages it synthesises from GLFW to a
+// render window, and it has to be the SAME window InitRenderWnd stamped --
+// see the call site in CreateRenderWindow. No Windows counterpart: there the
+// window the messages arrive at is the one the OS delivers them to, and no
+// one has to be told which it is.
+extern "C" void orbiter_SetSimRenderWindow(HWND hWnd);
+#endif
+
 //-----------------------------------------------------------------------------
 // Name: Create()
 // Desc: This method selects a D3D device
@@ -419,6 +435,24 @@ HRESULT Orbiter::Create (HINSTANCE hInstance)
 		ShowWindow (hBk, SW_MAXIMIZE);
 	}
 	
+#ifndef _WIN32
+	// THE LAST MOMENT AT WHICH THE GPU CHOICE CAN STILL BE HONOURED.
+	//
+	// On Windows the graphics client creates the D3D device, so it applies
+	// CfgDevPrm.Device_idx itself when the session starts. On Linux the
+	// Vulkan device belongs to the host (Src/Orbiter/Linux/UIHost.cpp),
+	// because the Launchpad is drawn with it and the Launchpad exists before
+	// any client is loaded. The host creates it lazily, on the first dialog
+	// -- which is the LaunchpadDialog constructed on the next line.
+	//
+	// So the preference has to be handed over here: after Config::Load has
+	// read Device_idx, and before anything creates a window. A value of -1
+	// (the factory default, and what is left after a client is unloaded)
+	// means "no preference" and leaves the host's discrete-GPU heuristic
+	// alone.
+	orbiter_SetPreferredGpuIndex(pConfig->CfgDevPrm.Device_idx);
+#endif
+
 	// Create the "launchpad" main dialog window
 	m_pLaunchpad = new orbiter::LaunchpadDialog (this); TRACENEW
 	m_pLaunchpad->Create (bStartVideoTab);
@@ -428,10 +462,10 @@ HRESULT Orbiter::Create (HINSTANCE hInstance)
 	script = new ScriptInterface(this); TRACENEW
 
 	// preload modules from command line requests
-	LoadModules("Modules\\Plugin", pConfig->CfgCmdlinePrm.LoadPlugins);
+	LoadModules("Modules/Plugin", pConfig->CfgCmdlinePrm.LoadPlugins);
 
 	// preload active plugin modules
-	LoadModules("Modules\\Plugin", pConfig->GetActiveModules());
+	LoadModules("Modules/Plugin", pConfig->GetActiveModules());
 
 	// preload startup plugin modules
 	LoadStartupModules();
@@ -512,12 +546,26 @@ int Orbiter::GetVersion () const
 	return v;
 }
 
+//! The extension a loadable module has on this platform.
+//!
+//! Every path below was written for ".dll", and the directory scan in
+//! LoadModules filters on it literally -- so on Linux nothing in
+//! Modules/Plugin or Modules/Startup was ever loaded, and the Launchpad Extra
+//! tab showed only the items the core registers itself.
+#ifdef _WIN32
+#define MODULE_EXT ".dll"
+#else
+#define MODULE_EXT ".so"
+#endif
+
 //! Finds legacy module consisting of a single DLL
 //! @return true on success
 //! @param cbufOut returns path to the plugin DLL
 static bool FindStandaloneDll(const char *path, const char *name, char* cbufOut)
 {
-	sprintf (cbufOut, "%s\\%s.dll", path, name);
+	// Forward slash: accepted by Windows too, and the only separator that
+	// resolves here.
+	sprintf (cbufOut, "%s/%s" MODULE_EXT, path, name);
 	return fs::exists(cbufOut);
 }
 
@@ -526,7 +574,7 @@ static bool FindStandaloneDll(const char *path, const char *name, char* cbufOut)
 //! @param cbufOut returns path to the plugin DLL
 static bool FindDllInPluginFolder(const char *path, const char *name, char* cbufOut)
 {
-	sprintf(cbufOut, "%s\\%s\\%s.dll", path, name, name);
+	sprintf(cbufOut, "%s/%s/%s" MODULE_EXT, path, name, name);
 	return fs::exists(cbufOut);
 }
 
@@ -538,12 +586,33 @@ void Orbiter::LoadModules(const std::string& path, const std::list<std::string>&
 
 void Orbiter::LoadModules(const std::string& path)
 {
-	for (const auto& entry : fs::directory_iterator(path)) {
+	// The directory may legitimately not exist -- a tree with no plugins
+	// installed has no Modules/Startup -- and directory_iterator throws on a
+	// missing path rather than yielding nothing.
+	std::error_code ec;
+
+	// Collected and sorted before loading, so the order is deterministic.
+	//
+	// directory_iterator yields entries in whatever order the filesystem
+	// returns them -- on ext4 that is hash order, which is neither
+	// alphabetical nor stable across machines. FindFirstFile on NTFS returns
+	// them sorted, so Windows loads AtlantisConfig, AtmConfig, DGConfigurator
+	// in that order every time while this loaded them differently.
+	//
+	// Load order is observable: modules register callbacks and custom
+	// controls as they initialise, and anything order-dependent would behave
+	// differently here for no reason a user could see. Sorting costs nothing
+	// on a directory this size and makes the two platforms agree.
+	std::vector<std::string> names;
+	for (const auto& entry : fs::directory_iterator(path, ec)) {
 		auto fpath = entry.path();
-		if (fpath.extension().string() == ".dll") {
-			LoadModule(path.c_str(), fpath.stem().string().c_str());
-		}
+		if (fpath.extension().string() == MODULE_EXT)
+			names.push_back(fpath.stem().string());
 	}
+	std::sort(names.begin(), names.end());
+
+	for (const auto& name : names)
+		LoadModule(path.c_str(), name.c_str());
 }
 
 //-----------------------------------------------------------------------------
@@ -552,7 +621,7 @@ void Orbiter::LoadModules(const std::string& path)
 //-----------------------------------------------------------------------------
 void Orbiter::LoadStartupModules()
 {
-	LoadModules("Modules\\Startup");
+	LoadModules("Modules/Startup");
 }
 
 //-----------------------------------------------------------------------------
@@ -577,7 +646,7 @@ HINSTANCE Orbiter::LoadModule (const char *path, const char *name)
 		{
 			// Convert to absolute path, otherwise LoadLibraryEx fails with error code 87.
 			// See https://stackoverflow.com/questions/36275535/loadlibraryex-error-87-the-parameter-is-incorrect
-			sprintf(cbuf, "%s\\%s", cwd, cbuf2);
+			sprintf(cbuf, "%s/%s", cwd, cbuf2);
 			hDLL = LoadLibraryEx(cbuf, NULL, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
 		}
 		else
@@ -702,6 +771,17 @@ HWND Orbiter::CreateRenderWindow (Config *pCfg, const char *scenario)
 		if(pState->SplashScreen())
 			gclient->clbkSetSplashScreen(pState->SplashScreen(), pState->SplashColor());
 		hRenderWnd = gclient->InitRenderWnd (gclient->clbkCreateRenderWindow());
+		// THIS is the render window, and it is the only one. InitRenderWnd
+		// has just stamped the GraphicsClient* into its GWLP_USERDATA, which
+		// is the ONLY thing that makes ::WndProc (GraphicsAPI.cpp:963) forward
+		// a message to RenderWndProc and so to Orbiter::MsgProc; a window
+		// without it falls into DefWindowProc and drops everything silently.
+		// The Linux UI host has to be told which window that is -- see the
+		// note in UIHost.cpp's orbiter_GetRenderWindow. Windows needs no such
+		// call: there the OS delivers to the window under the pointer.
+#ifndef _WIN32
+		orbiter_SetSimRenderWindow(hRenderWnd);
+#endif
 		GetRenderParameters ();
 	} else {
 		hRenderWnd = NULL;
@@ -866,7 +946,7 @@ void Orbiter::PreCloseSession()
 		// Render the scene once without the ImGui dialogs shown
 		// so they don't appear on the preview
 		Render3DEnvironment(true);
-		gclient->clbkSaveSurfaceToImage (0, "Images\\CurrentState", oapi::IMAGE_JPG);
+		gclient->clbkSaveSurfaceToImage (0, "Images/CurrentState", oapi::IMAGE_JPG);
 	}
 }
 
@@ -877,6 +957,9 @@ void Orbiter::PreCloseSession()
 void Orbiter::CloseSession ()
 {
 	DWORD i;
+
+	LOGOUT("CloseSession: entered (ShutdownMode %d, bFastExit %d)",
+	       pConfig->CfgDebugPrm.ShutdownMode, (int)bFastExit);
 
 	bSession = false;
 
@@ -1019,6 +1102,13 @@ INT Orbiter::Run ()
     MSG   msg;
     PeekMessage (&msg, NULL, 0U, 0U, PM_NOREMOVE);
 
+	// Frame-pacing accounting; see the block at the bottom of the loop. The
+	// same environment variable UIHost uses, so one run produces both halves
+	// of the breakdown.
+	const bool s_tracePacing = (getenv("ORBITER_TRACE_PACING") != nullptr);
+	auto tp_loop    = std::chrono::steady_clock::now();
+	auto tp_update0 = tp_loop, tp_update1 = tp_loop, tp_input1 = tp_loop;
+
 	if (!pConfig->CfgCmdlinePrm.LaunchScenario.empty())
 		Launch (pConfig->CfgCmdlinePrm.LaunchScenario.c_str());
 	// otherwise wait for the user to make a selection from the scenario
@@ -1042,12 +1132,15 @@ INT Orbiter::Run ()
 			if (bSession) {
 				if (bAllowInput) bActive = true, bAllowInput = false;
 				if (BeginTimeStep (bRunning)) {
+					tp_update0 = std::chrono::steady_clock::now();
 					UpdateWorld();
 					EndTimeStep (bRunning);
+					tp_update1 = std::chrono::steady_clock::now();
 					if (bVisible) {
 						if (bActive) UserInput ();
 						bRenderOnce = TRUE;
 					}
+					tp_input1 = std::chrono::steady_clock::now();
 					if (bRunning && bCapture) {
 						CaptureVideoFrame ();
 					}
@@ -1060,6 +1153,34 @@ INT Orbiter::Run ()
 			if (FAILED (Render3DEnvironment ()))
 				if (hRenderWnd) DestroyWindow (hRenderWnd);
 			bRenderOnce = FALSE;
+		}
+
+		// WHERE THE HITCH ACTUALLY IS.
+		//
+		// UIHost's per-frame accounting put the whole of a 30-100 ms hitch in
+		// `between(Orbiter)` -- everything outside its pump -- while the
+		// graphics client's scene recording measured 0.3-0.9 ms and the
+		// present 0.1 ms. That rules the renderer out and leaves this loop,
+		// which is three quite different things: the physics step, the
+		// keyboard/joystick poll, and Render3DEnvironment (which is what calls
+		// clbkRenderScene and, through it, the tile quadtree).
+		//
+		// Reported only for an iteration that actually hitched, and only when
+		// asked for, because this runs at frame rate.
+		if (bSession && s_tracePacing) {
+			const auto now = std::chrono::steady_clock::now();
+			const double total = std::chrono::duration<double, std::milli>(now - tp_loop).count();
+			if (total > 25.0) {
+				char m[220];
+				snprintf(m, sizeof(m),
+					"loop %6.1f ms | update %6.1f  input %5.1f  render3d %6.1f",
+					total,
+					std::chrono::duration<double, std::milli>(tp_update1 - tp_update0).count(),
+					std::chrono::duration<double, std::milli>(tp_input1  - tp_update1).count(),
+					std::chrono::duration<double, std::milli>(now        - tp_input1).count());
+				oapiWriteLog(m);
+			}
+			tp_loop = now;
 		}
 
 		if (bSession) {
@@ -1470,8 +1591,25 @@ VOID Orbiter::Quicksave ()
 	int i;
 	char desc[256], fname[256];
 	sprintf (desc, "Orbiter saved state at T = %0.0f", td.SimT0);
+	// The basename scan, which has to accept both separators here.
+	//
+	// A quicksave is written to Quicksave/<scenario leaf> <n>, so this takes
+	// the tail after the last separator. It tested only for a backslash,
+	// and on Linux a scenario name is composed with a forward slash --
+	// TabScenario.cpp's SCN_SEP -- so nothing was stripped: the name became
+	//     Quicksave\Delta-glider/Cape Canaveral 0001
+	// which ScnPath correctly resolves to
+	//     Scenarios/Quicksave/Delta-glider/Cape Canaveral 0001.scn
+	// -- a directory that does not exist. SaveScenario opens an ofstream and
+	// nothing creates the path, so it returned false and the user got
+	// "Failed to save scenario" for every scenario in a folder, which is all
+	// of them.
+	//
+	// The "Quicksave\\" prefix below is left as it is: it goes through
+	// ScnPath, which translates separators (see the ConfigPath self-test in
+	// Config.cpp). Only the scan was wrong.
 	for (i = strlen(ScenarioName)-1; i > 0; i--)
-		if (ScenarioName[i-1] == '\\') break;
+		if (ScenarioName[i-1] == '\\' || ScenarioName[i-1] == '/') break;
 	sprintf (fname, "Quicksave\\%s %04d", ScenarioName+i, ++g_qsaveid);
 	if(SaveScenario (fname, desc, 0))
 		oapiAddNotification(OAPINOTIF_SUCCESS, "Scenario saved successfully", fname);
@@ -1487,7 +1625,13 @@ void Orbiter::CaptureVideoFrame ()
 	if (gclient) {
 		if (video_skip_count == pConfig->CfgCapturePrm.SequenceSkip) {
 			char fname[256];
-			sprintf (fname, "%s\\%04d", pConfig->CfgCapturePrm.SequenceDir, pConfig->CfgCapturePrm.SequenceStart++);
+			// Joined with a forward slash. The directory this appends to is
+			// itself already spelled with one -- CfgCapturePrm_default's
+			// SequenceDir is "capture/frames" -- so a backslash here produced
+			// `capture/frames\0000`, a file named `frames\0000` inside
+			// capture/ rather than a frame inside capture/frames/. Windows
+			// accepts a forward slash in a path, so this is right on both.
+			sprintf (fname, "%s/%04d", pConfig->CfgCapturePrm.SequenceDir, pConfig->CfgCapturePrm.SequenceStart++);
 			oapi::ImageFileFormat fmt = (oapi::ImageFileFormat)pConfig->CfgCapturePrm.ImageFormat;
 			float quality = (float)pConfig->CfgCapturePrm.ImageQuality/10.0f;
 			gclient->clbkSaveSurfaceToImage (0, fname, fmt, quality);
@@ -1516,7 +1660,7 @@ void Orbiter::ToggleLabelDisplay()
 //-----------------------------------------------------------------------------
 VOID Orbiter::SavePlaybackScn (const char *fname)
 {
-	char desc[256], scn[256] = "Playback\\";
+	char desc[256], scn[256] = "Playback/";
 	sprintf (desc, "Orbiter playback scenario at T = %0.0f", td.SimT0);
 	strcat (scn, fname);
 	SaveScenario (scn, desc, 0);
@@ -1526,8 +1670,14 @@ const char *Orbiter::GetDefRecordName (void) const
 {
 	const char *playbackdir = pState->PlaybackDir();
 	int i;
+	// Both separators, for the reason given at Quicksave above: a scenario
+	// name is composed with '/' on this platform. This supplies the DEFAULT
+	// NAME for a new recording, and FRecorder_PrepareDir creates
+	// Flights/<that name> with a single fs::create_directory -- so an
+	// unstripped "Delta-glider/Cape Canaveral" asks for a nested directory
+	// whose parent does not exist, and the recording never starts.
 	for (i = strlen(playbackdir)-1; i > 0; i--)
-		if (playbackdir[i-1] == '\\') break;
+		if (playbackdir[i-1] == '\\' || playbackdir[i-1] == '/') break;
 	return playbackdir+i;
 }
 
@@ -1803,9 +1953,28 @@ void Orbiter::EndTimeStep (bool running)
 	g_bForceUpdate = false;                        // clear flag
 
 	// check for termination of demo mode
-	if (SessionLimitReached())
+	if (SessionLimitReached()) {
+		// THE SHUTDOWN CHAIN IS FOUR HOPS AND EVERY ONE OF THEM IS SILENT.
+		//
+		//   SessionLimitReached -> PostMessage(hRenderWnd, WM_CLOSE)
+		//     -> RenderWndProc WM_CLOSE  -> PreCloseSession + DestroyWindow
+		//     -> RenderWndProc WM_DESTROY -> CloseSession
+		//     -> clbkCloseSession + clbkDestroyRenderWindow
+		//
+		// On Linux each hop goes through the Win32 shim's message queue and
+		// window table, and a break anywhere in it looks identical from
+		// outside: the process ends and no cleanup runs. These four lines are
+		// how that is told apart, and they fire once per session.
+		static bool bSaidLimit = false;
+		if (!bSaidLimit) {
+			bSaidLimit = true;
+			LOGOUT("Session limit reached: %s", hRenderWnd
+			       ? "posting WM_CLOSE to the render window"
+			       : "no render window, closing the session directly");
+		}
 		if (hRenderWnd) PostMessage(hRenderWnd, WM_CLOSE, 0, 0);
 		else CloseSession();
+	}
 }
 
 bool Orbiter::SessionLimitReached() const
@@ -1895,6 +2064,45 @@ bool Orbiter::UnregisterCustomCmd (int cmdId)
 	return true;
 }
 
+// Menu-bar access for the scripted UI driver; see the note in Orbiter.h.
+//
+// The callback is invoked the same way MenuInfoBar's own click handler does,
+// on the same thread and at the same point in the frame, so a dialog opened
+// this way is opened exactly as a real click opens it.
+int Orbiter::MenuCmdCount () const
+{
+	return (int)menuitems.size();
+}
+
+const char *Orbiter::MenuCmdLabel (int i) const
+{
+	if (i < 0 || i >= (int)menuitems.size()) return nullptr;
+	return menuitems[i].label.c_str();
+}
+
+bool Orbiter::MenuCmdRun (int i)
+{
+	if (i < 0 || i >= (int)menuitems.size()) return false;
+	if (!menuitems[i].func) return false;
+	menuitems[i].func (menuitems[i].context);
+	return true;
+}
+
+extern "C" int orbiter_MenuCmdCount (void)
+{
+	return g_pOrbiter ? g_pOrbiter->MenuCmdCount() : 0;
+}
+
+extern "C" const char *orbiter_MenuCmdLabel (int i)
+{
+	return g_pOrbiter ? g_pOrbiter->MenuCmdLabel(i) : nullptr;
+}
+
+extern "C" int orbiter_MenuCmdRun (int i)
+{
+	return (g_pOrbiter && g_pOrbiter->MenuCmdRun(i)) ? 1 : 0;
+}
+
 int Orbiter::RegisterMenuCmd (const char *label, const char *imagepath, CustomFunc func, void *context)
 {
 	// share g_customcmdid for unique id
@@ -1920,13 +2128,52 @@ void Orbiter::UnregisterMenuCmd (int cmdId)
 //-----------------------------------------------------------------------------
 void Orbiter::ModulePreStep ()
 {
-	// broadcast to modules
-	for (auto it = m_Plugin.begin(); it != m_Plugin.end(); it++)
-		it->pModule->clbkPreStep(td.SimT0, td.SimDT, td.MJD0);
+	// THE WHOLE OF THE FRAME HITCH IS IN HERE. UpdateWorld's own breakdown
+	// puts 26-111 ms in this function while the physics step next to it costs
+	// 0.1 ms, so the two loops below are timed separately and the slowest
+	// PLUGIN is named -- "a module is slow" is not actionable, "XRSound is
+	// slow" is.
+	static const bool trace = (getenv("ORBITER_TRACE_PACING") != nullptr);
+	using clk = std::chrono::steady_clock;
 
-	// broadcast to vessels
+	if (!trace) {
+		// broadcast to modules
+		for (auto it = m_Plugin.begin(); it != m_Plugin.end(); it++)
+			it->pModule->clbkPreStep(td.SimT0, td.SimDT, td.MJD0);
+
+		// broadcast to vessels
+		for (DWORD i = 0; i < g_psys->nVessel(); i++)
+			g_psys->GetVessel(i)->ModulePreStep (td.SimT0, td.SimDT, td.MJD0);
+		return;
+	}
+
+	const auto t0 = clk::now();
+	double worst = 0.0;
+	const char *worstName = "(none)";
+
+	for (auto it = m_Plugin.begin(); it != m_Plugin.end(); it++) {
+		const auto a = clk::now();
+		it->pModule->clbkPreStep(td.SimT0, td.SimDT, td.MJD0);
+		const double d = std::chrono::duration<double, std::milli>(clk::now() - a).count();
+		if (d > worst) { worst = d; worstName = it->sName.c_str(); }
+	}
+	const auto t1 = clk::now();
+
 	for (DWORD i = 0; i < g_psys->nVessel(); i++)
 		g_psys->GetVessel(i)->ModulePreStep (td.SimT0, td.SimDT, td.MJD0);
+	const auto t2 = clk::now();
+
+	const double total = std::chrono::duration<double, std::milli>(t2 - t0).count();
+	if (total > 20.0) {
+		char m[240];
+		snprintf(m, sizeof(m),
+			"    preStep %6.1f ms | plugins %6.1f (worst '%s' %6.1f)  vessels %6.1f",
+			total,
+			std::chrono::duration<double, std::milli>(t1 - t0).count(),
+			worstName, worst,
+			std::chrono::duration<double, std::milli>(t2 - t1).count());
+		oapiWriteLog(m);
+	}
 }
 
 //-----------------------------------------------------------------------------
@@ -1950,8 +2197,20 @@ void Orbiter::ModulePostStep ()
 //-----------------------------------------------------------------------------
 VOID Orbiter::UpdateWorld ()
 {
+	// PACING. The frame breakdown in Run() puts the whole of a 30-100 ms
+	// hitch inside this function -- render3d, which is the entire graphics
+	// client including the tile quadtree, measures 1-4 ms. So the five things
+	// below are timed individually, because they are unrelated to each other:
+	// plugin callbacks, the physics step, and a dialog update that the comment
+	// on its own line already says does not belong here.
+	static const bool trace = (getenv("ORBITER_TRACE_PACING") != nullptr);
+	using clk = std::chrono::steady_clock;
+	clk::time_point t0, t1, t2, t3, t4, t5;
+	if (trace) t0 = clk::now();
+
 	// module pre-timestep callbacks
 	if (bRunning) ModulePreStep ();
+	if (trace) t1 = clk::now();
 
 	// update world
 	g_bStateUpdate = true;
@@ -1959,15 +2218,37 @@ VOID Orbiter::UpdateWorld ()
 		if (bPlayback) FRecorder_Play();
 		g_psys->Update (g_bForceUpdate);           // logical objects
 	}
+	if (trace) t2 = clk::now();
+
 	if (pDlgMgr) pDlgMgr->UpdateDialogs(); // SHOULD BE DONE BY GRAPHICS CLIENT!
+	if (trace) t3 = clk::now();
 
 	// module post-timestep callbacks
 	if (bRunning) ModulePostStep ();
+	if (trace) t4 = clk::now();
 
 	g_bStateUpdate = false;
 
 	if (!KillVessels())  // kill any vessels marked for deletion
 		if (hRenderWnd) DestroyWindow (hRenderWnd);
+
+	if (trace) {
+		t5 = clk::now();
+		const double total = std::chrono::duration<double, std::milli>(t5 - t0).count();
+		if (total > 20.0) {
+			char m[240];
+			snprintf(m, sizeof(m),
+				"  update %6.1f ms | preStep %6.1f  psys %6.1f  dialogs %6.1f  "
+				"postStep %6.1f  kill %5.1f",
+				total,
+				std::chrono::duration<double, std::milli>(t1 - t0).count(),
+				std::chrono::duration<double, std::milli>(t2 - t1).count(),
+				std::chrono::duration<double, std::milli>(t3 - t2).count(),
+				std::chrono::duration<double, std::milli>(t4 - t3).count(),
+				std::chrono::duration<double, std::milli>(t5 - t4).count());
+			oapiWriteLog(m);
+		}
+	}
 
 	//g_texmanager->OutputInfo();
 }
@@ -2014,6 +2295,32 @@ HRESULT Orbiter::UserInput ()
 			hr = didev->GetDeviceState (sizeof(buffer), &buffer);
 
 		// Direct input bypasses the proc loop so we skip it here
+		if (getenv("ORBITER_TRACE_INPUT")) {
+			static int n = 0;
+			int pressed = 0, firstdik = -1;
+			for (i = 0; i < 256; i++)
+				if (buffer[i] & 0x80) { ++pressed; if (firstdik < 0) firstdik = (int)i; }
+			if (pressed || (n++ % 200) == 0) {
+				// dik= AND the two OUTCOMES, because "a key arrived" and "the
+				// key did something" are separate claims and the first was
+				// being read as though it proved the second. warp changes on
+				// IncSimSpeed/DecSimSpeed and camExt flips on
+				// ToggleCamInternal, so a before/after pair around an injected
+				// keypress settles it without a screenshot -- which matters
+				// here because the Delta-glider's 2D panel is not ported, so
+				// the internal view is not yet something a picture can judge.
+				char m[256];
+				snprintf(m, sizeof(m),
+				  "UserInput: hr=%s imguiWantsKbd=%d WantCaptureKeyboard=%d "
+				  "pressed=%d dik=0x%02X skipkbd=%d | warp=%.1f camExt=%d",
+				  SUCCEEDED(hr) ? "ok" : "FAIL", int(imguiWantsKeyboard),
+				  int(io.WantCaptureKeyboard), pressed, firstdik < 0 ? 0 : firstdik,
+				  int(skipkbd), td.Warp(),
+				  g_camera ? int(g_camera->IsExternal()) : -1);
+				oapiWriteLog(m);
+			}
+		}
+
 		if (SUCCEEDED (hr) && !imguiWantsKeyboard)
 			for (i = 0; i < 256; i++)
 				simkstate[i] |= buffer[i];
@@ -2647,11 +2954,13 @@ LRESULT Orbiter::MsgProc (HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 
 		// shutdown options
 	case WM_CLOSE:
+		LOGOUT("RenderWndProc: WM_CLOSE -- PreCloseSession, then DestroyWindow");
 		PreCloseSession();
 		DestroyWindow (hWnd);
 		return 0;
 
 	case WM_DESTROY:
+		LOGOUT("RenderWndProc: WM_DESTROY -- CloseSession");
 		CloseSession ();
         break;
 	}

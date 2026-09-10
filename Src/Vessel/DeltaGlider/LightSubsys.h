@@ -16,6 +16,41 @@
 #include "DGSwitches.h"
 #include "DGSubsys.h"
 
+// Forward declaration: this header names InstrumentBrightnessDial before the class is defined
+// further down. MSVC injects the name via a friend declaration (non-standard);
+// GCC reports "'InstrumentBrightnessDial' does not name a type".
+class InstrumentBrightnessDial;
+
+// Forward declaration: this header names InstrumentLightSwitch before the class is defined
+// further down. MSVC injects the name via a friend declaration (non-standard);
+// GCC reports "'InstrumentLightSwitch' does not name a type".
+class InstrumentLightSwitch;
+
+// Forward declaration: this header names NavLightSwitch before the class is defined
+// further down. MSVC injects the name via a friend declaration (non-standard);
+// GCC reports "'NavLightSwitch' does not name a type".
+class NavLightSwitch;
+
+// Forward declaration: this header names StrobeLightSwitch before the class is defined
+// further down. MSVC injects the name via a friend declaration (non-standard);
+// GCC reports "'StrobeLightSwitch' does not name a type".
+class StrobeLightSwitch;
+
+// Forward declaration: this header names LandDockLightSwitch before the class is defined
+// further down. MSVC injects the name via a friend declaration (non-standard);
+// GCC reports "'LandDockLightSwitch' does not name a type".
+class LandDockLightSwitch;
+
+// Forward declaration: this header names CockpitBrightnessDial before the class is defined
+// further down. MSVC injects the name via a friend declaration (non-standard);
+// GCC reports "'CockpitBrightnessDial' does not name a type".
+class CockpitBrightnessDial;
+
+// Forward declaration: this header names CockpitLightSwitch before the class is defined
+// further down. MSVC injects the name via a friend declaration (non-standard);
+// GCC reports "'CockpitLightSwitch' does not name a type".
+class CockpitLightSwitch;
+
 // ==============================================================
 // Light control subsystem
 // ==============================================================

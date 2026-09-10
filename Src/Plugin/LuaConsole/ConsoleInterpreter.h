@@ -7,6 +7,13 @@
 #include "Interpreter.h"
 #include "LuaConsole.h"
 
+// LuaConsole.h includes this header and this header includes LuaConsole.h, so
+// whichever is reached first sets its guard and the nested include expands to
+// nothing -- leaving the other file's type undeclared. Everything below uses
+// LuaConsole only through a pointer, so a forward declaration is enough to
+// break the cycle whichever order the two arrive in.
+class LuaConsole;
+
 // ==============================================================
 // class ConsoleInterpreter
 

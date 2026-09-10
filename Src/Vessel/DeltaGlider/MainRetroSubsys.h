@@ -17,6 +17,21 @@
 #include "DGSwitches.h"
 #include <vector>
 
+// Forward declaration: this header names MainRetroThrottleLevers before the class is defined
+// further down. MSVC injects the name via a friend declaration (non-standard);
+// GCC reports "'MainRetroThrottleLevers' does not name a type".
+class MainRetroThrottleLevers;
+
+// Forward declaration: this header names RetroCoverIndicator before the class is defined
+// further down. MSVC injects the name via a friend declaration (non-standard);
+// GCC reports "'RetroCoverIndicator' does not name a type".
+class RetroCoverIndicator;
+
+// Forward declaration: this header names RetroCoverSwitch before the class is defined
+// further down. MSVC injects the name via a friend declaration (non-standard);
+// GCC reports "'RetroCoverSwitch' does not name a type".
+class RetroCoverSwitch;
+
 // ==============================================================
 // Main and retro engine control subsystem
 // ==============================================================

@@ -15,6 +15,8 @@
 
 #include "Orbitersdk.h"
 #include <math.h>
+class PayloadBayOp;   // forward decl: MSVC injected this via a friend declaration
+class AscentAP;   // forward decl: MSVC injected this via a friend declaration
 
 #ifdef ATLANTIS_TANK_MODULE
 #define TANKFUNC DLLEXPORT

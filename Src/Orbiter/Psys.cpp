@@ -200,11 +200,19 @@ bool PlanetarySystem::Read (char *fname, const Config* config, OutputLoadStatusC
 
 	if (GetItemString (ifs, "MarkerPath", cbuf)) {
 		m_labelPath = cbuf;
+		// The separator must match the one the fallback below uses and the one
+		// the filesystem expects. A backslash here leaves the marker directory
+		// unopenable on Linux, so no planetarium labels are ever found.
+#ifdef _WIN32
 		if (m_labelPath.back() != '\\')
 			m_labelPath.push_back('\\');
+#else
+		if (m_labelPath.back() != '/' && m_labelPath.back() != '\\')
+			m_labelPath.push_back('/');
+#endif
 	}
 	else {
-		m_labelPath = std::string(config->CfgDirPrm.ConfigDir) + m_Name + std::string("\\Marker\\");
+		m_labelPath = std::string(config->CfgDirPrm.ConfigDir) + m_Name + std::string("/Marker/");
 	}
 	m_labelList.clear();
 	ScanLabelLists(ifs, true);

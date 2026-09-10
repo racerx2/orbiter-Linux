@@ -53,6 +53,7 @@ struct ScenarioData { // packed vessel state
 	DWORD size;             // size of the complete data block
 	DWORD flag;
 	BYTE fstate;            // flight status
+#ifdef _WIN32
 	union {
 		struct {
 			Vector rpos;    // reference body-relative position
@@ -66,6 +67,27 @@ struct ScenarioData { // packed vessel state
 			double hdg;     // orientation on the ground
 		};
 	};
+#else
+	// Vector has user-declared constructors, and GCC forbids such members
+	// inside an anonymous aggregate. No flag relaxes this: -fpermissive and
+	// -fms-extensions both still reject it. The members are therefore laid
+	// out directly rather than overlaid.
+	//
+	// Nothing observes the overlay. The two groups are written and read under
+	// mutually exclusive branches of a switch on fstate, and neither
+	// PackDefaultState nor ApplyPackedState has a caller anywhere in the tree,
+	// so the block is never written to disk or transmitted and no layout
+	// compatibility is required. Every use site (sd->rpos, &sd->vrot, sd->lng)
+	// keeps working unchanged; the struct is 24 bytes larger, which only
+	// affects the size value computed from sizeof() a few lines away.
+	Vector rpos;            // reference body-relative position
+	Vector rvel;            // reference body-relative velocity
+	Vector arot;            // orientation (Euler angles)
+	Vector vrot;            // angular velocity
+	double lng;             // longitude of landing site [rad]
+	double lat;             // latitude of landing site [rad]
+	double hdg;             // orientation on the ground
+#endif
 	char buf[1];            // pointer to variable-length parameters
 };
 

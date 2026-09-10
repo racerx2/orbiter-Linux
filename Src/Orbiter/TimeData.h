@@ -1,6 +1,11 @@
 #ifndef TIMEDATA_H
 #define TIMEDATA_H
 
+// size_t is used below. On Windows it arrives transitively through the SDK
+// headers this file is always compiled behind; libstdc++ does not guarantee
+// that, so the standard header is included explicitly. Harmless on MSVC.
+#include <cstddef>
+
 //-----------------------------------------------------------------------------
 // Name: class TimeData
 // Desc: stores timing information for current time step

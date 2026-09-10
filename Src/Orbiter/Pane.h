@@ -42,6 +42,14 @@ struct MFDspec {        // panel MFD specs
 // =======================================================================
 // class Pane
 
+// These names are otherwise introduced only by the friend declarations below,
+// which do not make them visible to ordinary lookup. See CelBodyAPI.h for the
+// rationale; harmless on MSVC, which sees redundant forward declarations.
+class DefaultPanel;
+class Panel;
+class VirtualCockpit;
+class MenuInfoBar;
+
 class Pane {
 	friend class HUD;
 	friend class HUD_Orbit;

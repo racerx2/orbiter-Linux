@@ -41,6 +41,7 @@ orbiter::ConsoleNG::ConsoleNG(Orbiter* pOrbiter)
 
     s_console = this;
 
+
     ConsoleManager::ShowConsole(true);
     DWORD id;
     SetConsoleTitle(title);

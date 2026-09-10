@@ -499,7 +499,7 @@ void OptionsPage_Visual::UpdateConfig(HWND hPage)
 	Cfg()->CfgVisualPrm.ElevMode = (SendDlgItemMessage(hPage, IDC_OPT_VIS_ELEV, BM_GETCHECK, 0, 0) != BST_CHECKED ?
 		0 : SendDlgItemMessage(hPage, IDC_OPT_VIS_ELEVMODE, CB_GETCURSEL, 0, 0) + 1);
 	GetWindowText(GetDlgItem(hPage, IDC_OPT_VIS_MAXLEVEL), cbuf, 127);
-	if (!sscanf(cbuf, "%lu", &i)) i = SURF_MAX_PATCHLEVEL2;
+	if (!sscanf(cbuf, "%u", &i)) i = SURF_MAX_PATCHLEVEL2;
 	Cfg()->CfgVisualPrm.PlanetMaxLevel = max((DWORD)1, min((DWORD)SURF_MAX_PATCHLEVEL2, i));
 	Cfg()->CfgVisualPrm.bVesselShadows = (SendDlgItemMessage(hPage, IDC_OPT_VIS_VSHADOW, BM_GETCHECK, 0, 0) == BST_CHECKED);
 	Cfg()->CfgVisualPrm.bReentryFlames = (SendDlgItemMessage(hPage, IDC_OPT_VIS_REENTRY, BM_GETCHECK, 0, 0) == BST_CHECKED);
@@ -508,7 +508,7 @@ void OptionsPage_Visual::UpdateConfig(HWND hPage)
 	Cfg()->CfgVisualPrm.bSpecular = (SendDlgItemMessage(hPage, IDC_OPT_VIS_SPECULAR, BM_GETCHECK, 0, 0) == BST_CHECKED);
 	Cfg()->CfgVisualPrm.bLocalLight = (SendDlgItemMessage(hPage, IDC_OPT_VIS_LOCALLIGHT, BM_GETCHECK, 0, 0) == BST_CHECKED);
 	GetWindowText(GetDlgItem(hPage, IDC_OPT_VIS_AMBIENT), cbuf, 255);
-	if (!sscanf(cbuf, "%lu", &i)) i = 15; else if (i > 255) i = 255;
+	if (!sscanf(cbuf, "%u", &i)) i = 15; else if (i > 255) i = 255;
 	Cfg()->SetAmbientLevel(i);
 }
 
@@ -624,7 +624,7 @@ BOOL OptionsPage_Visual::OnCommand(HWND hPage, WORD ctrlId, WORD notification, H
 				char cbuf[16];
 				DWORD i;
 				GetWindowText( GetDlgItem( hPage, IDC_OPT_VIS_MAXLEVEL ), cbuf, 16 );
-				if (!sscanf( cbuf, "%lu", &i )) i = SURF_MAX_PATCHLEVEL2;
+				if (!sscanf( cbuf, "%u", &i )) i = SURF_MAX_PATCHLEVEL2;
 				Cfg()->CfgVisualPrm.PlanetMaxLevel = max((DWORD)1, min((DWORD)SURF_MAX_PATCHLEVEL2, i));
 				return FALSE;
 			}
@@ -683,7 +683,7 @@ BOOL OptionsPage_Visual::OnCommand(HWND hPage, WORD ctrlId, WORD notification, H
 				char cbuf[16];
 				DWORD i;
 				GetWindowText( GetDlgItem(hPage, IDC_OPT_VIS_AMBIENT ), cbuf, 16 );
-				if (!sscanf( cbuf, "%lu", &i )) i = 15;
+				if (!sscanf( cbuf, "%u", &i )) i = 15;
 				else if (i > 255) i = 255;
 				Cfg()->SetAmbientLevel( i );
 				return FALSE;
@@ -1495,7 +1495,7 @@ void OptionsPage_CelSphere::PopulateStarmapList(HWND hPage)
 	SendDlgItemMessage(hPage, IDC_OPT_CSP_STARMAPIMAGE, CB_RESETCONTENT, 0, 0);
 	m_pathStarmap.clear();
 
-	std::ifstream ifs(Cfg()->ConfigPath("CSphere\\bkgimage"));
+	std::ifstream ifs(Cfg()->ConfigPath("CSphere/bkgimage"));
 	if (ifs) {
 		char* c;
 		char cbuf[256];
@@ -1527,7 +1527,7 @@ void OptionsPage_CelSphere::PopulateBgImageList(HWND hPage)
 	SendDlgItemMessage(hPage, IDC_OPT_CSP_BKGIMAGE, CB_RESETCONTENT, 0, 0);
 	m_pathBgImage.clear();
 
-	std::ifstream ifs(Cfg()->ConfigPath("CSphere\\bkgimage"));
+	std::ifstream ifs(Cfg()->ConfigPath("CSphere/bkgimage"));
 	if (ifs) {
 		char* c;
 		char cbuf[256];

@@ -29,6 +29,9 @@
 using namespace std;
 
 extern Orbiter *g_pOrbiter;
+
+// Registered by a graphics client that owns its own window; null otherwise.
+extern "C" void (*g_clientCursorDelta)(int *, int *);
 extern TimeData td;
 extern PlanetarySystem *g_psys;
 extern Pane *g_pane;
@@ -125,6 +128,19 @@ bool Camera::ProcessMouse (UINT event, DWORD state, DWORD x, DWORD y, const char
 				ShiftDist(-zDelta*0.001);
 			else
 				g_pOrbiter->IncFOV(zDelta*(-2.0 / 120.0*RAD));
+
+			// The state the wheel just produced, so a fault that only appears
+			// at some camera distance can be tied to a number rather than to
+			// "I scrolled out". rdist is in units of the target's radius and
+			// SetRelPos applies no upper bound to it.
+			if (getenv("ORBITER_TRACE_MOUSE")) {
+				char m[220];
+				snprintf(m, sizeof(m),
+				   "wheel: zDelta=%d ext=%d rdist=%.6g dist=%.6g m ap=%.3f deg",
+				   (int)zDelta, int(external_view), rdist,
+				   rdist * (target ? target->Size() : 0.0), *ap * DEG);
+				oapiWriteLog(m);
+			}
 		} return true;
 		break;
 	}
@@ -147,6 +163,31 @@ void Camera::UpdateMouse ()
 			ScreenToClient (g_pOrbiter->GetRenderWnd(), &pt);
 		dx = pt.x - mx;
 		dy = pt.y - my;
+
+		// A graphics client with its own window supplies the per-frame delta
+		// directly.
+		//
+		// The dx/dy above rely on SetCursorPos warping the physical pointer
+		// back each frame, so that the next read yields only NEW movement.
+		// A client that cannot warp the pointer -- VSG has no such call --
+		// would otherwise produce a delta that grows with total drag
+		// distance, making the rotation accelerate the further the pointer
+		// travels rather than tracking hand speed.
+		if (g_clientCursorDelta) {
+			int cdx = 0, cdy = 0;
+			g_clientCursorDelta(&cdx, &cdy);
+			dx = cdx;
+			dy = cdy;
+		}
+
+		if (getenv("ORBITER_TRACE_MOUSE")) {
+			char m[220];
+			snprintf(m, sizeof(m),
+			   "UpdateMouse: cursor=(%ld %ld) mx,my=(%d %d) dx,dy=(%d %d) ext=%d",
+			   (long)pt.x, (long)pt.y, mx, my, dx, dy, int(external_view));
+			oapiWriteLog(m);
+		}
+
 		SetCursorPos (x0-dx, y0-dy);
 		if (!(dx || dy)) return;
 
@@ -162,6 +203,20 @@ void Camera::UpdateMouse ()
 			}
 		} else {
 			Rotate (dx * -0.001, dy * -0.001);
+		}
+
+		// AND WHAT IT ACTUALLY MOVED, which is the half that makes the trace
+		// a measurement rather than a record of intent. A delta arriving
+		// proves the message path; the resulting azimuth proves the camera
+		// acted on it. The two failed independently during the port -- the
+		// deltas were real while the camera did not turn, because
+		// SetCursorPos above was a no-op and the recentring never happened.
+		if (getenv("ORBITER_TRACE_MOUSE")) {
+			char m[220];
+			snprintf(m, sizeof(m),
+			   "UpdateMouse: applied phi=%.4f deg theta=%.4f deg rdist=%.6f",
+			   Phi()*DEG, Theta()*DEG, rdist);
+			oapiWriteLog(m);
 		}
 	}
 }
@@ -1112,6 +1167,18 @@ void Camera::Update ()
 
 		switch (action) {
 		case CAMERA_NORMAL:
+			if (getenv("ORBITER_TRACE_MOUSE")) {
+				static int n = 0;
+				if ((n++ % 60) == 0) {
+					char m[220];
+					snprintf(m, sizeof(m),
+					  "cam: mbdown=%d brot=%d cphi=%.2f deg ctheta=%.2f deg catch=%.2f deg defaultDir=%d",
+					  int(mbdown[1]), int(brot), normangle(cphi)*DEG,
+					  normangle(ctheta)*DEG, catchangle*DEG,
+					  int(IsCockpitDefaultDir()));
+					oapiWriteLog(m);
+				}
+			}
 			if (!mbdown[1] && !brot && !IsCockpitDefaultDir() && (fabs (normangle (cphi)) < catchangle) && (fabs (normangle (ctheta)) < catchangle))
 				ResetCockpitDir();
 			break;

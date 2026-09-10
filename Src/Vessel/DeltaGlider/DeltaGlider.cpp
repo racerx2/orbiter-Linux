@@ -1249,7 +1249,7 @@ void DeltaGlider::clbkLoadStateEx (FILEHANDLE scn, void *vs)
 		} else if (!_strnicmp (line, "SKIN", 4)) {
 			sscanf (line+4, "%s", skinpath);
 			char fname[256];
-			strcpy (fname, "DG\\Skins\\");
+			strcpy (fname, "DG/Skins/");
 			strcat (fname, skinpath);
 			int n = strlen(fname); fname[n++] = '\\';
 			strcpy (fname+n, "dgmk4_1.dds");  skin[0] = oapiLoadTexture (fname);

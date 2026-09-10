@@ -2,8 +2,12 @@
 // Licensed under the MIT License
 
 #include "instruments.h"
-#include < GL\gl.h >                                
-#include < GL\glu.h >
+// Backslash separators inside an #include. MSVC accepts "GL\gl.h"; every
+// other preprocessor treats the backslash as an escape and the header is not
+// found. The forward-slash form is what the C standard specifies and Windows
+// accepts it too, so this is portable in both directions.
+#include <GL/gl.h>
+#include <GL/glu.h>
 #include "vectors.h"        
 #include "panel.cpp"
 #include "math.h"

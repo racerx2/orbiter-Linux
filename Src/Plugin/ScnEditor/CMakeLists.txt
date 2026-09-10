@@ -12,12 +12,26 @@ target_include_directories(ScnEditor
 	PUBLIC ${ORBITER_SOURCE_SDK_INCLUDE_DIR}
 )
 
+# ScnEditor.rc is listed above as a source, which rc.exe acts on and Linux
+# ignores -- so all thirteen of this module's dialogs had no template and
+# oapiOpenDialogEx returned NULL for every one of them, silently. This converts
+# them the way rc.exe would; see the function in the top-level CMakeLists and
+# Src/Orbiter/Linux/ResourceRegistry.cpp.
+orbiter_module_resources(ScnEditor ${CMAKE_CURRENT_SOURCE_DIR}/ScnEditor.rc)
+
 target_link_libraries(ScnEditor
 	${ORBITER_LIB}
 	${ORBITER_SDK_LIB}
 	${ORBITER_DLGCTRL_LIB}
-	comctl32.lib
 )
+
+# comctl32 is the Windows common-control library. Its entry points -- the
+# tree view, image lists and InitCommonControlsEx -- are provided by the shim
+# in Src/Orbiter/Linux and resolved from the executable at load time, so there
+# is nothing to link against here.
+if(WIN32)
+	target_link_libraries(ScnEditor comctl32.lib)
+endif()
 
 set_target_properties(ScnEditor
 	PROPERTIES
@@ -54,6 +68,19 @@ install(FILES ScnEditorAPI.h
 install(FILES ScnEdit.png
 	DESTINATION ${ORBITER_INSTALL_TEXTURES_DIR}/MenuInfoBar
 )
+
+# The build-tree copy of the menu icon; install() alone leaves a run from the
+# build directory without it, and DynamicMenuBar then raises a "Cannot find menu
+# item texture" notification. See Src/Plugin/FlightData/CMakeLists.txt for the
+# full note, including why upstream has the same gap and why it only became
+# visible once the ImGui dialogs were actually being drawn.
+add_custom_command(TARGET ScnEditor POST_BUILD
+	COMMAND ${CMAKE_COMMAND} -E make_directory ${ORBITER_BINARY_TEXTURES_DIR}/MenuInfoBar
+	COMMAND ${CMAKE_COMMAND} -E copy_if_different
+		${CMAKE_CURRENT_SOURCE_DIR}/ScnEdit.png
+		${ORBITER_BINARY_TEXTURES_DIR}/MenuInfoBar/
+)
+
 
 if(ORBITER_MAKE_DOC)
 	add_subdirectory(Help)

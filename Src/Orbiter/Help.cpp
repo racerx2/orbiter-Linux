@@ -17,5 +17,5 @@ void OpenHelp (HWND hWnd, const char *file, const char *topic)
 
 void OpenDefaultHelp (HWND hWnd, const char *topic)
 {
-	OpenHelp (hWnd, "html\\orbiter.chm", topic);
+	OpenHelp (hWnd, "html/orbiter.chm", topic);
 }

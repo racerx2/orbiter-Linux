@@ -10,6 +10,10 @@
 
 #include "Di7frame.h"
 
+// Orbiter is otherwise introduced only by the friend declaration below, which
+// does not make it visible to ordinary lookup. See CelBodyAPI.h.
+class Orbiter;
+
 class DInput {
 	friend class Orbiter;
 

@@ -19,6 +19,31 @@
 using namespace std;
 
 extern const TCHAR* CurrentScenario;
+
+// Separator used when composing a scenario's path from the tree hierarchy.
+//
+// GetSelScenario builds "folder<sep>scenario" by walking parents, and
+// RefreshList splits on the same character to re-select an item. The result is
+// then handed straight to ScnPath and to ifstream, so it has to be a real path
+// separator: on Linux a backslash would become a literal character in the
+// filename and the scenario would fail to open.
+#ifdef _WIN32
+static const char SCN_SEP = '\\';
+static const char SCN_SEP_STR[] = "\\";
+#else
+static const char SCN_SEP = '/';
+static const char SCN_SEP_STR[] = "/";
+#endif
+
+// The same thing for a FORMAT STRING, so the sprintf below stays one literal
+// and reads as the original does. elevmgr.cpp carries an identical macro; the
+// two are separate only because neither file has a header the other includes.
+#ifdef _WIN32
+#define ORB_SEP "\\"
+#else
+#define ORB_SEP "/"
+#endif
+
 const char *htmlstyle = "<style type=""text/css"">body{font-family:Arial;font-size:12px} p{margin-top:0;margin-bottom:0.5em} h1{font-size:150%;font-weight:normal;margin-bottom:0.5em;color:#000080;background-color:#E6E6FF;padding:0.1em}</style>";
 
 //-----------------------------------------------------------------------------
@@ -216,8 +241,8 @@ void orbiter::ScenarioTab::RefreshList (bool preserveSelection)
 		if (preserveSelection) { // find the previous selection in the newly created list and re-select it
 			pc = cbuf;
 			while (*pc) {
-				for (c = pc; *c && *c != '\\'; c++);
-				bool isdir = (*c == '\\');
+				for (c = pc; *c && *c != SCN_SEP; c++);
+				bool isdir = (*c == SCN_SEP);
 				*c = '\0';
 				TV_ITEM tvi = { TVIF_HANDLE | TVIF_TEXT, 0, 0, 0, ch, 256 };
 				for (tvi.hItem = hti; tvi.hItem; tvi.hItem = (HTREEITEM)SendDlgItemMessage(hTab, IDC_SCN_LIST, TVM_GETNEXTITEM, TVGN_NEXT, (LPARAM)tvi.hItem)) {
@@ -459,7 +484,7 @@ void orbiter::ScenarioTab::ScenarioChanged ()
 	case 2: // subdirectory
 		strcpy (path, pCfg->CfgDirPrm.ScnDir);
 		strcat (path, cbuf);
-		strcat (path, "\\Description.txt");
+		strcat (path, "/Description.txt");
 		ifs.open (path, ios::in);
 		pLp->EnableLaunchButton (false);
 		break;
@@ -475,9 +500,43 @@ void orbiter::ScenarioTab::ScenarioChanged ()
 					path = strtok(url_ref, ",");
 					topic = strtok(NULL, "\n");
 					if (topic)
-						sprintf(url, "its:Html\\Scenarios\\%s.chm::%s.htm", path, topic);
-					else
-						sprintf(url, "%s\\Html\\Scenarios\\%s.htm", _getcwd(url, 256), path);
+						// its: is the HTML Help protocol and is Windows-only;
+						// there is no Linux equivalent, so this branch cannot
+						// resolve here and the pane says so. Left as the
+						// reference wrote it rather than faked -- no scenario
+						// in the tree uses the two-part ",topic" form.
+						sprintf(url, "its:Html" ORB_SEP "Scenarios" ORB_SEP "%s.chm::%s.htm", path, topic);
+					else {
+						// SEPARATORS, and a buffer that aliased itself.
+						//
+						// This was `sprintf(url, "%s\\Html\\Scenarios\\%s.htm",
+						// _getcwd(url, 256), path)` -- faithful Win32 source
+						// that was never translated, the same defect as
+						// elevmgr.cpp's five sprintfs and Config::Load's
+						// trailing backslash. getcwd returns a forward-slash
+						// path on Linux and the literal then appends
+						// backslashes, so the result was
+						//
+						//   /home/racerx/orbiter-native/build-dbg\Html\Scenarios\CurrentState_img.htm
+						//
+						// which opens nothing. MEASURED: the Launchpad's
+						// description pane read "[cannot open]" followed by
+						// exactly that string, for a file that exists and is
+						// readable, on the very first screen -- including for
+						// "(Current state)", the entry the Launchpad selects
+						// by default.
+						//
+						// The cwd also goes in its OWN buffer now. Passing
+						// `_getcwd(url, 256)` as an argument to an sprintf
+						// writing into `url` makes the destination alias a
+						// source, which is undefined behaviour however the
+						// evaluation happens to be ordered.
+						char cwd[256];
+						if (_getcwd(cwd, sizeof(cwd)))
+							sprintf(url, "%s" ORB_SEP "Html" ORB_SEP "Scenarios" ORB_SEP "%s.htm", cwd, path);
+						else
+							sprintf(url, "Html" ORB_SEP "Scenarios" ORB_SEP "%s.htm", path);
+					}
 					DisplayHTMLPage(GetDlgItem(hTab, IDC_SCN_HTML), url);
 					have_info = true;
 				}
@@ -557,7 +616,7 @@ int orbiter::ScenarioTab::GetSelScenario (char *scn, int len)
 	tvi.cchTextMax = 256;
 	while (tvi.hItem = TreeView_GetParent (GetDlgItem (hTab, IDC_SCN_LIST), tvi.hItem)) {
 		if (TreeView_GetItem (GetDlgItem (hTab, IDC_SCN_LIST), &tvi)) {
-			strcat (cbuf, "\\");
+			strcat (cbuf, SCN_SEP_STR);
 			strcat (cbuf, scn);
 			strcpy (scn, cbuf);
 		}
@@ -714,7 +773,9 @@ void orbiter::ScenarioTab::OpenScenarioHelp ()
 	strncpy (str, scnhelp, 256);
 	scenario = strtok (str, ",");
 	topic = strtok (NULL, "\n");
-	sprintf(path, "html\\scenarios\\%s.chm", scenario);
+	// Forward slashes: accepted by Windows too, and the only form that works
+	// here. The %s kept this literal out of the tree-wide conversion.
+	sprintf(path, "html/scenarios/%s.chm", scenario);
 	::OpenHelp(LaunchpadWnd(), path, topic);
 }
 

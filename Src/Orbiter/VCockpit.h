@@ -113,6 +113,7 @@ private:
 
 		// mouse click area definition - currently only spherical click areas are supported
 		enum ClickMode { CMODE_NONE, CMODE_SPHERICAL, CMODE_QUAD } cmode;
+#ifdef _WIN32
 		union {
 			struct {
 				Vector cnt;   // centre of click area in local vessel coords
@@ -124,6 +125,22 @@ private:
 				float u[4], v[4];       // coefficients for transforming to local quad frame
 			};
 		};
+#else
+		// Vector has user-declared constructors, and GCC forbids such members
+		// inside an anonymous aggregate; no compiler flag relaxes it. The
+		// members are therefore laid out directly instead of overlaid.
+		//
+		// Nothing observes the overlay: cmode selects which group is valid and
+		// every access in VCockpit.cpp is inside a switch on it, the two sets
+		// are never live at once, and Area is built at runtime from vessel API
+		// calls and never written to disk. Each field keeps its name and type,
+		// so all use sites compile unchanged; the struct grows by 32 bytes.
+		Vector cnt;             // centre of click area in local vessel coords
+		double rad;             // radius of click area
+		Vector p[4];            // corner points
+		float a, b, c, d;       // coeffs for equation of plane: ax+by+cz+d = 0
+		float u[4], v[4];       // coefficients for transforming to local quad frame
+#endif
 	} **area;
 	int narea, nareabuf;
 };

@@ -2265,6 +2265,7 @@ DLLEXPORT void oapiSetMainInfoVisibilityMode (DWORD mode)
 DLLEXPORT FILEHANDLE oapiOpenFile (const char *fname, FileAccessMode mode, PathRoot root)
 {
 	char cbuf[512];
+	const char *p;
 	switch (root) {
 	case CONFIG:
 		strcpy (cbuf, g_pOrbiter->Cfg()->ConfigPathNoext (fname));
@@ -2276,13 +2277,32 @@ DLLEXPORT FILEHANDLE oapiOpenFile (const char *fname, FileAccessMode mode, PathR
 		strcpy (cbuf, g_pOrbiter->TexPath (fname));
 		break;
 	case TEXTURES2:
-		strcpy (cbuf, g_pOrbiter->HTexPath (fname));
+		// HTexPath RETURNS NULL when HightexDir is empty, and the reference
+		// strcpy's it unconditionally. `HightexDir =` with nothing after it is
+		// a line a user can write in Orbiter.cfg, and it takes the process
+		// down inside a public SDK call. Windows crashes here too -- this is
+		// upstream's own defect, not the port's -- but a null is trivially
+		// distinguishable from a path and every caller of oapiOpenFile already
+		// handles "the file did not open", so it is answered rather than
+		// dereferenced.
+		p = g_pOrbiter->HTexPath (fname);
+		if (!p) return 0;
+		strcpy (cbuf, p);
 		break;
 	case MESHES:
 		strcpy (cbuf, g_pOrbiter->MeshPath (fname));
 		break;
 	default:
+		// ROOT. The only branch that does NOT go through one of Config's path
+		// builders, so it is the only one whose separators are still the
+		// caller's. Add-ons spell subdirectories the Windows way -- the
+		// reference client's own OapiExtension.cpp:254 asks for
+		// "Sound\\version.txt" through exactly this branch -- and nothing
+		// downstream would translate it.
 		strcpy (cbuf, fname);
+#ifndef _WIN32
+		for (char *q = cbuf; *q; ++q) if (*q == '\\') *q = '/';
+#endif
 		break;
 	}
 
@@ -2571,10 +2591,22 @@ DLLEXPORT DWORD oapiDeflate (const BYTE *inp, DWORD ninp, BYTE *outp, DWORD nout
 
 DLLEXPORT DWORD oapiInflate (const BYTE *inp, DWORD ninp, BYTE *outp, DWORD noutp)
 {
+#ifdef _WIN32
 	DWORD ndata = noutp;
 	if (uncompress (outp, &ndata, inp, ninp) != Z_OK)
 		return 0;
 	return ndata;
+#else
+	// zlib's uLongf is `unsigned long`. On Windows that is 32 bits and
+	// identical to DWORD, so &ndata can be passed straight in. On LP64 Linux
+	// unsigned long is 64 bits while DWORD stays 32, so a temporary of the
+	// type zlib expects is needed; taking the address of a DWORD here would
+	// have zlib write eight bytes into four.
+	uLongf ndata = noutp;
+	if (uncompress (outp, &ndata, inp, ninp) != Z_OK)
+		return 0;
+	return (DWORD)ndata;
+#endif
 }
 
 // ------------------------------------------------------------------------------
@@ -2592,8 +2624,16 @@ DLLEXPORT void InitLib (HINSTANCE hModule)
 		// don't write during simulation, since unnecessary file access
 		// can cause time waste
 		GetModuleFileName (hModule, mname, 256);
+		// Strip the directory to leave the bare module file name.
+		//
+		// The scan tested only for a backslash, so on Linux nothing was
+		// stripped and the log recorded the whole path -- including the
+		// unresolved "Modules/Celbody/../Galsat.so" that dladdr reports --
+		// where Windows shows "Galsat.dll". Both separators are accepted now;
+		// Windows paths never contain a forward slash in this position, so
+		// its output is unchanged.
 		for (i = 0, mp = mname; mname[i]; i++)
-			if (mname[i] == '\\') mp = mname+i+1;
+			if (mname[i] == '\\' || mname[i] == '/') mp = mname+i+1;
 		sprintf (cbuf, "Module %s ", mp);
 		if ((len = strlen(cbuf)) < 30) {
 			for (i = len; i < 30; i++) cbuf[i] = '.';

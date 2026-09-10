@@ -28,6 +28,13 @@ target_include_directories(Dragonfly
 	PUBLIC ${ORBITER_SOURCE_SDK_INCLUDE_DIR}
 )
 
+# panel.rc is listed above as a source: rc.exe compiles it into the module on
+# Windows, and Linux ignores it, so every dialog it declares had no template
+# and CreateDialogParam returned NULL without a word. See
+# orbiter_module_resources in the top-level CMakeLists and
+# Src/Orbiter/Linux/ResourceRegistry.cpp.
+orbiter_module_resources(Dragonfly ${CMAKE_CURRENT_SOURCE_DIR}/panel.rc)
+
 target_link_libraries(Dragonfly
 	${ORBITER_LIB}
 	${ORBITER_SDK_LIB}

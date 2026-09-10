@@ -4,6 +4,7 @@
 #define EXPORT_IMGUI_CONTEXT
 #define OAPI_IMPLEMENTATION
 #define IMGUI_DEFINE_MATH_OPERATORS
+#include <filesystem>
 #include <stdio.h>
 #include "OrbiterAPI.h"
 #include "DlgMgr.h"
@@ -521,15 +522,72 @@ void DialogManager::InitImGui()
 	if(!gc) return;
 
 	IMGUI_CHECKVERSION();
-	ImGui::CreateContext();
-	ImPlot::CreateContext();
+
+	// Reuse an existing context rather than replacing it.
+	//
+	// On Windows this is the only place an ImGui context is made, so it
+	// always creates one. On Linux the Launchpad's UIHost has already built a
+	// context, backend and font atlas, and is drawing with it -- calling
+	// CreateContext again orphans that one and leaves the dialogs and the
+	// Launchpad on different contexts.
+	const bool haveContext = (ImGui::GetCurrentContext() != nullptr);
+	if (!haveContext) {
+		ImGui::CreateContext();
+	}
+	// WHO OWNS THE CONTEXT DECIDES WHO DESTROYS IT. The line above is careful
+	// not to create a second context; ShutdownImGui was not careful not to
+	// destroy someone else's, and the two have to agree. See the note there.
+	bOwnsImGuiContext = !haveContext;
+
+	// IMPLOT HAS A CONTEXT OF ITS OWN, AND NOTHING ELSE IN THE TREE CREATES
+	// ONE. It used to sit inside the `if (!haveContext)` above, which reads
+	// naturally -- both contexts made together -- and is wrong here for the
+	// exact reason the branch exists: on Linux `haveContext` is ALWAYS true,
+	// because UIHost builds the ImGui context for the Launchpad long before
+	// any graphics client attaches. So ImPlot::CreateContext never ran, in any
+	// session, and GImPlot stayed null.
+	//
+	// The first ImPlot call then aborted the process:
+	//
+	//   implot.cpp:3343: ImPlot::BeginSubplots(...): Assertion
+	//   `(GImPlot != nullptr) && "No current context. Did you call
+	//    ImPlot::CreateContext() or ImPlot::SetCurrentContext()?"' failed.
+	//
+	//   #9  oapi::FlightData::OnDraw   Src/Plugin/FlightData/FlightData.cpp:333
+	//   #10 ImGuiDialog::Display       DlgMgr.cpp:808
+	//   #11 DialogManager::DrawImGuiDialogs
+	//
+	// -- so opening the Flight Data Monitor, from the F4 Function menu or from
+	// its own menu-bar button, killed Orbiter every single time. It was not
+	// noticed earlier because it is the only ImPlot consumer in the tree and
+	// nothing had opened it.
+	//
+	// The two contexts are therefore tracked separately: ImPlot's is created
+	// whenever it is absent, whoever made the ImGui one.
+	if (ImPlot::GetCurrentContext() == nullptr) {
+		ImPlot::CreateContext();
+		bOwnsImPlotContext = true;
+	}
+
 	ImGuiIO& io = ImGui::GetIO();
-	// Viewports don't play nice when in full screen mode
-	if(!pOrbiter->IsFullscreen())
-		io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
-	io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
-	//io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
-	//io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+
+	// Config flags are only settable before the first frame.
+	//
+	// ImGui asserts otherwise:
+	//     "Please set ViewportsEnable before the first call to NewFrame()!"
+	// and a shared context has already drawn many frames by the time a
+	// graphics client attaches. Skipping the change is the right outcome --
+	// the flags the Launchpad set are the ones in force, and losing viewports
+	// costs nothing here because the dialogs are drawn inside the render
+	// window either way.
+	if (ImGui::GetFrameCount() == 0) {
+		// Viewports don't play nice when in full screen mode
+		if(!pOrbiter->IsFullscreen())
+			io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+		io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
+		//io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
+		//io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+	}
 
 	ImGuiSetStyle();
 
@@ -540,11 +598,39 @@ void DialogManager::InitImGui()
 	
 	const CFG_FONTPRM &prm = g_pOrbiter->Cfg()->CfgFontPrm;
 
-	defaultFont = io.Fonts->AddFontFromFileTTF(prm.ImGui_DefaultFontFile, prm.ImGui_FontSize);
-	io.Fonts->AddFontFromFileTTF("Fonts/fa-solid-900.ttf", prm.ImGui_FontSize, &icons_config);
-	consoleFont = io.Fonts->AddFontFromFileTTF(prm.ImGui_ConsoleFontFile, prm.ImGui_FontSize);
-	monoFont = io.Fonts->AddFontFromFileTTF(prm.ImGui_MonospacedFontFile, prm.ImGui_FontSize);
-	manuscriptFont = io.Fonts->AddFontFromFileTTF(prm.ImGui_ManuscriptFontFile, prm.ImGui_FontSize);
+	// A missing font file must not be fatal.
+	//
+	// AddFontFromFileTTF asserts on failure -- "Could not load font file!" --
+	// and this tree ships no Fonts/ directory at all, so the first call
+	// aborted the process the moment a graphics client was attached. Nothing
+	// caught it before because InitImGui only runs when there IS a client,
+	// and until now there never was one.
+	//
+	// Each font is checked for existence first, and ImGui's built-in font is
+	// used for any that is absent. That is a real fallback: the dialogs draw
+	// in a default face rather than not at all, and the log names what is
+	// missing so it can be installed.
+	auto loadFont = [&io](const char *path, float size,
+	                      const ImFontConfig *cfg = nullptr) -> ImFont * {
+		if (path && *path && std::filesystem::exists(path))
+			return io.Fonts->AddFontFromFileTTF(path, size, cfg);
+		if (path && *path) {
+			char msg[320];
+			snprintf(msg, sizeof(msg),
+			         "ImGui font not found: '%s' -- using the built-in face.",
+			         path);
+			oapiWriteLog(msg);
+		}
+		return io.Fonts->AddFontDefault();
+	};
+
+	defaultFont = loadFont(prm.ImGui_DefaultFontFile, prm.ImGui_FontSize);
+	if (std::filesystem::exists("Fonts/fa-solid-900.ttf"))
+		io.Fonts->AddFontFromFileTTF("Fonts/fa-solid-900.ttf",
+		                             prm.ImGui_FontSize, &icons_config);
+	consoleFont    = loadFont(prm.ImGui_ConsoleFontFile,    prm.ImGui_FontSize);
+	monoFont       = loadFont(prm.ImGui_MonospacedFontFile, prm.ImGui_FontSize);
+	manuscriptFont = loadFont(prm.ImGui_ManuscriptFontFile, prm.ImGui_FontSize);
 
 	ImGui_ImplWin32_Init(hWnd);
 	gc->clbkImGuiInit();
@@ -556,17 +642,116 @@ void DialogManager::ShutdownImGui()
 
 	gc->clbkImGuiShutdown();
 	ImGui_ImplWin32_Shutdown();
-	ImPlot::DestroyContext();
-	ImGui::DestroyContext();
+
+	// ONLY THE CONTEXT THIS OBJECT CREATED, and the asymmetry this fixes
+	// aborted every session that ever reached shutdown:
+	//
+	//   Orbiter: imgui.cpp:4455: void ImGui::Shutdown(): Assertion
+	//   `(g.IO.BackendPlatformUserData == NULL) &&
+	//    "Forgot to shutdown Platform backend?"' failed.
+	//
+	// On Windows the DialogManager makes the only ImGui context, so this
+	// destroyed what it created. On Linux the Launchpad's UIHost creates the
+	// context, the GLFW backend and the font atlas long before any graphics
+	// client attaches, and keeps drawing with them AFTER the session ends --
+	// which is why the Linux ImGui_ImplWin32_Shutdown above is a deliberate
+	// no-op (see Linux/LinuxMain.cpp). InitImGui already knew this and
+	// declines to create a second context; this line did not, and tore down
+	// the one UIHost was still using, with its platform backend still bound.
+	//
+	// It was invisible for the life of the port because nothing had ever
+	// reached a clean shutdown: the render window was created under an
+	// unregistered class, so WM_CLOSE never reached RenderWndProc and
+	// CloseSession was never called at all. Fixing that exposed this
+	// immediately.
+	// ImPlot first: its context holds references into the ImGui one, so the
+	// order is destroy-in-reverse. Its own flag, for the reason given at the
+	// matching CreateContext -- on Linux this object owns the ImPlot context
+	// and NOT the ImGui one, a combination the single flag could not express.
+	if (bOwnsImPlotContext) {
+		ImPlot::DestroyContext();
+		bOwnsImPlotContext = false;
+	}
+	if (bOwnsImGuiContext) {
+		ImGui::DestroyContext();
+		bOwnsImGuiContext = false;
+	}
 }
 
 void DialogManager::ImGuiNewFrame()
 {
 	if(!gc) return;
 
+#ifndef _WIN32
+	// THE FRAME OPENED HERE WOULD BE THROWN AWAY, SO IT IS NOT OPENED.
+	//
+	// The reference's arrangement is one ImGui frame per rendered frame, owned
+	// by this function and closed by the client a few lines later in
+	// Orbiter::Render3DEnvironment:
+	//
+	//     void D3D9Client::clbkImGuiRenderDrawData()
+	//     {
+	//         if (pDevice->BeginScene() >= 0) {
+	//             ImGui::Render();
+	//             ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
+	//             pDevice->EndScene();
+	//         }
+	//         ...
+	//
+	// A D3D9 client can do that because it owns its device and can begin a
+	// scene whenever it likes. THE VULKAN CLIENT CANNOT. UIHost's
+	// orbiter_PumpFrame owns the only command buffer that reaches the
+	// swapchain and the only vkQueuePresentKHR, and it builds its own complete
+	// ImGui frame -- NewFrame, the splash, every Win32-shim dialog, Render,
+	// submit -- around them. VulkanClient::clbkImGuiRenderDrawData has nothing
+	// to submit into and is empty.
+	//
+	// So the frame this function used to open was closed by its own EndFrame
+	// and never rendered, and EVERY ImGuiDialog IN DlgImGuiList WAS DRAWN INTO
+	// IT AND DISCARDED. That is not a performance note -- it is why the Orbit
+	// MFD's TGT button appeared to do nothing. It calls
+	// Instrument::OpenSelect_Tgt -> g_select->Open(), which sets Select::active
+	// and Select::opened; Select::OnDraw then ran here, called
+	// ImGui::OpenPopup, cleared `opened`, built the whole menu -- into the
+	// discarded frame. The same for InputBox and for every module dialog.
+	//
+	// The drawing now happens in DrawImGuiDialogs, which UIHost calls from
+	// inside the frame that is actually presented. Opening a second frame here
+	// would double-draw them, and worse: Select::OnDraw's `opened` latch is
+	// consumed by the first call, so the popup would be opened in one frame and
+	// looked for in another.
+	//
+	// gc->clbkImGuiNewFrame() is not called either, and does not need to be --
+	// VulkanClient's is empty for the same reason, and UIHost runs the renderer
+	// half of NewFrame itself.
+	return;
+#endif
+
 	gc->clbkImGuiNewFrame();
 	ImGui_ImplWin32_NewFrame();
 	ImGui::NewFrame();
+
+	DrawImGuiDialogs();
+
+	ImGui::EndFrame();
+}
+
+void DialogManager::DrawImGuiDialogs()
+{
+	// THE SAME GUARD ImGuiNewFrame OPENS WITH, and it is load-bearing.
+	//
+	// `gc` is null until a graphics client attaches, and InitImGui -- which
+	// creates the fonts RenderNotifications draws with, and the ImPlot context
+	// -- runs at the same moment. On Windows nothing could call this before
+	// then, because the only caller was ImGuiNewFrame and Render3DEnvironment
+	// only runs with a client. Here UIHost's pump calls it EVERY FRAME,
+	// including every frame of the Launchpad, so the guard has to travel with
+	// the code rather than stay at the old call site.
+	//
+	// Dropping it segfaulted the session at 4.2 s, immediately after the four
+	// "ImGui font not found" lines InitImGui prints -- i.e. on the first pump
+	// after the dialog manager existed but before it was ready.
+	if (!gc) return;
 
 	// Focus-follows-mouse: when the mouse is not over any ImGui window,
 	// clear ImGui's internal focused window. Without this, clicking an
@@ -590,8 +775,27 @@ void DialogManager::ImGuiNewFrame()
 			(*current)->Display();
 		}
 	}
+	// No EndFrame here: this function draws INTO a frame someone else opened
+	// and will close. On Windows that is ImGuiNewFrame above; on Linux it is
+	// UIHost's orbiter_PumpFrame.
+}
 
-	ImGui::EndFrame();
+// The entry point UIHost draws the core's ImGui dialogs from.
+//
+// It lives here rather than beside LinuxMain.cpp's other shims because it
+// needs DialogManager's private list and its notification renderer, and
+// because a reader looking for "who draws Select" should find the answer in
+// the file that owns it.
+//
+// Safe to call at any point in a frame and at any point in the program: no
+// Orbiter, no DialogManager and no graphics client all mean there is nothing
+// to draw. It is called every pump, including while the Launchpad is up.
+extern "C" void orbiter_DrawImGuiDialogs(void)
+{
+	if (!g_pOrbiter) return;
+	DialogManager *dlg = g_pOrbiter->DlgMgr();
+	if (!dlg) return;
+	dlg->DrawImGuiDialogs();
 }
 
 ImFont *DialogManager::GetFont(ImGuiFont f)

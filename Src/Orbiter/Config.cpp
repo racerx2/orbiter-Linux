@@ -14,6 +14,12 @@
 #include <iomanip>
 #include <string.h>
 #include <stdio.h>
+#ifndef _WIN32
+// For the case-insensitive mesh fallback in MeshPath.
+#include <filesystem>
+#include <system_error>
+#include <strings.h>
+#endif
 #include "Config.h"
 #include "Astro.h"
 #include "Log.h"
@@ -32,12 +38,12 @@ static int g_buflen = 1024;
 const bool bEchoAll_default = false;          // only echo non-default parameters
 
 CFG_DIRPRM CfgDirPrm_default = {
-	".\\Config\\",		// ConfigDir
-	".\\Meshes\\",		// MeshDir
-	".\\Textures\\",	// TextureDir
-	".\\Textures2\\",	// HightexDir
-	".\\Textures\\",	// PlanetTexDir
-	".\\Scenarios\\"	// ScnDir
+	"./Config/",		// ConfigDir
+	"./Meshes/",		// MeshDir
+	"./Textures/",	// TextureDir
+	"./Textures2/",	// HightexDir
+	"./Textures/",	// PlanetTexDir
+	"./Scenarios/"	// ScnDir
 };
 
 CFG_PHYSICSPRM CfgPhysicsPrm_default = {
@@ -100,17 +106,17 @@ CFG_VISUALPRM CfgVisualPrm_default = {
 	true,       // bUseStarDots (render background stars as pixels)
 	{2.0, 8.0, 0.1, true},	// StarPrm (bright/faint cutoff magnitude, display brightness of faintest, log mapping)
 	true,       // bUseStarImage (render background star from image)
-	"csphere\\hiptyc_2020",     // StarImagePath (path to star background image)
+	"csphere/hiptyc_2020",     // StarImagePath (path to star background image)
 	true,       // bUseBgImage (render celestial sphere background image)
-	"csphere\\milkyway_2020",   // CSphereBgPath (path to celestial background images)
+	"csphere/milkyway_2020",   // CSphereBgPath (path to celestial background images)
 	0.3,		// CSphereBgIntens (intensity of celestial sphere background image)
 	2			// ElevMode (cubic spline)
 };
 
 CFG_CAPTUREPRM CfgCapturePrm_default = {
 	0,          // Write screenshots to clipboard by default
-	"capture\\images\\0000",     // screenshot outpuf file name
-	"capture\\frames",           // output directory for frame sequence
+	"capture/images/0000",     // screenshot outpuf file name
+	"capture/frames",           // output directory for frame sequence
 	2,          // image file format (JPG)
 	7,          // image quality setting (1-10)
 	0,          // starting frame for sequence
@@ -464,6 +470,31 @@ Config::Config(char* fname)
 	Load(fname);
 }
 
+// Terminate a directory parameter read from Orbiter.cfg with a path separator.
+//
+// The Windows original tests only for a trailing backslash and appends one if
+// it is missing. On Linux that turns a perfectly good path into one that can
+// never be opened: set
+//     PlanetTexDir = /home/user/Orbiter/Textures/
+// as the Orbiter documentation tells you to when the planet textures live
+// outside the build tree, and the loader stores "/home/user/Orbiter/Textures/\"
+// and finds nothing. Accept either separator as already-terminated and append
+// the native one otherwise. The capacity check is ours: the original strcat
+// would run one byte past the end of a full 255-character buffer.
+static void TerminateDirPath (char *path, size_t cap)
+{
+	size_t len = strlen (path);
+	if (!len) return;
+	char last = path[len-1];
+	if (last == '\\' || last == '/') return;
+	if (len + 2 > cap) return;      // no room for separator + terminator
+#ifdef _WIN32
+	strcat (path, "\\");
+#else
+	strcat (path, "/");
+#endif
+}
+
 bool Config::Load(const char *fname)
 {
 	int i;
@@ -483,40 +514,34 @@ bool Config::Load(const char *fname)
 
 	// configuration directory
 	if (GetString (ifs, "ConfigDir", CfgDirPrm.ConfigDir))
-		if (CfgDirPrm.ConfigDir[strlen(CfgDirPrm.ConfigDir)-1] != '\\')
-			strcat (CfgDirPrm.ConfigDir, "\\");
+		TerminateDirPath (CfgDirPrm.ConfigDir, sizeof(CfgDirPrm.ConfigDir));
 	strcpy (cfgpath, CfgDirPrm.ConfigDir); cfglen = strlen (cfgpath);
 
 	// mesh directory
 	if (GetString (ifs, "MeshDir", CfgDirPrm.MeshDir))
-		if (CfgDirPrm.MeshDir[strlen(CfgDirPrm.MeshDir)-1] != '\\')
-			strcat (CfgDirPrm.MeshDir, "\\");
+		TerminateDirPath (CfgDirPrm.MeshDir, sizeof(CfgDirPrm.MeshDir));
 	strcpy (mshpath, CfgDirPrm.MeshDir);   mshlen = strlen (mshpath);
 
 	// texture directory
 	if (GetString (ifs, "TextureDir", CfgDirPrm.TextureDir))
-		if (CfgDirPrm.TextureDir[strlen(CfgDirPrm.TextureDir)-1] != '\\')
-			strcat (CfgDirPrm.TextureDir, "\\");
+		TerminateDirPath (CfgDirPrm.TextureDir, sizeof(CfgDirPrm.TextureDir));
 	strcpy (texpath, CfgDirPrm.TextureDir);  texlen = strlen (texpath);
 
 	// highres texture directory
 	if (GetString (ifs, "HightexDir", CfgDirPrm.HightexDir)) {
-		if (CfgDirPrm.HightexDir[strlen(CfgDirPrm.HightexDir)-1] != '\\')
-			strcat (CfgDirPrm.HightexDir, "\\");
+		TerminateDirPath (CfgDirPrm.HightexDir, sizeof(CfgDirPrm.HightexDir));
 		strcpy (htxpath, CfgDirPrm.HightexDir);  htxlen = strlen (htxpath);
 	}
 
 	// planetary texture directory
 	if (GetString(ifs, "PlanetTexDir", CfgDirPrm.PlanetTexDir)) {
-		if (CfgDirPrm.PlanetTexDir[strlen(CfgDirPrm.PlanetTexDir) - 1] != '\\')
-			strcat(CfgDirPrm.PlanetTexDir, "\\");
+		TerminateDirPath (CfgDirPrm.PlanetTexDir, sizeof(CfgDirPrm.PlanetTexDir));
 		strcpy(ptxpath, CfgDirPrm.PlanetTexDir); ptxlen = strlen(ptxpath);
 	}
 
 	// scenario directory
 	if (GetString (ifs, "ScenarioDir", CfgDirPrm.ScnDir))
-		if (CfgDirPrm.ScnDir[strlen(CfgDirPrm.ScnDir)-1] != '\\')
-			strcat (CfgDirPrm.ScnDir, "\\");
+		TerminateDirPath (CfgDirPrm.ScnDir, sizeof(CfgDirPrm.ScnDir));
 	strcpy (scnpath, CfgDirPrm.ScnDir); scnlen = strlen (scnpath);
 
 	// Device information
@@ -1387,35 +1412,369 @@ BOOL Config::Write (const char *fname) const
 	return TRUE;
 }
 
+#ifndef _WIN32
+// ===========================================================================
+// Resolve a config path that was spelled the Windows way.
+// ===========================================================================
+//
+// TWO THINGS GO WRONG, and both are in Orbiter's own data and code rather than
+// in anything this port controls.
+//
+// SEPARATORS. VectorMap::SetCBody builds its request as
+//
+//     sprintf (relpath, "%s\\data\\coast.vec", cbody->Name());
+//
+// so the join produces "./Config/Earth\data\coast.vec", which no POSIX open
+// can resolve. Config::MeshPath below already carries the identical
+// translation for the identical reason -- vessel .cfg files spell mesh
+// subdirectories with backslashes -- and its comment applies here word for
+// word: the data files are not ours to rewrite and the Windows build must keep
+// reading them unchanged, so the separator is translated at the one point
+// every lookup passes through.
+//
+// CASE. That same line asks for "data" and the directory shipped is "Data".
+// NTFS does not care; ext4 does. MeshPath's own fallback fixes the LEAF only,
+// by scanning the parent directory, and here the component that does not match
+// is a DIRECTORY -- so the walk has to run over every component of the name.
+//
+// Measured: the Map MFD drew its grid, its base markers, its vessel markers
+// and its day-side shading and NO COASTLINES, because coast.Load() opened
+// nothing and left npoly at zero, and DrawPolySet then looped zero times. A
+// file that is silently absent looks exactly like a drawing bug.
+//
+// THE PREFIX IS NEVER TOUCHED. `baselen` is the length of the ConfigDir
+// prefix that Config::Load put at the front of cfgpath, and every later call
+// writes its name at cfgpath+cfglen -- so rewriting the prefix, even to a
+// same-looking string of a different length, would corrupt every subsequent
+// lookup. The walk therefore starts from the prefix and only resolves what
+// follows it.
+//
+// The fast path is one exists() call. Only a name that does not resolve pays
+// for the walk, and one that cannot be resolved at all is handed back with its
+// separators fixed, so the caller reports "not found" exactly as before --
+// which matters, because Orbiter probes for optional config files and a miss
+// is a normal answer.
+static void ResolveConfigPath (char *path, size_t cap, size_t baselen)
+{
+	for (char *p = path + baselen; *p; ++p)
+		if (*p == '\\') *p = '/';
+
+	std::error_code ec;
+	if (std::filesystem::exists (path, ec)) return;
+
+	const std::string in (path + baselen);
+	std::string out (path, baselen);
+	size_t i = 0;
+
+	while (i < in.size()) {
+		size_t j = in.find ('/', i);
+		if (j == std::string::npos) j = in.size();
+		const std::string comp = in.substr (i, j - i);
+		i = (j < in.size()) ? j + 1 : j;
+
+		if (comp.empty()) continue;              // "//" or a trailing slash
+		if (comp == "." || comp == "..") {       // kept as written
+			if (!out.empty() && out.back() != '/') out += '/';
+			out += comp;
+			continue;
+		}
+
+		std::string cand = out;
+		if (!cand.empty() && cand.back() != '/') cand += '/';
+		const size_t leafofs = cand.size();
+		cand += comp;
+
+		ec.clear();
+		if (std::filesystem::exists (cand, ec)) { out = cand; continue; }
+
+		// Case-insensitive match among the entries of what has resolved so far.
+		ec.clear();
+		const std::string dir = out.empty() ? std::string(".") : out;
+		bool found = false;
+		for (const auto &e : std::filesystem::directory_iterator (dir, ec)) {
+			if (ec) break;
+			const std::string leaf = e.path().filename().string();
+			if (strcasecmp (leaf.c_str(), comp.c_str()) != 0) continue;
+			out = cand.substr (0, leafofs) + leaf;
+			found = true;
+			break;
+		}
+		if (!found) return;   // nothing here matches; leave the name as written
+	}
+
+	if (out.size() < cap) strcpy (path, out.c_str());
+}
+
+// ===========================================================================
+// Separator translation for the texture and scenario path builders.
+// ===========================================================================
+//
+// THE FIFTH INSTANCE OF THE SAME DEFECT CLASS, and the first one fixed before
+// it fired rather than after. The other four were found by their symptoms:
+// Config::Load appending a backslash to every directory (A4.3), elevmgr's five
+// sprintf sites making every planet a smooth sphere (A6.1), TabScenario's
+// `[cannot open]` on the Launchpad's first screen (A14.3), and VectorMap's
+// missing coastlines (A16).
+//
+// MeshPath and ConfigPath already carry this translation, each with its own
+// note; TexPath, HTexPath, PTexPath and ScnPath did not, and they are on the
+// public SDK surface:
+//
+//     oapiOpenFile (fname, mode, TEXTURES | TEXTURES2 | SCENARIOS)
+//         OrbiterAPI.cpp:2265, and Interpreter.cpp:7207 binds it into Lua as
+//         oapi.open_file, so a script can reach it too
+//     oapiGetTexturePath / Orbiter::OpenTextureFile
+//     Config::PTexPath, which elevmgr.cpp calls at five sites and
+//         GraphicsAPI.cpp at one
+//
+// A name spelled the Windows way is not hypothetical on this surface: the
+// reference client's own OapiExtension.cpp:254 does
+//
+//     oapiOpenFile ("Sound\\version.txt", FILE_IN_ZEROONFAIL, ROOT)
+//
+// and that file is part of what this port converts. Orbiter's data and its
+// add-ons are written for Windows and spell subdirectories with backslashes;
+// they are not ours to rewrite, and the Windows build must keep reading them
+// unchanged. So the separator is translated here, at the one point every
+// lookup of each kind passes through, exactly as MeshPath does it.
+//
+// ONLY FROM `ofs`. The prefix these builders put at the front is this
+// platform's own -- Config::Load ran TerminateDirPath over it -- so it has
+// nothing to translate, and starting after it keeps the rule the same as
+// ResolveConfigPath's: the prefix is never touched.
+static void NativeSeps (char *path, size_t ofs)
+{
+	if (!path) return;
+	for (char *p = path + ofs; *p; ++p)
+		if (*p == '\\') *p = '/';
+}
+#endif
+
+#ifndef _WIN32
+// ===========================================================================
+// The path-builder self-test.
+// ===========================================================================
+//
+// Run once per session from Win32Dlg.cpp's CreateDialogParam, beside the three
+// dialog-layer ones, for the reason written there: NOT from main(), because
+// the log is not open that early and the result goes nowhere. A check whose
+// output is discarded is indistinguishable from one that passed.
+//
+// WHAT IT ASSERTS AND WHY EACH PART IS NEEDED.
+//
+// The string half covers all six builders, because they do not share an
+// implementation -- TexPath, HTexPath and PTexPath each append their own
+// extension differently, ScnPath has an absolute-path early-out, and the two
+// `cbuf` overloads write into the CALLER'S buffer from a different offset.
+// Six near-identical functions is exactly the shape where five get a fix.
+//
+// The open half is the point, though: a translated string is a means, and
+// "the file opens" is the property. It is asserted THREE ways so that a
+// failure says which thing broke --
+//
+//   backslash name  -> must open   (the fix works)
+//   slash name      -> must open   (the file is there at all; without this,
+//                                   a missing texture reads as a broken fix)
+//   absent name     -> must NOT open (the open test can fail; without this,
+//                                   an fopen that always succeeded would pass)
+//
+// and the middle one is the control that the first two runs of this test would
+// have needed: `Textures/Cockpit/hud.dds` is shipped, but a check that only
+// ever opens files cannot tell a working translation from a permissive
+// filesystem.
+extern "C" void orbiter_ConfigPathSelfTest (void);
+
+static bool cpCheck (const char *what, const char *got, const char *want, int &bad)
+{
+	if (got && want && !strcmp (got, want)) return true;
+	++bad;
+	char msg[512];
+	snprintf (msg, sizeof(msg), "ConfigPath self-test: %s produced \"%s\", expected \"%s\"",
+	          what, got ? got : "(null)", want);
+	oapiWriteLog (msg);
+	return false;
+}
+
+static bool cpOpens (const char *path)
+{
+	if (!path) return false;
+	FILE *f = fopen (path, "rb");
+	if (!f) return false;
+	fclose (f);
+	return true;
+}
+
+extern "C" void orbiter_ConfigPathSelfTest (void)
+{
+	Config *cfg = g_pOrbiter ? g_pOrbiter->Cfg() : 0;
+	if (!cfg) { oapiWriteLog ((char*)"ConfigPath self-test SKIPPED: no config"); return; }
+
+	int bad = 0;
+	char cbuf[512];
+
+	// ---- the string half --------------------------------------------------
+	//
+	// Built from the live prefixes rather than hard-coded, so the test states
+	// the PROPERTY -- "the name half carries no backslash" -- instead of
+	// asserting one particular installation's directory names.
+	char want[512];
+
+	snprintf (want, sizeof(want), "%sCockpit/hud.dds", cfg->CfgDirPrm.TextureDir);
+	cpCheck ("TexPath(\"Cockpit\\\\hud\")", cfg->TexPath ("Cockpit\\hud"), want, bad);
+
+	snprintf (want, sizeof(want), "%sCockpit/hud.dds", cfg->CfgDirPrm.HightexDir);
+	cpCheck ("HTexPath(\"Cockpit\\\\hud\")", cfg->HTexPath ("Cockpit\\hud"), want, bad);
+
+	snprintf (want, sizeof(want), "%sEarth/Surf/03/000002/000005.dds",
+	          cfg->CfgDirPrm.PlanetTexDir);
+	cpCheck ("PTexPath(\"Earth\\\\Surf\\\\03\\\\000002\\\\000005\", \".dds\")",
+	         cfg->PTexPath ("Earth\\Surf\\03\\000002\\000005", ".dds"), want, bad);
+
+	snprintf (want, sizeof(want), "%sDelta-glider/DG and DG-S.scn", cfg->CfgDirPrm.ScnDir);
+	cpCheck ("ScnPath(\"Delta-glider\\\\DG and DG-S\")",
+	         cfg->ScnPath ("Delta-glider\\DG and DG-S"), want, bad);
+
+	// The two overloads that write into the caller's buffer. They take the
+	// extension WITHOUT a dot and add one, which the pointer-returning forms
+	// do not -- transcribed as the reference has it, and asserted here so the
+	// difference is recorded rather than rediscovered.
+	snprintf (want, sizeof(want), "%sCockpit/hud.dds", cfg->CfgDirPrm.TextureDir);
+	cfg->TexPath (cbuf, "Cockpit\\hud", "dds");
+	cpCheck ("TexPath(cbuf, \"Cockpit\\\\hud\", \"dds\")", cbuf, want, bad);
+
+	snprintf (want, sizeof(want), "%sEarth/Surf/03.dds", cfg->CfgDirPrm.PlanetTexDir);
+	cfg->PTexPath (cbuf, "Earth\\Surf\\03", "dds");
+	cpCheck ("PTexPath(cbuf, \"Earth\\\\Surf\\\\03\", \"dds\")", cbuf, want, bad);
+
+	// An ABSOLUTE scenario path is returned untouched, by the reference's own
+	// early-out. Asserting it here keeps a future "translate everything"
+	// simplification from quietly breaking absolute paths.
+	const char *abs = cfg->ScnPath ("/tmp/x.scn");
+	cpCheck ("ScnPath leaves an absolute path alone", abs, "/tmp/x.scn", bad);
+
+	// ---- the open half, and its two controls ------------------------------
+	const bool bBack  = cpOpens (cfg->TexPath ("Cockpit\\hud"));
+	const bool bFwd   = cpOpens (cfg->TexPath ("Cockpit/hud"));
+	const bool bAbsent = cpOpens (cfg->TexPath ("Cockpit\\zz_no_such_texture"));
+
+	if (!bFwd) {
+		// Not a failure of the translation. Say so, because the alternative is
+		// to report a working fix as broken.
+		oapiWriteLog ((char*)"ConfigPath self-test SKIPPED the open half: "
+		              "Textures/Cockpit/hud.dds is not present, so opening it "
+		              "proves nothing either way");
+	}
+	else {
+		if (!bBack) {
+			++bad;
+			oapiWriteLog ((char*)"ConfigPath self-test: a backslashed texture name did "
+			              "NOT open while the same file with forward slashes did -- "
+			              "the separator translation is not reaching TexPath");
+		}
+		if (bAbsent) {
+			++bad;
+			oapiWriteLog ((char*)"ConfigPath self-test: a name that does not exist "
+			              "OPENED. The open half cannot fail, so it proves nothing");
+		}
+	}
+
+	if (!bad)
+		oapiWriteLog ((char*)"ConfigPath self-test PASSED: all six texture and scenario "
+		              "path builders translate Windows separators, an absolute scenario "
+		              "path is left alone, and a backslashed texture name opens the same "
+		              "file a forward-slashed one does while an absent one still fails");
+	else {
+		char msg[160];
+		snprintf (msg, sizeof(msg), "ConfigPath self-test FAILED: %d check(s)", bad);
+		oapiWriteLog (msg);
+	}
+}
+#endif
+
 char *Config::ConfigPath (const char *name) const
 {
 	strcpy (cfgpath+cfglen, name);
-	return strcat (cfgpath, ".cfg");
+	strcat (cfgpath, ".cfg");
+#ifndef _WIN32
+	ResolveConfigPath (cfgpath, sizeof(cfgpath), (size_t)cfglen);
+#endif
+	return cfgpath;
 }
 
 char *Config::ConfigPathNoext (const char *name)
 {
 	strcpy (cfgpath+cfglen, name);
+#ifndef _WIN32
+	ResolveConfigPath (cfgpath, sizeof(cfgpath), (size_t)cfglen);
+#endif
 	return cfgpath;
 }
 
 char *Config::MeshPath (const char *name)
 {
 	strcpy (mshpath+mshlen, name);
+#ifndef _WIN32
+	// Mesh names come from vessel .cfg files, which spell subdirectories the
+	// Windows way -- ProjectAlpha_ISS.cfg says
+	//     MeshName = ISS\ProjectAlpha_ISS
+	// so the join produces "./Meshes/ISS\ProjectAlpha_ISS.msh", which no
+	// POSIX open can resolve. The data files are not ours to rewrite and the
+	// Windows build must keep reading them unchanged, so the separator is
+	// translated here, at the one point every mesh lookup passes through.
+	for (char *p = mshpath+mshlen; *p; ++p)
+		if (*p == '\\') *p = '/';
+	strcat (mshpath, ".msh");
+
+	// Case-insensitive fallback.
+	//
+	// Mesh names come from vessel .cfg files and scenario files, and their
+	// spelling does not always match the file on disk -- Carina.cfg asks for
+	// "carina" while the mesh shipped is Carina.msh. NTFS does not care; ext4
+	// does, and the vessel then loads with no mesh at all.
+	//
+	// Only reached when the exact name does not exist, so a correctly-cased
+	// tree pays one stat() per mesh and nothing more.
+	{
+		std::error_code ec;
+		if (!std::filesystem::exists(mshpath, ec)) {
+			const std::filesystem::path want(mshpath);
+			const std::string leaf = want.filename().string();
+			for (const auto &e :
+			     std::filesystem::directory_iterator(want.parent_path(), ec)) {
+				if (ec) break;
+				if (strcasecmp(e.path().filename().string().c_str(),
+				               leaf.c_str()) != 0) continue;
+				snprintf(mshpath, sizeof(mshpath), "%s",
+				         e.path().string().c_str());
+				break;
+			}
+		}
+	}
+	return mshpath;
+#else
 	return strcat (mshpath, ".msh");
+#endif
 }
 
 char *Config::TexPath (const char *name, const char *ext)
 {
 	strcpy (texpath+texlen, name);
-	return strcat (texpath, ext ? ext : ".dds");
+	strcat (texpath, ext ? ext : ".dds");
+#ifndef _WIN32
+	NativeSeps (texpath, (size_t)texlen);
+#endif
+	return texpath;
 }
 
 char *Config::HTexPath (const char *name, const char *ext)
 {
 	if (!htxlen) return 0;
 	strcpy (htxpath+htxlen, name);
-	return strcat (htxpath, ext ? ext : ".dds");
+	strcat (htxpath, ext ? ext : ".dds");
+#ifndef _WIN32
+	NativeSeps (htxpath, (size_t)htxlen);
+#endif
+	return htxpath;
 }
 
 char* Config::PTexPath(const char* name, const char* ext)
@@ -1423,16 +1782,35 @@ char* Config::PTexPath(const char* name, const char* ext)
 	if (!ptxlen) return 0;
 	strcpy(ptxpath + ptxlen, name);
 	if (ext) strcat(ptxpath, ext);
+#ifndef _WIN32
+	NativeSeps (ptxpath, (size_t)ptxlen);
+#endif
 	return ptxpath;
 }
 
 const char *Config::ScnPath (const char *name)
 {
+#ifdef _WIN32
 	if (name[1] == ':') { // assume full absolute path
+#else
+	// An absolute path is a leading '/', not a drive letter. The Windows test
+	// also reads name[1] unconditionally, which is past the end for an empty
+	// string; checking name[0] first avoids that.
+	if (name[0] == '/') { // assume full absolute path
+#endif
 		return name;
 	} else {
 		strcpy (scnpath+scnlen, name);
-		return strcat (scnpath, ".scn");
+		strcat (scnpath, ".scn");
+#ifndef _WIN32
+		// A scenario name is FOLDER<sep>NAME and the folder half can be
+		// spelled either way: GetSelScenario composes it with SCN_SEP, which
+		// is already '/' off Windows (checked, F), but oapiOpenFile's
+		// SCENARIOS root and Orbiter::SaveScenario take a name straight from
+		// a caller -- an add-on, a Lua script, or the command line.
+		NativeSeps (scnpath, (size_t)scnlen);
+#endif
+		return scnpath;
 	}
 }
 
@@ -1441,6 +1819,9 @@ void Config::TexPath (char *cbuf, const char *name, const char *ext)
 	strncpy (cbuf, texpath, texlen);
 	if (ext) sprintf (cbuf+texlen, "%s.%s", name, ext);
 	else     strcpy (cbuf+texlen, name);
+#ifndef _WIN32
+	NativeSeps (cbuf, (size_t)texlen);
+#endif
 }
 
 void Config::PTexPath(char* cbuf, const char* name, const char* ext)
@@ -1448,6 +1829,9 @@ void Config::PTexPath(char* cbuf, const char* name, const char* ext)
 	strncpy(cbuf, ptxpath, ptxlen);
 	if (ext) sprintf(cbuf + ptxlen, "%s.%s", name, ext);
 	else     strcpy(cbuf + ptxlen, name);
+#ifndef _WIN32
+	NativeSeps (cbuf, (size_t)ptxlen);
+#endif
 }
 
 bool Config::IsActiveModule(const std::string& name)

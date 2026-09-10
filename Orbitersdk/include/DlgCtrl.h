@@ -37,6 +37,17 @@ int oapiGetSwitchState (HWND hCtrl);
 // ==================================================================================
 // ==================================================================================
 
+// A friend declaration does not make the name visible to ordinary lookup, so
+// PropertyGroup and PropertyList are not usable as types in the member
+// declarations below without being declared first. MSVC injects friend names
+// into the enclosing scope and accepts it; GCC follows the standard.
+//
+// There is no build-flag alternative: -fpermissive does not cover name
+// injection, and -ffriend-injection was removed in GCC 8. These two forward
+// declarations are the minimum fix and are harmless on MSVC.
+class PropertyGroup;
+class PropertyList;
+
 class PropertyItem {
 	friend class PropertyGroup;
 	friend class PropertyList;

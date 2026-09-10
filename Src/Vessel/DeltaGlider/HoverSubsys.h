@@ -17,6 +17,16 @@
 #include "DGSwitches.h"
 #include <vector>
 
+// Forward declaration: this header names HoverThrottle before the class is defined
+// further down. MSVC injects the name via a friend declaration (non-standard);
+// GCC reports "'HoverThrottle' does not name a type".
+class HoverThrottle;
+
+// Forward declaration: this header names HoverHoldAltIndicator before the class is defined
+// further down. MSVC injects the name via a friend declaration (non-standard);
+// GCC reports "'HoverHoldAltIndicator' does not name a type".
+class HoverHoldAltIndicator;
+
 // ==============================================================
 // Hover control subsystem
 // ==============================================================

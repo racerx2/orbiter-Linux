@@ -109,6 +109,19 @@ inline void PinesGravProp::GenerateAssocLegendreMatrix(int maxDegree)
 
 int PinesGravProp::readGravModel(char* filename, int cutoff, int &actualLoadedTerms, int &maxModelTerms)
 {
+#ifndef _WIN32
+	// The coefficient file name is built with a Windows separator --
+	// "GravityModels\\egm96_to360.tab" -- so every gravity model failed to
+	// open and every body silently fell back to a point mass. Translated into
+	// a local copy so the caller's string, which is reused, is left alone.
+	char pathbuf[512];
+	if (filename) {
+		snprintf(pathbuf, sizeof(pathbuf), "%s", filename);
+		for (char *p = pathbuf; *p; ++p)
+			if (*p == '\\') *p = '/';
+		filename = pathbuf;
+	}
+#endif
 	FILE* gravModelFile = nullptr;
 	char gravFileLine[512];
 	bool isEOF = false;

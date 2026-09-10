@@ -33,10 +33,25 @@ target_link_libraries(${VESSEL_NAME}
 	${ORBITER_LIB}
 	${ORBITER_SDK_LIB}
 	${ORBITER_DLGCTRL_LIB}
-	UxTheme.lib
-	$<TARGET_LINKER_FILE:Atlantis_Tank>
 	imgui
 )
+
+# UxTheme is a Windows import library; its entry points come from the shim in
+# Src/Orbiter/Linux here and are bound at dlopen time.
+#
+# Atlantis_Tank is linked as a CMake TARGET on ELF. This comment used to claim
+# the reverse -- that the target form emits -lAtlantis_Tank and a full path
+# must be used. It is the FULL PATH that CMake reduces to -L/-l, and only on a
+# first configure, when the file it would read an SONAME from does not exist
+# yet. See the measured note in Atlantis_Tank/CMakeLists.txt for the whole
+# story; the same fix is applied there for its own dependency on Atlantis_SRB.
+if(WIN32)
+	target_link_libraries(${VESSEL_NAME}
+		UxTheme.lib
+		$<TARGET_LINKER_FILE:Atlantis_Tank>)
+else()
+	target_link_libraries(${VESSEL_NAME} Atlantis_Tank)
+endif()
 
 # scan mesh files for labels and output to header file
 add_custom_command(OUTPUT meshres.h

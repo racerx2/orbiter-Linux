@@ -46,6 +46,19 @@ Instrument_User::Instrument_User (Pane *_pane, INT_PTR _id, const Spec &spec, Ve
 	mfd = (MFD*)msgproc (OAPI_MSG_MFD_OPENEDEX, _id, (WPARAM)&ospec, (LPARAM)vessel->GetModuleInterface());
 	if (!mfd)
 		mfd = (MFD*)msgproc (OAPI_MSG_MFD_OPENED, _id, MAKEWPARAM(IW, IH), (LPARAM)vessel->GetModuleInterface());
+
+	// A MODULE THAT DECLINES TO OPEN ITS MFD RETURNS 0, AND THE FIVE LINES
+	// BELOW DEREFERENCE THE RESULT UNCHECKED. See the note in ReadParams.
+	if (!mfd) {
+		LOGOUT_ERR("MFD mode \"%s\" returned no instrument from its message "
+		           "handler. The mode is left blank rather than opened.",
+		           name ? name : "<unnamed>");
+		mfd2 = 0;
+		use_skp_interface = false;
+		AllocSurface (IW, IH);
+		return;
+	}
+
 	try {
 		mfd2 = dynamic_cast<MFD2*>(mfd); // will return 0 if not an MFD2 instance
 	}
@@ -113,6 +126,50 @@ bool Instrument_User::ReadParams (ifstream &ifs)
 	mfd = (MFD*)msgproc (OAPI_MSG_MFD_OPENEDEX, id, (WPARAM)&ospec, (LPARAM)vessel->GetModuleInterface());
 	if (!mfd)
 		mfd = (MFD*)msgproc (OAPI_MSG_MFD_OPENED, id, MAKEWPARAM(IW, IH), (LPARAM)vessel->GetModuleInterface());
+
+	// ===================================================================
+	// A DIVERGENCE FROM THE REFERENCE, AND IT IS A CRASH.
+	// ===================================================================
+	//
+	// `mfd` is whatever the MODULE's message handler returned, and returning
+	// 0 is how a module declines to open a mode -- the reference's own
+	// two-step above says so: it only falls back to OAPI_MSG_MFD_OPENED
+	// because a module that does not implement OAPI_MSG_MFD_OPENEDEX returns
+	// 0 for it. If the second call also returns 0, the five lines below
+	// dereference a null pointer, and the scenario dies before the render
+	// window exists.
+	//
+	// Measured, not argued: with LuaMFD's handler forced to return 0,
+	//
+	//   #0  Instrument_User::ReadParams   MfdUser.cpp:122   (mfd->instr = this)
+	//   #1  Instrument::Create            Mfd.cpp:129
+	//   #2  Pane::OpenMFD                 Pane.cpp:882
+	//   #3  Pane::Read                    Pane.cpp:1220
+	//   #4  Pane::InitState               Pane.cpp:1204
+	//   #5  Orbiter::CreateRenderWindow   Orbiter.cpp:898
+	//
+	// -- frames 1 to 5 identical to the fault this port recorded against
+	// `Delta-glider/Atmospheric autopilot`, whose own frame 0 was inside
+	// __dynamic_cast, i.e. the same unguarded region reached with a non-null
+	// bad pointer instead of a null one.
+	//
+	// THE REFERENCE ALREADY KNOWS `mfd` CAN BE NULL: MfdUser.h guards
+	// BtnMenu with `(mfd ? mfd->ButtonMenu (menu) : 0)` and leaves the four
+	// forwarders beside it unguarded. This completes that guard rather than
+	// inventing one.
+	//
+	// Returning false is the graceful path the caller was already written
+	// for: Instrument::Create does `delete instr; instr = 0;` on a false
+	// return, so the MFD slot is simply left empty.
+	if (!mfd) {
+		LOGOUT_ERR("MFD mode \"%s\" returned no instrument from its message "
+		           "handler. The mode is not opened.", spec->name ? spec->name : "<unnamed>");
+		mfd2 = 0;
+		name = 0;
+		use_skp_interface = false;
+		return false;
+	}
+
 	try {
 		mfd2 = dynamic_cast<MFD2*>(mfd); // will return 0 if not an MFD2 instance
 	}

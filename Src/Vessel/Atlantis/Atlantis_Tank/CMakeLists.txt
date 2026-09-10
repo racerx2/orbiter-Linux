@@ -26,8 +26,36 @@ target_include_directories(${VESSEL_NAME}
 target_link_libraries(${VESSEL_NAME}
 	${ORBITER_LIB}
 	${ORBITER_SDK_LIB}
-	$<TARGET_LINKER_FILE:Atlantis_SRB>
 )
+
+# Atlantis_SRB is linked as a CMake TARGET on ELF, not by full path.
+#
+# THIS COMMENT USED TO SAY THE OPPOSITE, and the opposite is what broke every
+# first configure of a fresh build directory. The measured behaviour, from an
+# isolated two-target project built both ways:
+#
+#   full path -> -L<dir> -lAtlantis_SRB   (searches for libAtlantis_SRB.so)
+#   target    -> Modules/Atlantis_SRB.so  (records NEEDED [Atlantis_SRB.so])
+#
+# CMake reduces a full-path link item to -L/-l when it cannot read an SONAME
+# out of the file (cmComputeLinkInformation::CheckSharedLibNoSOName), and on a
+# first configure the file does not exist yet. The module is deliberately
+# Atlantis_SRB.so with no prefix -- Orbiter refers to modules by bare name --
+# so the reconstructed -l cannot resolve:
+#     cannot find -lAtlantis_SRB: No such file or directory
+# The full path only ever worked because the file already existed from an
+# earlier build, so a second cmake run repaired it and no established build
+# directory ever showed the fault. Same fix applied to Vsop87, Galsat, Satsat
+# and LuaInterpreter.
+#
+# The target form also supplies the build-order edge, so add_dependencies is no
+# longer needed for it (the one at the bottom of this file already names it).
+# The rpath set at the top level lets the loader find it at run time.
+if(WIN32)
+	target_link_libraries(${VESSEL_NAME} $<TARGET_LINKER_FILE:Atlantis_SRB>)
+else()
+	target_link_libraries(${VESSEL_NAME} Atlantis_SRB)
+endif()
 
 add_custom_command(
 	TARGET ${VESSEL_NAME} PRE_BUILD

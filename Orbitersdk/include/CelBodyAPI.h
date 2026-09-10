@@ -376,6 +376,14 @@ protected:
 */
 // ======================================================================
 
+// A friend declaration does not introduce the name for ordinary lookup, so
+// ATMOSPHERE is not usable as a return type in GetAtmosphere() below without
+// being declared first. MSVC injects friend names and accepts it; GCC follows
+// the standard, and no compiler flag relaxes this (-fpermissive does not cover
+// name injection and -ffriend-injection was removed in GCC 8). Harmless on
+// MSVC, which sees a redundant forward declaration.
+class ATMOSPHERE;
+
 class OAPIFUNC CELBODY2: public CELBODY {
 	friend class ATMOSPHERE;
 

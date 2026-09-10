@@ -5,6 +5,16 @@ set(ATM_TARGET EarthAtmNRLMSISE00)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${ORBITER_BINARY_CELBODY_DIR}/${CELBODY}/Atmosphere)
 
+
+# See the note in Src/Plugin/CMakeLists.txt: on ELF a shared object is a
+# LIBRARY artifact, so the runtime directory alone does not place it, and the
+# lib prefix must be cleared because Orbiter names modules bare.
+if(NOT WIN32)
+	set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${ORBITER_BINARY_CELBODY_DIR}/${CELBODY}/Atmosphere)
+	set(CMAKE_SHARED_LIBRARY_PREFIX "")
+	set(CMAKE_SHARED_MODULE_PREFIX "")
+endif()
+
 add_library(${ATM_TARGET} SHARED
 	EarthAtmNRLMSISE00.cpp
 	nrlmsise-00.c

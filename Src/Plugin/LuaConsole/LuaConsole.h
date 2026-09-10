@@ -12,6 +12,14 @@
 #define NLINE 100 // number of buffered lines
 
 class LuaConsoleDlg;
+
+// A friend declaration alone does not introduce a name at namespace scope --
+// it is only findable by argument-dependent lookup. MSVC injects it anyway, as
+// a non-conforming extension, which is why LuaConsole.cpp can write
+//     ConsoleConfig *g_Config = NULL;
+// at file scope there. Standard C++ needs the real declaration.
+class ConsoleConfig;
+
 enum class LineType {
 	LUA_IN,
 	LUA_OUT,

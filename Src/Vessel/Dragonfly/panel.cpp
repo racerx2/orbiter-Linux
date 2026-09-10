@@ -3,7 +3,9 @@
 
 #include "panel.h"
 #include <windows.h>
-#include < GL\gl.h >
+// Forward slashes: "GL\gl.h" is MSVC-only, the backslash is an escape to any
+// conforming preprocessor. See instruments.cpp, same fix.
+#include <GL/gl.h>
 #include <math.h>
 #include <stdio.h>
 #include "orbitersdk.h"

@@ -68,8 +68,13 @@ void DlgCapture::OnDraw() {
 void DlgCapture::AutoIncrement (char *cbuf)
 {
 	int i, count, len = strlen(cbuf);
+	// Both separators. This finds the numeric tail after the last one and
+	// bumps it, and the default it is given is "capture/images/0000" -- a
+	// forward slash. Scanning only for a backslash left i at 0, so the sscanf
+	// below ran on "capture/images/0000", converted nothing, and the counter
+	// never advanced: every screenshot overwrote the previous one.
 	for (i = len; i > 0; i--)
-		if (cbuf[i-1] == '\\') break;
+		if (cbuf[i-1] == '\\' || cbuf[i-1] == '/') break;
 	if (sscanf (cbuf+i, "%d", &count) == 1) {
 		int w = len-i;
 		sprintf (cbuf+i, "%0*d", w, count+1);

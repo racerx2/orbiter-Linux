@@ -23,6 +23,11 @@
 #include <assert.h>
 #include <xmmintrin.h>
 
+// FVECTOR4 and FMATRIX4 are 16-byte aligned for SSE. __declspec(align(16)) is
+// MSVC-only spelling; alignas(16) is standard C++11 and accepted by MSVC too,
+// so both compilers take the same definition.
+#define ORB_ALIGN16 alignas(16)
+
 #if defined(_MSC_VER) && (_MSC_VER < 1920 ) // Microsoft Visual Studio Version 2017 and lower
 #include <algorithm>
 #endif
@@ -359,7 +364,7 @@ namespace oapi {
 	* \brief 32-bit floating point 4D vector type.
 	* \note This structure is compatible with the D3DXVECTOR4 type.
 	*/
-	typedef union __declspec(align(16)) FVECTOR4
+	typedef union ORB_ALIGN16 FVECTOR4
 	{
 		DWORD dword_abgr() const
 		{
@@ -596,6 +601,15 @@ namespace oapi {
 			bottom = x.bottom;
 		}
 
+		// DECLARED BECAUSE THE COPY CONSTRUCTOR ABOVE IS. A user-declared
+		// copy constructor makes the implicit copy ASSIGNMENT deprecated
+		// ([depr.impldec]), so `a = b` on a DRECT is a -Wdeprecated-copy
+		// under GCC's -Wextra; MSVC has no equivalent and the Windows build
+		// is silent about it. `= default` restores exactly the member-wise
+		// assignment that was already happening -- gcConst.cpp's ScanScreen
+		// is the call site that reports it.
+		DRECT& operator= (const DRECT& x) = default;
+
 		VECTOR4 vec;
 
 		struct {
@@ -608,7 +622,7 @@ namespace oapi {
 	* \brief Float-valued 4x4 matrix.
 	* \note This structure is compatible with the D3DXMATRIX.
 	*/
-	typedef union __declspec(align(16)) FMATRIX4
+	typedef union ORB_ALIGN16 FMATRIX4
 	{
 		FMATRIX4() {
 			m11 = m12 = m13, m14 = m21 = m22 = m23 = m24 = m31 = m32 = m33 = m34 = m41 = m42 = m43 = m44 = 0;
@@ -657,6 +671,21 @@ namespace oapi {
 
 		void _swap(float& a, float& b) { float c = a; a = b; b = c; }
 
+		// Row assignment by index: 0 = _x, 1 = _y, 2 = _z, 3 = _p.
+		//
+		// The _x/_y/_z/_p view below is an anonymous struct of FVECTOR4, which
+		// GCC will not accept inside a union because FVECTOR4 has
+		// user-declared constructors -- so on non-Windows builds that view
+		// does not exist. This names the same storage and is available
+		// everywhere, which is what DrawOrbits uses.
+		void SetRow(int i, const FVECTOR4& v)
+		{
+			data[i * 4 + 0] = v.x;
+			data[i * 4 + 1] = v.y;
+			data[i * 4 + 2] = v.z;
+			data[i * 4 + 3] = v.w;
+		}
+
 		void Transpose()
 		{
 			_swap(m12, m21); _swap(m13, m31);
@@ -665,7 +694,17 @@ namespace oapi {
 		}
 
 		float data[16];
+		// The vector view of the matrix, used as mat._x = FVECTOR4(...).
+		//
+		// GCC rejects a member with a constructor inside an ANONYMOUS
+		// aggregate, and FVECTOR4 has user-declared constructors -- so this
+		// view is only available on the Windows build. Callers that need it
+		// elsewhere write the m** fields directly, which name the same
+		// storage; see DrawOrbits/Draw.cpp. Union size is unaffected either
+		// way: 4 x FVECTOR4 is the same 64 bytes as data[16].
+#ifdef _WIN32
 		struct { FVECTOR4 _x, _y, _z, _p; };
+#endif
 		struct { float m11, m12, m13, m14, m21, m22, m23, m24, m31, m32, m33, m34, m41, m42, m43, m44; };
 	} FMATRIX4;
 

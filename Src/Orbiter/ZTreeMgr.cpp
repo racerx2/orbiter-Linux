@@ -5,6 +5,40 @@
 #include "zlib.h"
 #include "util.h"
 
+// THE PATH SEPARATOR IN OpenArchive, and why this one survived.
+//
+// The line was `sprintf (fname, "%s\\Archive\\%s.tree", ...)`. A backslash is
+// a legal filename character on Linux, so the fopen does not fail loudly: it
+// asks for one file literally named `Earth\Archive\Elev.tree`, gets ENOENT,
+// and OpenArchive returns false. CreateFromFile then deletes the manager and
+// hands back null, which is exactly what it does for a planet that simply has
+// no archive -- so a broken path and an absent file are indistinguishable at
+// every call site.
+//
+// That is the whole reason this instance was missed while the other four
+// (Config.cpp, elevmgr.cpp, TabScenario.cpp, VectorMap.cpp) were found, and
+// why the graphics client's own copy of this file was converted -- see
+// OVP/VulkanClient/ZTreeMgr.cpp, whose comment calls itself the fourth
+// instance -- while the core's copy was not: no planet in this installation
+// ships an Archive directory, so nothing has ever exercised it.
+//
+// What it costs when it is exercised: ElevationManager's constructor asks for
+// LAYER_ELEV and LAYER_ELEVMOD through CreateFromFile, so a planet whose
+// elevation is packed rather than loose gets treeMgr[0] == 0 and every
+// Elevation() query falls back to datum. That is the same failure the
+// ORB_SEP note in elevmgr.cpp describes -- the PHYSICS believing the planet
+// is a smooth sphere while the graphics client, which builds its own paths
+// and now has them right, draws the real terrain.
+//
+// Only the separators are resolved: `Archive` and the six layer names are the
+// directory and file names the format defines, and they are the same on both
+// platforms.
+#ifdef _WIN32
+#define ORB_SEP "\\"
+#else
+#define ORB_SEP "/"
+#endif
+
 // =======================================================================
 // File header for compressed tree files
 
@@ -123,7 +157,7 @@ bool ZTreeMgr::OpenArchive()
 {
 	const char *name[6] = { "Surf", "Mask", "Elev", "Elev_mod", "Label", "Cloud" };
 	char fname[256];
-	sprintf (fname, "%s\\Archive\\%s.tree", path, name[layer]);
+	sprintf (fname, "%s" ORB_SEP "Archive" ORB_SEP "%s.tree", path, name[layer]);
 	treef = fopen(fname, "rb");
 	if (!treef) return false;
 
@@ -203,10 +237,20 @@ DWORD ZTreeMgr::ReadData(DWORD idx, BYTE **outp)
 
 DWORD ZTreeMgr::Inflate(const BYTE *inp, DWORD ninp, BYTE *outp, DWORD noutp)
 {
+#ifdef _WIN32
 	DWORD ndata = noutp;
 	if (uncompress (outp, &ndata, inp, ninp) != Z_OK)
 		return 0;
 	return ndata;
+#else
+	// zlib's uLongf is `unsigned long`: 32 bits on Windows and identical to
+	// DWORD, 64 bits on LP64 Linux. Passing a DWORD* here would have zlib
+	// write eight bytes into four, so a correctly typed temporary is used.
+	uLongf ndata = noutp;
+	if (uncompress (outp, &ndata, inp, ninp) != Z_OK)
+		return 0;
+	return (DWORD)ndata;
+#endif
 }
 
 // -----------------------------------------------------------------------

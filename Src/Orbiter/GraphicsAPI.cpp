@@ -18,6 +18,9 @@
 #include "resource.h"
 #include <wincodec.h>
 #include <filesystem>
+#ifndef _WIN32
+#include <strings.h>   // strcasecmp, for the texture fallback
+#endif
 namespace fs = std::filesystem;
 
 using std::min;
@@ -25,6 +28,15 @@ using std::min;
 extern Orbiter *g_pOrbiter;
 extern PlanetarySystem *g_psys;
 extern Pane *g_pane;
+
+// g_strAppTitle is defined at global scope in Orbiter.cpp. The block-scope
+// `extern` further down sits inside a member function of a class in namespace
+// oapi, and a block-scope extern declaration names an entity in the innermost
+// enclosing namespace -- so on its own it would declare oapi::g_strAppTitle,
+// which nothing defines. Declaring it here at file scope means unqualified
+// lookup finds this one first and binds to the global. MSVC resolves the
+// block-scope form to the global anyway, so this changes nothing there.
+extern const TCHAR *g_strAppTitle;
 
 using namespace oapi;
 
@@ -175,8 +187,59 @@ ScreenAnnotation *GraphicsClient::clbkCreateAnnotation ()
 
 // ======================================================================
 
+#ifndef _WIN32
+// Case-insensitive fallback for a texture file.
+//
+// Mesh files name their textures in whatever case the author used, and it
+// routinely disagrees with the file on disk: the Delta Glider asks for
+// 036METAL.dds while the shipped file is 036Metal.dds. NTFS does not care;
+// ext4 does, and 175 of the Delta Glider's 231 texture loads failed on this
+// alone -- every model rendered untextured as a result.
+//
+// The same class of mismatch is already handled for vessel configs, meshes,
+// scripts and surface bases. Only reached after the exact name has failed, so
+// a correctly-cased tree pays one directory scan per genuinely missing file.
+static bool findCaseInsensitive(const std::string &dir, const char *fname,
+                                char *path)
+{
+	// fname may itself contain a subdirectory -- "DG/DGIP_01.dds" -- so the
+	// scan has to happen in that subdirectory, not the texture root. The
+	// directory part is taken as given; only the leaf is matched loosely,
+	// which is where the mismatches actually occur.
+	fs::path rel(fname);
+	fs::path searchDir = fs::path(dir) / rel.parent_path();
+	const std::string leafWanted = rel.filename().string();
+
+	std::error_code ec;
+	for (const auto &e : fs::directory_iterator(searchDir, ec)) {
+		if (ec) return false;
+		const std::string leaf = e.path().filename().string();
+		if (strcasecmp(leaf.c_str(), leafWanted.c_str()) == 0) {
+			strcpy(path, e.path().string().c_str());
+			return true;
+		}
+	}
+	return false;
+}
+#endif
+
 bool GraphicsClient::TexturePath (const char *fname, char *path) const
 {
+#ifndef _WIN32
+	// Mesh files name textures in subdirectories the Windows way --
+	// "DG\\DGIP_01.dds" -- so the join produces a path no POSIX open can
+	// resolve. The .msh files are data shared with the Windows build and are
+	// not ours to rewrite, so the separator is translated on the way in.
+	char fixed[512];
+	{
+		size_t i = 0;
+		for (; fname[i] && i + 1 < sizeof(fixed); ++i)
+			fixed[i] = (fname[i] == '\\') ? '/' : fname[i];
+		fixed[i] = '\0';
+		fname = fixed;
+	}
+#endif
+
 	// first try htex directory
 	strcpy (path, g_pOrbiter->Cfg()->CfgDirPrm.HightexDir);
 	strcat (path, fname);
@@ -187,6 +250,14 @@ bool GraphicsClient::TexturePath (const char *fname, char *path) const
 	strcat (path, fname);
 
 	if (fs::exists(path)) return true;
+
+#ifndef _WIN32
+	// Neither exact name exists; retry ignoring case. See above.
+	if (findCaseInsensitive(g_pOrbiter->Cfg()->CfgDirPrm.HightexDir, fname, path))
+		return true;
+	if (findCaseInsensitive(g_pOrbiter->Cfg()->CfgDirPrm.TextureDir, fname, path))
+		return true;
+#endif
 
 	return false;
 }
@@ -656,7 +727,11 @@ HWND GraphicsClient::InitRenderWnd (HWND hWnd)
 	// store class instance with window for access in the message handler
 
 	char title[256], cbuf[128];
-	extern const TCHAR *g_strAppTitle;
+	// The extern declaration that stood here named oapi::g_strAppTitle rather
+	// than the global: this function is a member of a class in namespace oapi,
+	// and a block-scope extern declares into the innermost enclosing
+	// namespace. The file-scope declaration near the top of this file supplies
+	// the correct binding, so no local declaration is needed.
 	strcpy (title, g_strAppTitle);
 	GetWindowText (hWnd, cbuf, 128);
 	if (cbuf[0]) {

@@ -43,6 +43,12 @@ typedef void (*OPC_Proc)(void);
 // Name: class Orbiter
 // Desc: Main application class
 //-----------------------------------------------------------------------------
+// Friend declarations do not introduce these names for ordinary lookup, so
+// they are declared here for the member declarations below. See CelBodyAPI.h
+// for the full rationale; harmless on MSVC.
+class ScriptInterface;
+class OrbiterGraphics;
+
 class Orbiter {
 	friend class ScriptInterface;
 	friend class oapi::GraphicsClient;
@@ -263,6 +269,18 @@ public:
 
 	int RegisterMenuCmd (const char *label, const char *imagepath, CustomFunc func, void *context = NULL);
 	void UnregisterMenuCmd (int cmdId);
+
+	// Menu-bar access for the scripted UI driver (Linux/UiDriver.cpp).
+	//
+	// The bar's buttons -- Ship, Camera, Function, Options, Map ... -- are the
+	// only way to open most of the core dialogs, and they are ImGui widgets:
+	// an injected pointer reaches them as hover but never as a press on this
+	// desk, so no test could open Options or Custom functions at all. These
+	// invoke the registered callback directly, which is exactly what the
+	// bar's own click handler does. Mirrors DlgFunction::CmdCount/Label/Run.
+	int         MenuCmdCount () const;
+	const char *MenuCmdLabel (int i) const;
+	bool        MenuCmdRun (int i);
 
 	MeshManager     meshmanager;    // global mesh manager
 

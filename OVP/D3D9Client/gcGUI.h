@@ -40,6 +40,13 @@ namespace gcGUI
 
 typedef void * HNODE;
 
+// A friend declaration does not introduce a name at namespace scope -- it is
+// only findable by argument-dependent lookup. MSVC injects it anyway, as a
+// non-conforming extension, which is why the friend declaration inside
+// gcGUIBase is enough there for gcGUIApp to be usable as a parameter type
+// below. Standard C++ needs the real declaration.
+class gcGUIApp;
+
 class gcGUIBase
 {
 	friend class gcGUIApp;

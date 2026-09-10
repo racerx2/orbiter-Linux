@@ -13,6 +13,13 @@ target_include_directories(LaunchpadParamTemplate
 	PUBLIC ${ORBITER_SOURCE_SDK_INCLUDE_DIR}
 )
 
+# LParam.rc is listed above as a source: rc.exe compiles it into the module on
+# Windows, and Linux ignores it, so its Launchpad parameter page had no
+# template and CreateDialogParam returned NULL without a word. See
+# orbiter_module_resources in the top-level CMakeLists and
+# Src/Orbiter/Linux/ResourceRegistry.cpp.
+orbiter_module_resources(LaunchpadParamTemplate ${CMAKE_CURRENT_SOURCE_DIR}/LParam.rc)
+
 target_link_libraries(LaunchpadParamTemplate
 	${ORBITER_LIB}
 	${ORBITER_SDK_LIB}

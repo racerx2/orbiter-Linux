@@ -8,6 +8,22 @@
 #include <Shlwapi.h>
 #include <zlib.h>
 
+// Every path in this file is built with a literal backslash, which on Linux
+// becomes part of the file name rather than a separator: the whole tool then
+// looks at one nonexistent file after another and writes an archive with no
+// nodes in it.
+//
+// The same defect class was fixed four times over in the core -- Config.cpp,
+// elevmgr.cpp, TabScenario.cpp and VectorMap.cpp -- and this follows the
+// convention those settled on: a token-pasted string literal, so the sprintf
+// formats stay single literals and read the same as the originals, and the
+// Windows build is unchanged character for character.
+#ifdef _WIN32
+#define ORB_SEP "\\"
+#else
+#define ORB_SEP "/"
+#endif
+
 #define TREE_DEFLATE 1
 
 //==============================================================================
@@ -69,7 +85,7 @@ private:
 MemTree::MemTree(const char *rootpath, const char *layer)
 {
 	root1 = root2 = root3 = root4[0] = root4[1] = 0;
-	sprintf(path, "%s\\%s", rootpath, layer);
+	sprintf(path, "%s" ORB_SEP "%s", rootpath, layer);
 	if (!stricmp(layer, "Surf"))
 		strcpy(ext, "dds");
 	else if (!stricmp(layer, "Mask"))
@@ -120,10 +136,10 @@ void MemTree::AddLevels(int minlvl, int maxlvl)
 void MemTree::AddLevel(int lvl)
 {
 	char lvlpath[256];
-	sprintf(lvlpath, "%s\\%02d", path, lvl);
+	sprintf(lvlpath, "%s" ORB_SEP "%02d", path, lvl);
 	if (PathFileExists(lvlpath)) {
 		WIN32_FIND_DATA fdata, fdata2;
-		strcat(lvlpath, "\\*");
+		strcat(lvlpath, ORB_SEP "*");
 		HANDLE h = FindFirstFile(lvlpath, &fdata);
 		BOOL ok = (h != INVALID_HANDLE_VALUE);
 		while (ok) {
@@ -135,7 +151,7 @@ void MemTree::AddLevel(int lvl)
 				sscanf(fdata.cFileName, "%d", &ilat);
 				char latpath[256];
 				strcpy(latpath, lvlpath); strcpy(latpath+strlen(latpath)-1, fdata.cFileName);
-				strcat(latpath, "\\*."); strcat(latpath, ext);
+				strcat(latpath, ORB_SEP "*."); strcat(latpath, ext);
 				HANDLE h2 = FindFirstFile(latpath, &fdata2);
 				BOOL ok2 = (h2 != INVALID_HANDLE_VALUE);
 				while (ok2) {
@@ -402,7 +418,7 @@ int TreeTOC::AddSubtree(const MemTreeNode *node)
 			char path[256];
 			LARGE_INTEGER sz;
 			DWORD ndata;
-			sprintf(path, "%s\\%s\\%02d\\%06d\\%06d.%s", root, layer, lvl, ilat, ilng, ext);
+			sprintf(path, "%s" ORB_SEP "%s" ORB_SEP "%02d" ORB_SEP "%06d" ORB_SEP "%06d.%s", root, layer, lvl, ilat, ilng, ext);
 			HANDLE hFile = CreateFile(path, GENERIC_READ, 0, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 			GetFileSizeEx(hFile, &sz);
 			if (sz.LowPart > nbuf) { // grow data buffer
@@ -503,7 +519,7 @@ void TreeTOC::WriteSubtreeData(const MemTreeNode *node, FILE *f)
 			char path[256];
 			LARGE_INTEGER sz;
 			DWORD ndata;
-			sprintf(path, "%s\\%s\\%02d\\%06d\\%06d.%s", root, layer, lvl, ilat, ilng, ext);
+			sprintf(path, "%s" ORB_SEP "%s" ORB_SEP "%02d" ORB_SEP "%06d" ORB_SEP "%06d.%s", root, layer, lvl, ilat, ilng, ext);
 			HANDLE hFile = CreateFile(path, GENERIC_READ, 0, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 			GetFileSizeEx(hFile, &sz);
 			if (sz.LowPart > nbuf) { // grow data buffer
@@ -569,13 +585,13 @@ void TreeTOC::ExtractSubtreeData (DWORD idx, int lvl, int ilat, int ilng, FILE *
 	inflate_node_data(zbuf, zsize, ebuf, esize);
 
 	char fname[256];
-	sprintf (fname, "%s\\%s", root, layer);
+	sprintf (fname, "%s" ORB_SEP "%s", root, layer);
 	_mkdir(fname);
-	sprintf (fname+strlen(fname), "\\%02d", lvl);
+	sprintf (fname+strlen(fname), ORB_SEP "%02d", lvl);
 	_mkdir(fname);
-	sprintf (fname+strlen(fname), "\\%06d", ilat);
+	sprintf (fname+strlen(fname), ORB_SEP "%06d", ilat);
 	_mkdir(fname);
-	sprintf (fname+strlen(fname), "\\%06d.%s", ilng, ext);
+	sprintf (fname+strlen(fname), ORB_SEP "%06d.%s", ilng, ext);
 	std::cout << "inflating " << fname << std::endl;
 	FILE *fout = fopen(fname, "wb");
 	::fwrite(ebuf, esize, 1, fout);
@@ -608,7 +624,11 @@ int main(int narg, char *arg[])
 		std::cerr << "\nUsage: texpack <Planet-tree-root> <Layer> [<Flags>]" << std::endl;
 		std::cerr << "\n<Planet-tree-root>:" << std::endl;
 		std::cerr << "  Path to planet textures, e.g." << std::endl;
+#ifdef _WIN32
 		std::cerr << "  c:\\Orbiter\\Textures\\Earth" << std::endl;
+#else
+		std::cerr << "  ./Textures/Earth" << std::endl;
+#endif
 		std::cerr << "\n<Layer>:" << std::endl;
 		std::cerr << "  Surf     pack surface layer tiles" << std::endl;
 		std::cerr << "  Mask     pack water mask and night light texture tiles" << std::endl;
@@ -655,9 +675,9 @@ int main(int narg, char *arg[])
 		TreeTOC toc(root, layer, &tree);
 
 		char outf[256];
-		sprintf(outf, "%s\\Archive", root);
+		sprintf(outf, "%s" ORB_SEP "Archive", root);
 		_mkdir(outf);
-		sprintf(outf+strlen(outf), "\\%s.tree", layer);
+		sprintf(outf+strlen(outf), ORB_SEP "%s.tree", layer);
 		FILE *f = fopen(outf, "wb");
 
 		// write table of contents
@@ -674,7 +694,7 @@ int main(int narg, char *arg[])
 
 		TreeTOC toc(root, layer);
 		char fname[256];
-		sprintf(fname, "%s\\Archive\\%s.tree", root, layer);
+		sprintf(fname, "%s" ORB_SEP "Archive" ORB_SEP "%s.tree", root, layer);
 		FILE *f = fopen(fname, "rb");
 		toc.fread(f);
 		toc.ExtractData(f, maxlevel);
@@ -691,7 +711,7 @@ int main(int narg, char *arg[])
 bool exist_file(const char *root, const char *layer, const char *ext, int lvl, int ilat, int ilng)
 {
 	char path[256];
-	sprintf(path, "%s\\%s\\%02d\\%06d\\%06d.%s", root, layer, lvl, ilat, ilng, ext);
+	sprintf(path, "%s" ORB_SEP "%s" ORB_SEP "%02d" ORB_SEP "%06d" ORB_SEP "%06d.%s", root, layer, lvl, ilat, ilng, ext);
 	return PathFileExists(path) == TRUE;
 }
 
@@ -726,9 +746,23 @@ DWORD deflate_node_data(BYTE *inp, DWORD ninp, BYTE *outp, DWORD noutp)
 
 DWORD inflate_node_data(BYTE *inp, DWORD ninp, BYTE *outp, DWORD noutp)
 {
+#ifdef _WIN32
 	DWORD ndata = noutp;
 	if (uncompress(outp, &ndata, inp, ninp) != Z_OK)
 		return 0;
+#else
+	// zlib's uLongf is `unsigned long`: 32 bits on Windows and identical to
+	// DWORD, 64 bits on LP64 Linux. Passing a DWORD* here would have zlib
+	// write eight bytes into four, so a correctly typed temporary is used.
+	//
+	// Same shape as the fix already carried by ZTreeMgr::Inflate in
+	// Src/Orbiter/ZTreeMgr.cpp, which is this function's counterpart on the
+	// reading side.
+	uLongf nout = noutp;
+	if (uncompress(outp, &nout, inp, ninp) != Z_OK)
+		return 0;
+	DWORD ndata = (DWORD)nout;
+#endif
 #ifdef UNDEF
 	int ret, ndata;
 	z_stream strm;

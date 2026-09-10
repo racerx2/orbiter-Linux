@@ -18,6 +18,15 @@ using std::max;
 extern char DBG_MSG[256];
 static int counter = -1;
 
+// Shared-module file extension, and its length -- the name is derived by
+// stripping the extension, which was hardcoded as 4 characters for ".dll".
+#ifdef _WIN32
+static const char *MODULE_EXT = ".dll";
+#else
+static const char *MODULE_EXT = ".so";
+#endif
+static const int MODULE_EXT_LEN = (int)strlen(MODULE_EXT);
+
 //-----------------------------------------------------------------------------
 
 orbiter::ModuleTab::ModuleTab (const LaunchpadDialog *lp): LaunchpadTab (lp)
@@ -158,7 +167,7 @@ void orbiter::ModuleTab::RefreshLists ()
 	const fs::path moddir{ "Modules/Plugin" };
 
 	for (const auto& file : fs::directory_iterator(moddir)) {
-		if (file.path().extension().string() == ".dll") {
+		if (file.path().extension().string() == MODULE_EXT) {
 			auto name = file.path().filename().string();
 			// add module record
 			MODULEREC** tmp = new MODULEREC * [nmodulerec + 1];
@@ -169,7 +178,7 @@ void orbiter::ModuleTab::RefreshLists ()
 			modulerec = tmp;
 
 			MODULEREC* rec = modulerec[nmodulerec++] = new MODULEREC;
-			len = name.length() - 4;
+			len = name.length() - MODULE_EXT_LEN;
 			rec->name = new char[len + 1];
 			strncpy(rec->name, name.c_str(), len);
 			rec->name[len] = '\0';
@@ -296,7 +305,7 @@ void orbiter::ModuleTab::InitActivation ()
 
 void orbiter::ModuleTab::ActivateFromList ()
 {
-	const char *path = "Modules\\Plugin";
+	const char *path = "Modules/Plugin";
 
 	HWND hTree = GetDlgItem (hTab, IDC_MOD_TREE);
 	TVITEM catitem, subitem;

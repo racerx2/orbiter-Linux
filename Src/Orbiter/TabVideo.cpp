@@ -16,6 +16,15 @@ using namespace std;
 
 static PCSTR strInfo_Default = "No graphics engine has been selected. Orbiter will run in console mode.";
 
+// Shared-module file extension. ScanDir matches on it to find candidate
+// graphics clients, so on Linux it has to be the ELF one or nothing is ever
+// listed and the Video tab offers only console mode.
+#ifdef _WIN32
+static const char *MODULE_EXT = ".dll";
+#else
+static const char *MODULE_EXT = ".so";
+#endif
+
 //-----------------------------------------------------------------------------
 // DefVideoTab class
 
@@ -148,7 +157,7 @@ void orbiter::DefVideoTab::EnumerateClients(HWND hTab)
 	SendDlgItemMessage(hTab, IDC_VID_COMBO_MODULE, CB_RESETCONTENT, 0, 0);
 	PCSTR strConsole = "Console mode (no engine loaded)";
 	SendDlgItemMessage(hTab, IDC_VID_COMBO_MODULE, CB_ADDSTRING, 0, (LPARAM)strConsole);
-	ScanDir(hTab, "Modules\\Plugin");
+	ScanDir(hTab, "Modules/Plugin");
 	SendDlgItemMessage(hTab, IDC_VID_COMBO_MODULE, CB_SETCURSEL, 0, 0);
 }
 
@@ -160,11 +169,11 @@ void orbiter::DefVideoTab::ScanDir(HWND hTab, const fs::path& dir)
 		fs::path modulepath;
 		auto clientname = entry.path().stem().string();
 		if (entry.is_directory()) {
-			modulepath = dir / clientname / (clientname + ".dll");
+			modulepath = dir / clientname / (clientname + MODULE_EXT);
 			if (!fs::exists(modulepath))
 				continue;
 		}
-		else if (entry.path().extension().string() == ".dll")
+		else if (entry.path().extension().string() == MODULE_EXT)
 			modulepath = entry.path();
 		else
 			continue;
@@ -195,9 +204,33 @@ void orbiter::DefVideoTab::SelectClientIndex(UINT idx)
 		pCfg->DelActiveModule(name);
 		pLp->App()->UnloadModule(name);
 		pCfg->CfgDevPrm.Device_idx = -1;
+
+		// NOTHING ELSE RECORDS THAT THE CLIENT IS GONE, AND THAT LOSES IT.
+		//
+		// idxClient is only ever assigned in OnGraphicsClientLoaded, and only
+		// when the newly loaded client's combo index DIFFERS from it:
+		//
+		//     int newIdx = ...CB_FINDSTRING(fname);
+		//     if (newIdx != idxClient) {
+		//         ...
+		//         pCfg->AddActiveModule(fname);
+		//         idxClient = newIdx;
+		//     }
+		//
+		// So selecting "Console mode" and then the same engine again unloads
+		// it (DelActiveModule above), reloads it, and then skips
+		// AddActiveModule because newIdx still equals the stale idxClient. The
+		// engine is running but is no longer in the active-module list, so the
+		// NEXT launch comes up in console mode with no graphics client and
+		// nothing anywhere says why.
+		//
+		// Measured, not reasoned: after one off/on cycle the client's own log
+		// showed it registered while ACTIVE_MODULES in Orbiter.cfg ended at
+		// the entry before it.
+		idxClient = 0;
 	}
 	if (idx) { // load the new client
-		const char* path = "Modules\\Plugin";
+		const char* path = "Modules/Plugin";
 		SendDlgItemMessage(hTab, IDC_VID_COMBO_MODULE, CB_GETLBTEXT, idx, (LPARAM)name);
 		pLp->App()->LoadModule(path, name);
 	}

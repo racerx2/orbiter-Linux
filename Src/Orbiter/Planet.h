@@ -73,6 +73,10 @@ typedef struct {
 // =======================================================================
 // Class Planet
 
+// TileManager2 is only introduced by a friend declaration below, which does
+// not make it visible to ordinary lookup. See CelBodyAPI.h for the rationale.
+template<class T> class TileManager2;
+
 class Planet: public CelestialBody {
 	friend class VPlanet;
 	friend class TileManager;

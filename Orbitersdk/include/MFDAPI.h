@@ -19,6 +19,9 @@
 #include "OrbiterAPI.h"
 
 class Instrument;
+// Instrument_User is otherwise introduced only by a friend declaration inside
+// MFD, which does not make it visible to ordinary lookup. See CelBodyAPI.h.
+class Instrument_User;
 
 // ======================================================================
 // class MFD
@@ -262,6 +265,9 @@ protected:
 	VESSEL *pV;   //!< pointer to vessel interface
 
 private:
+	// The friend declaration below does not introduce Instrument_User for
+	// ordinary lookup, so it is declared here for the member that follows.
+	// See CelBodyAPI.h for the rationale; harmless on MSVC.
 	friend class Instrument_User;  // Orbiter private class
 	Instrument_User *instr;
 };

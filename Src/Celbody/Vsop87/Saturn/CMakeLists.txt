@@ -5,6 +5,16 @@ set(CELBODY "Saturn")
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/Modules/Celbody)
 
+
+# See the note in Src/Plugin/CMakeLists.txt: on ELF a shared object is a
+# LIBRARY artifact, so the runtime directory alone does not place it, and the
+# lib prefix must be cleared because Orbiter names modules bare.
+if(NOT WIN32)
+	set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/Modules/Celbody)
+	set(CMAKE_SHARED_LIBRARY_PREFIX "")
+	set(CMAKE_SHARED_MODULE_PREFIX "")
+endif()
+
 add_library(${CELBODY} SHARED
 	${CELBODY}.cpp
 )
@@ -23,10 +33,25 @@ target_include_directories(${CELBODY}
 
 target_link_libraries(${CELBODY}
 	${VSOP87_LIB}
-	$<TARGET_LINKER_FILE:Satsat>
 	${ORBITER_LIB}
 	${ORBITER_SDK_LIB}
 )
+
+# The Saturnian moon ephemeris. SATSAT_LIB is set in Src/Celbody/Satsat, a
+# SIBLING directory, so it does not reach this scope -- hence the target
+# expression written out here rather than the variable.
+#
+# $<TARGET_LINKER_FILE:Satsat> is right on Windows (the import library). On ELF
+# it is a full path, which CMake reduces to -L<dir> -lSatsat on a first
+# configure, when it cannot read an SONAME from a file that does not exist yet;
+# libSatsat.so is then not found, because the module is deliberately Satsat.so
+# with no prefix. Naming the target instead gives NEEDED [Satsat.so]. Full
+# reasoning in Src/Celbody/Vsop87/CMakeLists.txt.
+if(WIN32)
+	target_link_libraries(${CELBODY} $<TARGET_LINKER_FILE:Satsat>)
+else()
+	target_link_libraries(${CELBODY} Satsat)
+endif()
 
 add_custom_command(
 	TARGET ${CELBODY} PRE_BUILD

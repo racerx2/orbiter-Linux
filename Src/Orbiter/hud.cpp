@@ -67,7 +67,7 @@ void HUD::SwitchColour (int idx)
 
 SURFHANDLE HUD::LoadTexture (int idx)
 {
-	char cbuf[64] = "Cockpit\\hud";
+	char cbuf[64] = "Cockpit/hud";
 	switch (idx) {
 		case 1: strcat (cbuf, "_red"); break;
 		case 2: strcat (cbuf, "_yellow"); break;

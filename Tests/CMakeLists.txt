@@ -1,9 +1,14 @@
 Include(FetchContent)
 
+# v3.0.0-preview3 (2021) sizes its alternate signal stack with a constexpr
+# expression over MINSIGSTKSZ. glibc 2.34 made MINSIGSTKSZ a call to sysconf(),
+# so that expression is no longer a constant and the file will not compile on
+# any modern Linux. Catch2 fixed this in v3.1.0; v3.5.2 is the pinned stable
+# release here. Windows is unaffected either way.
 FetchContent_Declare(
   Catch2
   GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-  GIT_TAG        v3.0.0-preview3
+  GIT_TAG        v3.5.2
 )
 
 FetchContent_MakeAvailable(Catch2)
@@ -43,7 +48,42 @@ function(add_test_file test_name)
 endfunction()
 
 # Register unit tests
-add_test_file(Lua.Interpreter)
+#
+# Lua.Interpreter is a standalone EXECUTABLE that links LuaInterpreter, and on
+# ELF that cannot be linked at all. It is not an omission or a missing library;
+# it follows from the core-linkage model described at ORBITER_LIB in the root
+# CMakeLists.txt:
+#
+#   On Windows, building Orbiter.exe also produces orbiter.lib, and
+#   ${ORBITER_LIB} resolves to it. That import library supplies VESSEL::*, the
+#   oapi entry points and the Linux-shim symbols this test needs.
+#
+#   ELF has no import libraries. A module simply leaves the core's symbols
+#   undefined and the dynamic linker binds them to the Orbiter executable at
+#   dlopen time, which is why ${ORBITER_LIB} is empty here. That works for
+#   anything Orbiter loads and cannot work for a separate executable: nothing
+#   will ever bind those symbols, and the link fails on both halves of it --
+#
+#     LuaInterpreter.so: undefined reference to VESSEL::GetAnimation(...)
+#     libOrbitersdk.a(Orbitersdk.cpp.o): undefined reference to
+#                                        orbiter_WrapDlHandle
+#
+#   the second because the global -Wl,-u,orbiter_module_attach pulls the SDK's
+#   module-attach object into every link, including this one, and its shim
+#   references are satisfied by the executable only when it IS Orbiter.
+#
+# Making this build means factoring Orbiter's core out of the executable into a
+# library the test could link -- a real change to the tree's shape, not a build
+# setting -- so the target is not registered here. It has never built on Linux;
+# it was simply never reached, because nothing had run a full `ninja`.
+#
+# The scenario tests below are unaffected: they run the Orbiter_server BINARY
+# rather than linking against it.
+if(WIN32)
+	add_test_file(Lua.Interpreter)
+else()
+	message(STATUS "Lua.Interpreter unit test: not built (ELF has no import library for the Orbiter core)")
+endif()
 
 if (BUILD_ORBITER_SERVER)
 

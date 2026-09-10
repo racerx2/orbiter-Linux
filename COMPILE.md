@@ -19,6 +19,10 @@ If you prefer to manually set up dependencies and build Orbiter on your own inst
 
 PREREQUISITES
 =============
+**For a native Linux build, skip to [BUILDING ON LINUX](#building-on-linux).** Everything from here to that
+section is the Windows toolchain. Note that the `linux-x64-*` CMake presets are *not* it: those are
+`winegcc`/`wineg++` and cross-build a Windows binary to run under Wine.
+
 To build Orbiter from its sources manually, you need a C++ compiler capable of creating Windows binaries.
 The recommended compiler is bundled with **[Microsoft Visual Studio](https://visualstudio.microsoft.com/)** (tested with 2017, 2019, 2022, and 2026).
 
@@ -65,6 +69,82 @@ Or, run CMake externally:
   Load this into Visual Studio, and Build All.
   
   
+BUILDING ON LINUX
+=================
+This builds a **native Linux binary**. Direct3D 9 has no Linux implementation, so `D3D9Client` is not
+built; the renderer is `OVP/VulkanClient`, a Vulkan port of it, and the Win32 API the core is written
+against is served by a shim in `Src/Orbiter/Linux`. Both are selected automatically — `cmake` needs no
+extra flags.
+
+Do **not** use the `linux-x64-debug` / `linux-x64-release` presets for this. Those predate the native
+port: they set `CMAKE_CXX_COMPILER=wineg++` and build a Windows binary to be run under Wine.
+
+Toolchain
+---------
+| Component | Notes |
+|---|---|
+| GCC | C++17. Verified with 15.2.0 |
+| CMake | Verified with 4.2.3. `Extern/zlib` pins madler/zlib v1.2.11, whose `cmake_minimum_required(2.4.4)` CMake 4 rejects; the subproject sets `CMAKE_POLICY_VERSION_MINIMUM 3.5` for itself, so no workaround is needed on the command line |
+| Ninja | The presets use it |
+| Python 3 | Required, not optional. `Src/Orbiter/Linux/rc2cpp.py` converts `Orbiter.rc` into a C++ dialog-template table at build time, because ELF has no resource section |
+
+Libraries
+---------
+Everything else — zlib, ImGui, VSG, Lua, Catch2 — is fetched or vendored by the build.
+
+| Needed for | pkg-config / CMake package | Ubuntu package |
+|---|---|---|
+| The renderer | `Vulkan` | `libvulkan-dev` |
+| Shader compilation | `glslang` | `glslang-dev`, `glslang-tools` |
+| Window and input | `glfw3` | `libglfw3-dev` |
+| | `x11` | `libx11-dev` |
+| Sketchpad font lookup | `fontconfig` | `libfontconfig-dev` |
+| XRSound | `ALSA` | `libasound2-dev` |
+
+On Ubuntu 26.04, in one line:
+
+```
+sudo apt install build-essential cmake ninja-build python3 pkg-config \
+     libvulkan-dev glslang-dev glslang-tools libglfw3-dev libx11-dev \
+     libfontconfig-dev libasound2-dev
+```
+
+Build
+-----
+```
+cmake --preset linux-native-release
+cmake --build --preset linux-native-release
+```
+
+Then run it from the build tree, which is laid out exactly like an installation:
+
+```
+cd out/build/linux-native-release && ./Orbiter
+```
+
+`cmake --install out/build/linux-native-release --prefix <dir>` writes a self-contained tree under
+`<dir>/Orbiter`, and `cpack` in the build directory produces `OpenOrbiter-<version>-Linux.tar.gz`
+of the same content. (`CPACK_GENERATOR` is `WIX;ZIP` on Windows and `TGZ` here; WIX has no Linux
+implementation.)
+
+There is also a `linux-native-debug` preset. `ORBITER_BUILD_VULKANCLIENT=OFF` still builds, and gives
+the console session with no graphics client — useful for isolating a renderer problem from a core one.
+
+What does not get built, and why
+--------------------------------
+Each of these prints its own reason during `cmake` configure:
+
+- **`Date`, `Shipedit`** — MFC. Windows-only by construction.
+- **`pltex`** — stops at `conio.h`, then an unassessed amount of DirectDraw.
+- **`plsplit`** — shells out to the Windows binary `dxtex.exe` for DXT compression.
+- **`tileedit`** — a Qt5 GUI added as an `ExternalProject`, which runs its own `cmake` configure and so
+  cannot see the Win32 header shim on the include path.
+- **`Lua.Interpreter`** unit test — needs the Orbiter core factored out of the executable into a
+  library; ELF has no import library to link a test against.
+
+`texpack` **does** build, and packs and unpacks planet texture trees.
+
+
 PLANETARY TEXTURES
 ==================
 The Orbiter Git repository does not include the planetary texture files for most

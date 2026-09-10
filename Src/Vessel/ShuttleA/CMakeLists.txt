@@ -43,6 +43,12 @@ target_include_directories(ShuttleA
 	PUBLIC ${CMAKE_CURRENT_BINARY_DIR}                 # for the dynamically generated header files
 )
 
+# ShuttleA.rc is listed above as a source, which rc.exe acts on and Linux
+# ignores. secInit (ShuttleA.cpp:2606) hands the Scenario Editor its own
+# payload page, which the editor opens with CreateDialogParam against this
+# module; with no templates registered there was nothing to open.
+orbiter_module_resources(ShuttleA ${CMAKE_CURRENT_SOURCE_DIR}/ShuttleA.rc)
+
 target_link_libraries(ShuttleA
 	${ORBITER_LIB}
 	${ORBITER_SDK_LIB}

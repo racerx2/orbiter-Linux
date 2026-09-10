@@ -359,8 +359,29 @@ bool Vessel::FRecorder_Read (const char *scname)
 	int i;
 	char fname[256], cbuf[256];
 
+	// THE BASENAME SCAN, and why the path beside it being right was not enough.
+	//
+	// The recording directory is named after the scenario's LEAF: scenario
+	// "Playback/Glider in orbit 1" plays back Flights/Glider in orbit 1. This
+	// loop takes the tail after the last separator, and it tested only for a
+	// backslash.
+	//
+	// On Linux the scenario name is composed with a forward slash --
+	// TabScenario.cpp's SCN_SEP is '/' here precisely so the name can be
+	// handed to ScnPath and to ifstream -- so nothing was ever stripped, and
+	// this looked for Flights/Playback/Glider in orbit 1/GL-01.pos. The
+	// ifstream fails, FRecorder_Read returns false, and the vessel simply
+	// does not play back: all four shipped Playback scenarios opened as
+	// ordinary static scenarios with nothing moving.
+	//
+	// The sprintf below was already converted to forward slashes, which is
+	// what made this hard to see -- the path was right and the name fed into
+	// it was not.
+	//
+	// Both separators are accepted. On Windows only the backslash occurs, so
+	// nothing there changes.
 	for (i = strlen(scname)-1; i > 0; i--)
-		if (scname[i-1] == '\\') break;
+		if (scname[i-1] == '\\' || scname[i-1] == '/') break;
 	sprintf (fname, "Flights/%s/%s.pos", scname+i, name.c_str());
 
 	ifstream ifs (fname);
@@ -796,7 +817,26 @@ void Orbiter::FRecorder_Activate (bool active, const char *fname, bool append)
 		if (!append) FRecorder_Reset();
 		bRecord = true;
 		char cbuf[256];
-		sprintf (cbuf, "Flights\\%s\\system.dat", fname);
+		// THE SYSTEM-EVENT STREAM, and why it is the odd one out.
+		//
+		// Every other path in this file already uses forward slashes --
+		// Vessel::FRecorder_Activate and FRecorder_Read both write
+		// "Flights/%s/%s.pos" -- and FRecorder_PrepareDir builds the
+		// directory with fs::path("Flights") / fname. These two system.dat
+		// lines are the only ones upstream spells with backslashes, and they
+		// are faithful Win32 source that was never translated.
+		//
+		// A backslash is a legal filename character here, so the ofstream in
+		// FRecorder_SaveEvent does not fail: it creates a file literally
+		// named `Flights\<name>\system.dat` in the working directory, beside
+		// the real recording rather than in it, and FRecorder_OpenPlayback
+		// then finds nothing.
+		//
+		// system.dat is not an optional extra. Eleven of the thirteen shipped
+		// recordings have one, and it carries the CAMERA cuts and the NOTE
+		// captions -- the whole directed presentation. "Welcome to Orbiter
+		// 2024" is title text and camera moves and almost nothing else.
+		sprintf (cbuf, "Flights/%s/system.dat", fname);
 		if (FRsysname) delete []FRsysname;
 		FRsysname = new char[strlen(cbuf)+1]; TRACENEW
 		strcpy (FRsysname, cbuf);
@@ -820,9 +860,20 @@ void Orbiter::FRecorder_OpenPlayback (const char *scname)
 
 	if (FRsys_stream) delete FRsys_stream;
 
+	// The basename scan, and the same separator on the path. See
+	// FRecorder_Activate above for what the backslash cost.
+	//
+	// The scan takes the tail after the last separator, because the recording
+	// directory is named after the scenario's LEAF -- scenario
+	// "Playback/Glider in orbit 1" plays back Flights/Glider in orbit 1. It
+	// tested only for a backslash, so on Linux, where the scenario name
+	// arrives with forward slashes, nothing was stripped and it looked for
+	// Flights/Playback/Glider in orbit 1/system.dat. Both separators are
+	// accepted; on Windows only the backslash ever occurs, so nothing there
+	// changes.
 	for (i = strlen(scname)-1; i > 0; i--)
-		if (scname[i-1] == '\\') break;
-	sprintf (cbuf, "Flights\\%s\\system.dat", scname+i);
+		if (scname[i-1] == '\\' || scname[i-1] == '/') break;
+	sprintf (cbuf, "Flights/%s/system.dat", scname+i);
 	if (FRsysname) delete []FRsysname;
 	FRsysname = new char[strlen(cbuf)+1]; TRACENEW
 	strcpy (FRsysname, cbuf);

@@ -46,7 +46,11 @@ public:
 	void Move (LONG dx, LONG dy);
 	// scrolls panel by the specified amount in x and y
 
-	void Point2Screen (long srcX, long srcY, long &tgtX, long &tgtY) const;
+	// Takes LONG rather than long because the callers pass RECT fields, which
+	// are LONG. The two are the same type on Windows (LLP64 keeps long at 32
+	// bits) but differ on LP64 Linux, where long is 64-bit and LONG stays 32.
+	// LONG is the correct spelling for a RECT coordinate on both.
+	void Point2Screen (LONG srcX, LONG srcY, LONG &tgtX, LONG &tgtY) const;
 	// converts point from unscaled panel space to viewport space
 
 	void Area2Screen (const RECT &srcR, RECT &tgtR) const;

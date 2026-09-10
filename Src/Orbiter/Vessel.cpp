@@ -22,6 +22,12 @@
 
 #include "Orbiter.h"
 #include "Vessel.h"
+#ifndef _WIN32
+// For the case-insensitive vessel-config fallback in OpenConfigFile.
+#include <filesystem>
+#include <system_error>
+#include <strings.h>
+#endif
 #include "Supervessel.h"
 #include "Config.h"
 #include "Camera.h"
@@ -236,7 +242,15 @@ Vessel::~Vessel ()
 bool Vessel::OpenConfigFile (ifstream &cfgfile) const
 {
 	char cbuf[256];
-	strcpy (cbuf, "Vessels\\");
+	// Forward slash: Windows accepts it too, and it is the only form that
+	// resolves here. A trailing-separator literal like "Vessels\\" was missed
+	// by the tree-wide conversion because nothing follows the separator, so
+	// this open silently failed and only the Config/ fallback below was ever
+	// reached -- leaving every stock vessel class unloadable.
+	//
+	// The +8 below indexes past the prefix and is unaffected: "Vessels/" is
+	// the same length as "Vessels\".
+	strcpy (cbuf, "Vessels/");
 	strcat (cbuf, classname ? classname : name.c_str());
 	// first search in $CONFIGDIR\Vessels
 	cfgfile.open (g_pOrbiter->ConfigPath (cbuf));
@@ -245,7 +259,41 @@ bool Vessel::OpenConfigFile (ifstream &cfgfile) const
 	// next search in $CONFIGDIR
 	cfgfile.open (g_pOrbiter->ConfigPath (cbuf+8));
 	if (cfgfile.good()) return true;
-	else {
+	else cfgfile.clear();
+#ifndef _WIN32
+	// Case-insensitive retry.
+	//
+	// Scenarios and vessel modules name a class in one spelling and the
+	// shipped .cfg often uses another -- the stock scenarios ask for
+	// "DeltaGlider" while the file on disk is Config/Vessels/Deltaglider.cfg.
+	// NTFS does not care; ext4 does, so every stock scenario terminated on
+	// startup with "No vessel class configuration file found".
+	//
+	// Rather than rename the data, the directory is scanned once for a
+	// case-insensitive match. Only reached after both exact opens have
+	// failed, so a correctly-cased tree costs nothing.
+	{
+		const char *want = classname ? classname : name.c_str();
+		char target[288];
+		snprintf(target, sizeof(target), "%s.cfg", want);
+
+		const char *dirs[2] = { "Vessels/", "" };
+		for (int d = 0; d < 2; ++d) {
+			std::error_code ec;
+			std::string base = g_pOrbiter->Cfg()->CfgDirPrm.ConfigDir;
+			base += dirs[d];
+			for (const auto &e : std::filesystem::directory_iterator(base, ec)) {
+				if (ec) break;
+				const std::string fn = e.path().filename().string();
+				if (strcasecmp(fn.c_str(), target) != 0) continue;
+				cfgfile.open(e.path().string().c_str());
+				if (cfgfile.good()) return true;
+				cfgfile.clear();
+			}
+		}
+	}
+#endif
+	{
 		cfgfile.clear();
 		LOGOUT_ERR_FILENOTFOUND_MSG(g_pOrbiter->ConfigPath(cbuf + 8), "No vessel class configuration file found for: %s", classname ? classname : name);
 		//LogOut (">>> ERROR: No vessel class configuration file found for:");
@@ -2280,10 +2328,22 @@ oapi::ParticleStream *Vessel::AddExhaustStream (ThrustSpec *ts, PARTICLESTREAMSP
 	}
 	contrail = tmp;
 	contrail[ncontrail] = gc->clbkCreateExhaustStream (pss, (OBJHANDLE)this, &ts->level, &ts->ref, &ts->dir);
-	if (pos) // local position reference
-		contrail[ncontrail]->SetFixedPos (MakeVECTOR3(*pos));
-	if (dir) // local direction reference
-		contrail[ncontrail]->SetFixedDir (MakeVECTOR3(*dir));
+	// A client may legitimately return NULL: GraphicsClient's own
+	// implementation of clbkCreateExhaustStream does, and that is how a
+	// renderer says it has no particle system. The result was dereferenced
+	// unconditionally, so the first vessel with an exhaust stream segfaulted
+	// the moment a client without particles was attached -- the DeltaGlider
+	// does it from clbkSetClassCaps, before the session even starts.
+	//
+	// D3D9Client always returns a stream, which is why this has never been
+	// reached on Windows. The other two call sites in this file already
+	// tolerate a null because they only store it.
+	if (contrail[ncontrail]) {
+		if (pos) // local position reference
+			contrail[ncontrail]->SetFixedPos (MakeVECTOR3(*pos));
+		if (dir) // local direction reference
+			contrail[ncontrail]->SetFixedDir (MakeVECTOR3(*dir));
+	}
 	return contrail[ncontrail++];
 }
 
@@ -5786,7 +5846,20 @@ ANIMATIONCOMP *Vessel::AddAnimationComponent (UINT an, double state0, double sta
 	ANIMATIONCOMP **tmp = new ANIMATIONCOMP*[ncomp+1]; TRACENEW
 	if (ncomp) {
 		memcpy (tmp, A->comp, ncomp*sizeof(ANIMATIONCOMP*));
-		delete A->comp;
+		// delete[], not delete: A->comp was allocated with new[] on the
+		// previous pass through this very function. The scalar form is an
+		// alloc/dealloc mismatch and undefined behaviour.
+		//
+		// MSVC's allocator happens to survive it for an array of pointers, so
+		// it is invisible on Windows. glibc does not: it corrupts the arena,
+		// and the damage surfaces later in some unrelated allocation. It was
+		// showing up as "double free or corruption" inside the GDI object map
+		// with a nonsense chunk size, thousands of frames after the fact --
+		// which is why it looked like a graphics bug.
+		//
+		// Every other delete of these arrays in this file already uses
+		// delete[]; this one site was missed.
+		delete[] A->comp;
 	}
 	A->comp = tmp;
 	ANIMATIONCOMP *ac = new ANIMATIONCOMP; TRACENEW
@@ -5970,7 +6043,14 @@ bool Vessel::LoadModule (ifstream &classf)
 bool Vessel::RegisterModule (const char *dllname)
 {
 	char cbuf[256];
-	sprintf (cbuf, "Modules\\%s.dll", dllname);
+	// Forward slash: this is the load path for every vessel module named by a
+	// class config ("Module = DeltaGlider"). A backslash here cannot resolve
+	// on Linux, so LoadLibrary fails for all of them and each vessel falls
+	// back to the generic core VESSEL with no module behaviour at all.
+	//
+	// The .dll extension is kept deliberately: LoadLibraryA maps it to .so,
+	// so the same string works on both platforms.
+	sprintf (cbuf, "Modules/%s.dll", dllname);
 	hMod = LoadLibrary (cbuf);
 	if (!hMod)
 		return false;

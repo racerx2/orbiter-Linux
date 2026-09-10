@@ -15,6 +15,17 @@
 #include "DGSwitches.h"
 #include "DGSubsys.h"
 
+// Forward declarations.
+//
+// RcsSubsys names RcsModeDial as a member pointer before the class itself is
+// defined further down this header. MSVC accepts that because a `friend class`
+// elsewhere in the tree injects the name into the enclosing namespace -- a
+// non-conforming extension. GCC rejects it outright with
+//     error: 'RcsModeDial' does not name a type
+// so the declarations are made properly here. Additive: nothing else changes.
+class RcsModeDial;
+class RcsProgButtons;
+
 // ==============================================================
 // Reaction control subsystem
 // ==============================================================

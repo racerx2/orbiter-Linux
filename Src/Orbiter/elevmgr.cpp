@@ -10,6 +10,43 @@
 using std::min;
 using std::max;
 
+// ===========================================================================
+// THE PATH SEPARATOR, AND WHY THIS FILE NEEDED ONE
+// ===========================================================================
+//
+// Every path in this file was built with a literal Win32 backslash:
+//
+//     sprintf(fname, "%s\\Elev\\%02d\\%06d\\%06d.elv", ...)
+//
+// On Linux that is not a path at all -- it is ONE filename containing
+// backslash characters, e.g. "Earth\Elev\04\000000\000000.elv". Nothing opens
+// it, and nothing complains, because every caller here treats "no file" as the
+// ordinary case: a body simply has no elevation data at that tile.
+//
+// The consequences were entirely silent and reached well outside this file:
+//
+//   * `bDirExists` was false for every body, so HasElevationTile always
+//     answered false and LoadElevationTile was never even attempted.
+//   * ElevationManager::Elevation therefore returned 0.0 everywhere, so the
+//     PHYSICS engine believed every planet was a smooth sphere at datum.
+//   * Vessels were placed at datum while the graphics client -- which builds
+//     its own paths and had them right -- drew the real terrain. Measured at
+//     the Cape: the surface mesh at +4.5 m, oapiSurfaceElevation at 0.00 m,
+//     and two Delta-gliders buried to the top of the hull.
+//
+// It is the same defect as the one fixed in Config::Load (which appended a
+// backslash to every configured directory), and it is the reason this port's
+// rules say to cross-reference the server against Win32 rather than trust it:
+// this is faithful Win32 source that was never translated.
+//
+// Kept as a token-pasted string literal so the sprintf format strings stay
+// single literals and read the same as the originals.
+#ifdef _WIN32
+#define ORB_SEP "\\"
+#else
+#define ORB_SEP "/"
+#endif
+
 static int elev_grid = 256;
 static int elev_stride = elev_grid+3;
 static int MAXLVL_LIMIT = SURF_MAX_PATCHLEVEL2 - 7;
@@ -59,12 +96,12 @@ ElevationManager::ElevationManager (const CelestialBody *_cbody)
 
 	// Check if Elev dir exists
 	char path[MAX_PATH]; char fname[MAX_PATH];
-	sprintf(fname, "%s\\Elev", cbody->Name());
+	sprintf(fname, "%s" ORB_SEP "Elev", cbody->Name());
 	g_pOrbiter->Cfg()->PTexPath(path, fname);
 	auto x = std::filesystem::status(path);
 	bDirExists = std::filesystem::is_directory(x);
 
-	sprintf(fname, "%s\\Elev_mod", cbody->Name());
+	sprintf(fname, "%s" ORB_SEP "Elev_mod", cbody->Name());
 	g_pOrbiter->Cfg()->PTexPath(path, fname);
 	auto y = std::filesystem::status(path);
 	bModExists = std::filesystem::is_directory(y);
@@ -107,7 +144,7 @@ bool ElevationManager::HasElevationTile(int lvl, int ilat, int ilng) const
 	if (mode) {
 		if (tilesource & 0x0001 && bDirExists) {
 			char fname[256], path[256];
-			sprintf(fname, "%s\\Elev\\%02d\\%06d\\%06d.elv", cbody->Name(), lvl, ilat, ilng);
+			sprintf(fname, "%s" ORB_SEP "Elev" ORB_SEP "%02d" ORB_SEP "%06d" ORB_SEP "%06d.elv", cbody->Name(), lvl, ilat, ilng);
 			g_pOrbiter->Cfg()->PTexPath(path, fname);
 			if (std::filesystem::exists(path)) return true;
 		}
@@ -130,7 +167,7 @@ INT16 *ElevationManager::LoadElevationTile (int lvl, int ilat, int ilng, double 
 		if (tilesource & 0x0001 && bDirExists) {
 			FILE *f;
 			char fname[256], path[256];
-			sprintf (fname, "%s\\Elev\\%02d\\%06d\\%06d.elv", cbody->Name(), lvl, ilat, ilng);
+			sprintf (fname, "%s" ORB_SEP "Elev" ORB_SEP "%02d" ORB_SEP "%06d" ORB_SEP "%06d.elv", cbody->Name(), lvl, ilat, ilng);
 			g_pOrbiter->Cfg()->PTexPath(path, fname);
 			if (f = fopen(path, "rb")) {
 				elev = new INT16[ndat];
@@ -214,7 +251,7 @@ bool ElevationManager::LoadElevationTile_mod (int lvl, int ilat, int ilng, doubl
 		if (tilesource & 0x0001 && bModExists) {
 			FILE *f;
 			char fname[256], path[256];
-			sprintf (fname, "%s\\Elev_mod\\%02d\\%06d\\%06d.elv", cbody->Name(), lvl, ilat, ilng);
+			sprintf (fname, "%s" ORB_SEP "Elev_mod" ORB_SEP "%02d" ORB_SEP "%06d" ORB_SEP "%06d.elv", cbody->Name(), lvl, ilat, ilng);
 			g_pOrbiter->Cfg()->PTexPath(path, fname);
 			if (f = fopen(path, "rb")) {
 				ELEVFILEHEADER hdr;

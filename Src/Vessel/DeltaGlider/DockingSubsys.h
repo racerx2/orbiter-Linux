@@ -16,6 +16,36 @@
 #include "DGSubsys.h"
 #include "DGSwitches.h"
 
+// Forward declaration: this header names NoseconeIndicator before the class is defined
+// further down. MSVC injects the name via a friend declaration (non-standard);
+// GCC reports "'NoseconeIndicator' does not name a type".
+class NoseconeIndicator;
+
+// Forward declaration: this header names NoseconeLever before the class is defined
+// further down. MSVC injects the name via a friend declaration (non-standard);
+// GCC reports "'NoseconeLever' does not name a type".
+class NoseconeLever;
+
+// Forward declaration: this header names DocksealIndicator before the class is defined
+// further down. MSVC injects the name via a friend declaration (non-standard);
+// GCC reports "'DocksealIndicator' does not name a type".
+class DocksealIndicator;
+
+// Forward declaration: this header names LadderIndicator before the class is defined
+// further down. MSVC injects the name via a friend declaration (non-standard);
+// GCC reports "'LadderIndicator' does not name a type".
+class LadderIndicator;
+
+// Forward declaration: this header names LadderSwitch before the class is defined
+// further down. MSVC injects the name via a friend declaration (non-standard);
+// GCC reports "'LadderSwitch' does not name a type".
+class LadderSwitch;
+
+// Forward declaration: this header names UndockLever before the class is defined
+// further down. MSVC injects the name via a friend declaration (non-standard);
+// GCC reports "'UndockLever' does not name a type".
+class UndockLever;
+
 // ==============================================================
 // Docking control subsystem
 // ==============================================================

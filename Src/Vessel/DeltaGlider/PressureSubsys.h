@@ -16,6 +16,21 @@
 #include "DGSubsys.h"
 #include "DGSwitches.h"
 
+// Forward declaration: this header names HatchCtrlSwitch before the class is defined
+// further down. MSVC injects the name via a friend declaration (non-standard);
+// GCC reports "'HatchCtrlSwitch' does not name a type".
+class HatchCtrlSwitch;
+
+// Forward declaration: this header names InnerLockSwitch before the class is defined
+// further down. MSVC injects the name via a friend declaration (non-standard);
+// GCC reports "'InnerLockSwitch' does not name a type".
+class InnerLockSwitch;
+
+// Forward declaration: this header names OuterLockSwitch before the class is defined
+// further down. MSVC injects the name via a friend declaration (non-standard);
+// GCC reports "'OuterLockSwitch' does not name a type".
+class OuterLockSwitch;
+
 // ==============================================================
 
 class AirlockCtrl;

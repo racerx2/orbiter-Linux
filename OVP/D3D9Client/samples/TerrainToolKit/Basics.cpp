@@ -71,10 +71,14 @@ FMATRIX4 ToolKit::CreateWorldMatrix(OBJHANDLE hPlanet, double lng, double lat, d
 	y *= scale;
 	z *= scale;
 
-	m._x = FVECTOR4(x, 0.0f);
-	m._y = FVECTOR4(y, 0.0f);
-	m._z = FVECTOR4(z, 0.0f);
-	m._p = FVECTOR4(p, 1.0f);
+	// SetRow rather than m._x/_y/_z/_p: that view is an anonymous struct of
+	// FVECTOR4, which GCC rejects inside a union because FVECTOR4 has
+	// constructors, so it exists only on the Windows build. SetRow names the
+	// same storage. Rows are 0=_x 1=_y 2=_z 3=_p.
+	m.SetRow(0, FVECTOR4(x, 0.0f));
+	m.SetRow(1, FVECTOR4(y, 0.0f));
+	m.SetRow(2, FVECTOR4(z, 0.0f));
+	m.SetRow(3, FVECTOR4(p, 1.0f));
 
 	return m;
 }

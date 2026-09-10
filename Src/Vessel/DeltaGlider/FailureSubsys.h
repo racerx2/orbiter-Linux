@@ -14,6 +14,11 @@
 
 #include "DGSubsys.h"
 
+// Forward declaration: this header names MwsButton before the class is defined
+// further down. MSVC injects the name via a friend declaration (non-standard);
+// GCC reports "'MwsButton' does not name a type".
+class MwsButton;
+
 // ==============================================================
 // Failure subsystem
 // ==============================================================

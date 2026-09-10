@@ -43,7 +43,12 @@ DLLCLBK void InitModule (HINSTANCE hDLL)
 	spec.context = NULL;
 	//Code contributed by Dave Robotham
 	ifstream kstream;
-	kstream.open("Config\\MFD\\TransX.cfg",NULL);
+	// Forward slashes, and an explicit open mode.
+	//
+	// open(path, NULL) compiles only as an MSVC extension: the second
+	// argument is an ios_base::openmode, and NULL is not convertible to it in
+	// standard C++. ios::in is what the call meant -- the stream is only read.
+	kstream.open("Config/MFD/TransX.cfg", ios::in);
 	if( kstream )
 	{
 		try

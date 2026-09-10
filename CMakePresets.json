@@ -82,6 +82,36 @@
       }
     },
     {
+      "description": "Native Linux with the system compiler. The linux-x64-* presets are winegcc: they cross-build a Windows binary for Wine. These build Linux itself, with the Vulkan client. Prerequisites: COMPILE.md.",
+      "name": "linux-native-base",
+      "hidden": true,
+      "inherits": "ninja-base",
+      "cacheVariables": {
+        "ORBITER_MAKE_DOC": "OFF"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    },
+    {
+      "name": "linux-native-debug",
+      "displayName": "Linux native Debug",
+      "inherits": "linux-native-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "linux-native-release",
+      "displayName": "Linux native Release",
+      "inherits": "linux-native-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
       "name": "windows-x64-debug",
       "displayName": "x64 Debug",
       "inherits": "windows-base",
@@ -180,6 +210,16 @@
       "name": "linux-x64-asan",
       "displayName": "x64 ASan",
       "configurePreset": "linux-x64-asan"
+    },
+    {
+      "name": "linux-native-debug",
+      "displayName": "Linux native Debug",
+      "configurePreset": "linux-native-debug"
+    },
+    {
+      "name": "linux-native-release",
+      "displayName": "Linux native Release",
+      "configurePreset": "linux-native-release"
     }
   ],
   "testPresets": [
@@ -230,6 +270,16 @@
     {
       "name": "linux-x64-asan",
       "configurePreset": "linux-x64-asan",
+      "inherits": "test-base"
+    },
+    {
+      "name": "linux-native-debug",
+      "configurePreset": "linux-native-debug",
+      "inherits": "test-base"
+    },
+    {
+      "name": "linux-native-release",
+      "configurePreset": "linux-native-release",
       "inherits": "test-base"
     }
   ]

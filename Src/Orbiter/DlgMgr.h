@@ -179,12 +179,41 @@ public:
 	}
 
 	void ImGuiNewFrame();
+
+	// The dialog-drawing half of ImGuiNewFrame, on its own.
+	//
+	// On Windows the two belong together: DialogManager opens the ImGui frame,
+	// draws into it, and D3D9Client::clbkImGuiRenderDrawData renders and
+	// submits it a few lines later in Render3DEnvironment. One frame, one
+	// owner.
+	//
+	// On Linux the frame that reaches the screen is UIHost's, built in
+	// orbiter_PumpFrame around the only command buffer that touches the
+	// swapchain. Anything drawn into a frame of DialogManager's own is
+	// discarded, so the drawing has to happen inside UIHost's -- and this is
+	// what it calls. See the note in ImGuiNewFrame.
+	void DrawImGuiDialogs();
 	ImFont *GetFont(ImGuiFont f);
 
 	void SetMainColor(COLORREF col);
 private:
 	void InitImGui();
 	void ShutdownImGui();
+
+	// True only when InitImGui CREATED the ImGui context rather than adopting
+	// one that already existed. On Windows that is always; on Linux never,
+	// because UIHost builds the context for the Launchpad before any graphics
+	// client attaches and goes on using it after the session ends. Destroying
+	// a context this object does not own aborts the process -- see the note
+	// in ShutdownImGui.
+	bool bOwnsImGuiContext = false;
+
+	// Separately tracked, because on Linux this object owns the ImPlot
+	// context and NOT the ImGui one -- UIHost made that. The two used to
+	// share bOwnsImGuiContext, which meant ImPlot's context was never created
+	// here at all and the Flight Data Monitor aborted the process on its
+	// first draw. See the note at InitImGui.
+	bool bOwnsImPlotContext = false;
 	ImFont *defaultFont;
 	ImFont *consoleFont;
 	ImFont *monoFont;

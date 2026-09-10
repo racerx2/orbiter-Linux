@@ -16,6 +16,21 @@
 #include "DGSwitches.h"
 #include "DGSubsys.h"
 
+// Forward declaration: this header names AerodynSelectorDial before the class is defined
+// further down. MSVC injects the name via a friend declaration (non-standard);
+// GCC reports "'AerodynSelectorDial' does not name a type".
+class AerodynSelectorDial;
+
+// Forward declaration: this header names ElevatorTrimWheel before the class is defined
+// further down. MSVC injects the name via a friend declaration (non-standard);
+// GCC reports "'ElevatorTrimWheel' does not name a type".
+class ElevatorTrimWheel;
+
+// Forward declaration: this header names AirbrakeLever before the class is defined
+// further down. MSVC injects the name via a friend declaration (non-standard);
+// GCC reports "'AirbrakeLever' does not name a type".
+class AirbrakeLever;
+
 // ==============================================================
 // Aerodynamic control subsystem
 // ==============================================================

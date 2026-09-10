@@ -904,12 +904,33 @@ public:
 inline gcCore2* gcGetCoreInterface()
 {
 	if (pCoreInterface) return pCoreInterface;
-	HMODULE hModule = GetModuleHandle("D3D9Client.dll");
+	// THE CLIENT'S MODULE NAME IS PER-PLATFORM, and this file is compiled on
+	// BOTH -- which is what the previous edit here missed.
+	//
+	// This is the copy add-on modules include; on Linux it is reached through
+	// the gcCoreAPI.h alias in Src/Orbiter/Linux, and DrawOrbits, DX9ExtMFD,
+	// GenericCamera and TerrainToolKit all build against it. So it was changed
+	// to ask for "VulkanClient" -- correct there, and it made the Windows
+	// build ask for a module that does not exist on Windows. It still
+	// COMPILES, which is why nothing caught it: every add-on drawing through
+	// gcCore would have lost its interface at run time, with one log line to
+	// show for it.
+	//
+	// The name is given without an extension in both branches. Windows'
+	// GetModuleHandle appends the default ".dll"; the Linux one matches on the
+	// lower-cased stem through the loader index orb_LoadLibrary maintains, so
+	// it finds Modules/Plugin/VulkanClient.so however it was loaded.
+#ifdef _WIN32
+	const char *gcClientModule = "D3D9Client";
+#else
+	const char *gcClientModule = "VulkanClient";
+#endif
+	HMODULE hModule = GetModuleHandle(gcClientModule);
 	if (hModule) {
 		__gcBindCoreMethod pBindCoreMethod = (__gcBindCoreMethod)GetProcAddress(hModule, "gcBindCoreMethod");
 		if (pBindCoreMethod) return (pCoreInterface = new gcCore2(pBindCoreMethod));
 		else oapiWriteLogV("gcGetCoreInterface() FAILED");
-	} else oapiWriteLogV("gcGetCoreInterface() FAILED. D3D9Client Not Found");
+	} else oapiWriteLogV("gcGetCoreInterface() FAILED. %s Not Found", gcClientModule);
 	return NULL;
 }
 

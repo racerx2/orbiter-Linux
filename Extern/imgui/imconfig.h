@@ -144,19 +144,32 @@ namespace ImGui
 // Orbiter specific :
 // The ImGuiContext is owned by the main exe, libraries are importing it.
 // The ImGui code is stored in the Orbiter SDK so that modules can use it.
+
+// On ELF there is no import/export decoration: the Orbiter executable exports
+// these symbols with default visibility (it is linked with -rdynamic) and
+// modules bind to them at load time. The macros collapse to nothing there,
+// leaving the Windows dllexport/dllimport path exactly as it was.
+#ifdef _WIN32
+#define ORB_IMGUI_CTX_EXPORT __declspec(dllexport)
+#define ORB_IMGUI_CTX_IMPORT __declspec(dllimport)
+#else
+#define ORB_IMGUI_CTX_EXPORT
+#define ORB_IMGUI_CTX_IMPORT
+#endif
+
 struct ImGuiContext;
 
 #ifdef EXPORT_IMGUI_CONTEXT
-extern __declspec(dllexport) struct ImGuiContext* GImGui;  // Current implicit context pointer
+extern ORB_IMGUI_CTX_EXPORT struct ImGuiContext* GImGui;  // Current implicit context pointer
 #else
-extern __declspec(dllimport) struct ImGuiContext* GImGui;  // Current implicit context pointer
+extern ORB_IMGUI_CTX_IMPORT struct ImGuiContext* GImGui;  // Current implicit context pointer
 #endif
 
 struct ImPlotContext;
 #ifdef EXPORT_IMGUI_CONTEXT
-extern __declspec(dllexport) struct ImPlotContext* GImPlot;  // Current implicit context pointer
+extern ORB_IMGUI_CTX_EXPORT struct ImPlotContext* GImPlot;  // Current implicit context pointer
 #else
-extern __declspec(dllimport) struct ImPlotContext* GImPlot;  // Current implicit context pointer
+extern ORB_IMGUI_CTX_IMPORT struct ImPlotContext* GImPlot;  // Current implicit context pointer
 #endif
 #define GImGui GImGui
 #define GImPlot GImPlot

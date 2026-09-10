@@ -15,6 +15,36 @@
 #include "DGSubsys.h"
 #include "DGSwitches.h"
 
+// Forward declaration: this header names RadiatorSwitch before the class is defined
+// further down. MSVC injects the name via a friend declaration (non-standard);
+// GCC reports "'RadiatorSwitch' does not name a type".
+class RadiatorSwitch;
+
+// Forward declaration: this header names CoolantReftempDial before the class is defined
+// further down. MSVC injects the name via a friend declaration (non-standard);
+// GCC reports "'CoolantReftempDial' does not name a type".
+class CoolantReftempDial;
+
+// Forward declaration: this header names CoolantPumpDial before the class is defined
+// further down. MSVC injects the name via a friend declaration (non-standard);
+// GCC reports "'CoolantPumpDial' does not name a type".
+class CoolantPumpDial;
+
+// Forward declaration: this header names CoolantPumpSwitch before the class is defined
+// further down. MSVC injects the name via a friend declaration (non-standard);
+// GCC reports "'CoolantPumpSwitch' does not name a type".
+class CoolantPumpSwitch;
+
+// Forward declaration: this header names CoolantLoopDisplay before the class is defined
+// further down. MSVC injects the name via a friend declaration (non-standard);
+// GCC reports "'CoolantLoopDisplay' does not name a type".
+class CoolantLoopDisplay;
+
+// Forward declaration: this header names CoolantLoop before the class is defined
+// further down. MSVC injects the name via a friend declaration (non-standard);
+// GCC reports "'CoolantLoop' does not name a type".
+class CoolantLoop;
+
 // ==============================================================
 // Thermal control subsystem
 // ==============================================================

@@ -241,7 +241,15 @@ void orbiter::CommandLine::PrintHelpAndExit() const
 	}
 
 	std::cout << "\nOrbiter Space Flight Simulator" << std::endl;
+	// The usage line and the plugin path below name the executable and the
+	// module file this build actually produces. On Linux that is `Orbiter`
+	// and Modules/Plugin/<pg>.so, so printing the Windows spellings tells the
+	// user to look for files that are not there.
+#ifdef _WIN32
 	std::cout << "orbiter.exe [options]\n\n";
+#else
+	std::cout << "Orbiter [options]\n\n";
+#endif
 	std::cout << "Options:\n";
 	std::cout << "  --help, -h: Print this help page and exit.\n";
 	std::cout << "  --scenario=<scn>, -S <scn>: Launch scenario <scn>\n";
@@ -253,7 +261,11 @@ void orbiter::CommandLine::PrintHelpAndExit() const
 	std::cout << "  --maxsystime=<t>, -T <t>: Terminate session after <t> seconds\n";
 	std::cout << "  --maxsimtime=<t>, -t <t>: Terminate session at simulation time <t>\n";
 	std::cout << "  --maxframes=<f>: Terminate session after <f> time frames\n";
+#ifdef _WIN32
 	std::cout << "  --plugin=<pg>, -p <pg>: Load plugin <pg> (from Modules\\Plugin\\<pg>.dll)\n";
+#else
+	std::cout << "  --plugin=<pg>, -p <pg>: Load plugin <pg> (from Modules/Plugin/<pg>.so)\n";
+#endif
 	std::cout << std::endl;
 
 	exit(0);

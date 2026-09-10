@@ -434,11 +434,15 @@ void Orbits::DrawOrbit(Sketchpad *pSkp2, COrbit *pOrb, OBJHANDLE hRef, oapi::FVE
 	VECTOR3 _W = crossp_LH(_P, _Q);
 	VECTOR3 _F = _P * (pOrb->SMa() * pOrb->Ecc()); // Offset the template to actual planet position
 
+	// SetRow rather than mat._x/_y/_z/_p: that view is an anonymous struct of
+	// FVECTOR4, which GCC rejects inside a union because FVECTOR4 has
+	// constructors, so it exists only on the Windows build. SetRow names the
+	// same storage and is available on both. Rows are 0=_x 1=_y 2=_z 3=_p.
 	FMATRIX4 mat;
-	mat._y = FVECTOR4(_Q * (pOrb->SMi() / smi), 0.0f);
-	mat._x = FVECTOR4(_P * (pOrb->SMa()), 0.0f);
-	mat._z = FVECTOR4(_W, 0.0f);
-	mat._p = FVECTOR4(Clip[0].Pos - _F, 1.0f);
+	mat.SetRow(0, FVECTOR4(_P * (pOrb->SMa()), 0.0f));
+	mat.SetRow(1, FVECTOR4(_Q * (pOrb->SMi() / smi), 0.0f));
+	mat.SetRow(2, FVECTOR4(_W, 0.0f));
+	mat.SetRow(3, FVECTOR4(Clip[0].Pos - _F, 1.0f));
 
 
 	SIZE screen;
@@ -456,10 +460,10 @@ void Orbits::DrawOrbit(Sketchpad *pSkp2, COrbit *pOrb, OBJHANDLE hRef, oapi::FVE
 
 	// Update matrix for generic drawing in 3D ----------------------
 	//
-	mat._y = FVECTOR4(_Q, 0.0f);
-	mat._x = FVECTOR4(_P, 0.0f);
-	mat._z = FVECTOR4(_W, 0.0f);
-	mat._p = FVECTOR4(Clip[0].Pos, 1.0f);
+	mat.SetRow(0, FVECTOR4(_P, 0.0f));
+	mat.SetRow(1, FVECTOR4(_Q, 0.0f));
+	mat.SetRow(2, FVECTOR4(_W, 0.0f));
+	mat.SetRow(3, FVECTOR4(Clip[0].Pos, 1.0f));
 
 	pSkp2->SetWorldTransform(&mat);
 
@@ -567,9 +571,13 @@ void Orbits::DrawOrbit(Sketchpad *pSkp2, COrbit *pOrb, OBJHANDLE hRef, oapi::FVE
 
 // =================================================================================================
 //
-inline void Swap(long *a, long *b)
+// The parameter type is LONG, not long: RECT's fields are LONG, which is
+// 32-bit on every Windows target but would be 64-bit as `long` on LP64, so the
+// shim defines it as int32_t. Taking `long*` here compiles on Windows only by
+// coincidence of the two being the same width there.
+inline void Swap(LONG *a, LONG *b)
 {
-	long c = *a; *a = *b; *b = c;
+	LONG c = *a; *a = *b; *b = c;
 }
 
 // =================================================================================================
