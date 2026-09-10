@@ -181,8 +181,8 @@ people get hooked, others get bored. Finding out for yourself is easy – simply
 The in-game help is on the "Help" button of the Launchpad, or Alt-F1 while running. The user manual
 is in the `Doc` subfolder if you built the documentation.
 
-For Orbiter itself, the community is at [orbiter-forum.com](https://www.orbiter-forum.com).
-For **this Linux port**, use [Discord](https://discord.gg/fnxQYTKPFK) or the issue tracker.
+For questions about **this Linux port** — build problems, crashes, anything that renders wrong —
+use [Discord](https://discord.gg/fnxQYTKPFK) or the issue tracker.
 
 ## Credits
 
