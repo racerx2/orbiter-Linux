@@ -3,7 +3,10 @@
 # Orbiter for Linux — a native Vulkan port
 
 A **native 64-bit Linux build** of [orbitersim/orbiter](https://github.com/orbitersim/orbiter) —
-`x86-64`, running directly on Vulkan. No Wine, no compatibility layer, no 32-bit target.
+`x86-64`, running directly on Vulkan. No Wine, no compatibility layer.
+
+The same tree still builds the stock **Windows** version as well; the platform decides which
+renderer is used.
 
 Orbiter is the work of **Dr. Martin Schweiger**, who created it and has maintained it since 2000.
 This fork ports his simulator to Linux; the physics, the flight model, the vessels and the scenarios
@@ -21,10 +24,29 @@ Two things had to be built for that:
 
 Both are selected automatically. `cmake` needs no extra flags.
 
+**This tree still builds the Windows version too.** Nothing was removed to make room for the Linux
+port — `OVP/D3D9Client` is intact and the Windows toolchain in [COMPILE.md](./COMPILE.md) is
+unchanged. CMake picks the renderer by platform:
+
+```cmake
+if(WIN32)   set(ORBITER_DEFAULT_D3D9 ON)    # -> add_subdirectory(D3D9Client)
+else()      set(ORBITER_DEFAULT_D3D9 OFF)   # -> add_subdirectory(VulkanClient)
+```
+
+so `cmake --preset windows-x64-release` on Windows gives you stock Orbiter with D3D9Client, and
+`cmake --preset linux-native-release` here gives you the Vulkan build. Same sources, same commit.
+
+That is not just a convenience. Having both buildable from one tree is what makes the port
+checkable: when something renders wrong on Linux, the Windows build is the reference to compare it
+against, and the D3D9 sources sit beside the converted ones for exactly that reason.
+
 ## The 64-bit target
 
-Upstream Orbiter for Windows is 32-bit. This is `x86-64`, and the only target — so any add-on binary
-built against the Windows version will not load here; it has to be rebuilt from source.
+The **Linux** build is `x86-64`, and that is its only target. (The Windows side of the tree still
+offers both, via the `windows-x86-*` and `windows-x64-*` presets.)
+
+Stock Orbiter for Windows is a 32-bit application and its add-on ecosystem is built against that, so
+a Windows add-on binary cannot be loaded here — it has to be rebuilt from source.
 
 That difference is not cosmetic. Windows x64 is LLP64, where `long` stays 32 bits; Linux is LP64,
 where it is 64. Every `DWORD`, `LONG` and `uLongf` in the original had to be checked rather than
