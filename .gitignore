@@ -29,3 +29,25 @@ Extern/irrKlang
 Doc/**/*.log
 Doc/**/*.pdf
 Doc/**/*.gz
+
+# ---------------------------------------------------------------------------
+# Linux/Vulkan port
+# ---------------------------------------------------------------------------
+# `[Bb]uild/` above catches build/ but not the side-by-side trees this port
+# uses, and those are 1.8 GB each. build/binhist/ inside them holds 55 MB
+# Orbiter binaries kept by Tests/input/session.sh so a core dump stays
+# readable after a rebuild -- useful locally, never in the history.
+build-*/
+out/
+
+# Screenshots. _shots/ is where every harness drops its captures (524 MB and
+# growing); the loose crop*/full*/shot* files at the root are the same thing
+# from earlier sessions.
+_shots/
+crop*.png
+full*.png
+shot*.png
+
+# Runtime state written into the source tree by a run.
+Orbiter.log
+imgui.ini
