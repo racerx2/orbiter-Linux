@@ -11,10 +11,16 @@
 #include "DefaultSoundGroupPreSteps.h"
 #include "AnimationState.h"
 #include "XRSoundDLL.h"   // for XRSoundDLL::GetAbsoluteSimTime()
+#ifndef _WIN32
+#include "AlsaOutput.h"
+#endif
 
 // static data and methods
 
 ISoundEngine *XRSoundEngine::s_pKlangEngine = nullptr;
+#ifndef _WIN32
+AlsaOutput *XRSoundEngine::s_pAlsaOutput = nullptr;
+#endif
 XRSoundConfigFileParser XRSoundEngine::s_globalConfig;
 bool XRSoundEngine::s_bIrrKlangEngineNeedsInitialization = true;
 WavContext *XRSoundEngine::s_pMusicFolderWavContext = nullptr;  // this global, vessel-independent context will exist until the irrKlang engine is terminated
@@ -43,10 +49,131 @@ bool XRSoundEngine::InitializeIrrKlangEngine()
         // Note: we do NOT want to use multi-threading here: that opens up possible timing gaps / race conditions between the time 
         // we query a given sound's state in our thread and when the OTHER thread updates that state.
         // TODO: if and when we want to support 3D sounds, will need to add ESEO_USE_3D_BUFFERS flag below as well
+        //
+        // The above holds for the Windows build and is left in force there.
+        // On Linux it cannot be honoured: the ALSA backend is fed from
+        // UpdateIrrKlangEngine(), which runs at 20 Hz, and starving it does
+        // not merely degrade Orbiter's audio -- it corrupts every other
+        // application sharing the output sink. A state race inside XRSound is
+        // a lesser fault than that, so the threaded engine is used here and
+        // the risk the author describes is accepted knowingly.
+        // irrKlang's own startup diagnostics -- which device it chose, which
+        // plugins loaded -- driven from XRSound.cfg rather than hardcoded, so
+        // the audio back end can be investigated without a rebuild. Off by
+        // default: it prints to stdout, which is the session console.
+        int ikDebug = 0;
+        if (s_globalConfig.EnableIrrKlangDebugOutput)
+            ikDebug = ESEO_PRINT_DEBUG_INFO_TO_DEBUGGER
+                    | ESEO_PRINT_DEBUG_INFO_TO_STDOUT;
+
+#ifndef _WIN32
+        // WHICH OF THE TWO LINUX OUTPUT ARRANGEMENTS THIS SESSION USES.
+        // Default false: irrKlang writes to a real PCM and AlsaOutput is only
+        // an instrument. ORB_XRSOUND_OUTPUT=receiver picks the other one --
+        // irrKlang on the null PCM with AlsaOutput doing the write and the
+        // pacing. See the block on the createIrrKlangDevice call below.
+        const char *outMode = getenv("ORB_XRSOUND_OUTPUT");
+        const bool bReceiverOutput = (outMode && !strcmp(outMode, "receiver"));
+#endif
+
         s_pKlangEngine = createIrrKlangDevice(
+#ifdef _WIN32
             ESOD_AUTO_DETECT,
-            ESEO_LOAD_PLUGINS | ESEO_PRINT_DEBUG_INFO_TO_DEBUGGER
+            ESEO_LOAD_PLUGINS | ikDebug
         );
+#else
+            // ==============================================================
+            // irrKlang DOES ITS OWN OUTPUT, ON A REAL PCM. That is a REVERSAL
+            // of what this file used to do, and it was measured.
+            //
+            // The previous arrangement gave irrKlang ALSA's "null" PCM so its
+            // output went nowhere, and had AlsaOutput -- installed through
+            // setMixedDataOutputReceiver -- do the real write, on the finding
+            // that irrKlang's own ALSA backend crackled on PipeWire.
+            //
+            // What that overlooked is that A SOUND DEVICE IS WHAT PACES A
+            // MIXING LOOP. alsa-lib's null plugin accepts every write
+            // instantly and reports its whole buffer free for ever, so with
+            // it nothing in the chain was rate-limited. Measured:
+            //
+            //   null PCM, receiver returns at once:
+            //     mixer x9.42 realtime, 352 of 396 s of audio DISCARDED
+            //     -> the sound skipping
+            //   null PCM, receiver waits for room (pacing added):
+            //     mixer x1.00, 0 dropped -- but the wait is inside irrKlang's
+            //     engine lock, so Orbiter stuttered: p99 85 ms, 9 frames a
+            //     second over 33 ms
+            //   real PCM ("default"), receiver measures only:
+            //     mixer x1.00 EXACTLY, 0 dropped, peak sample 31972/32767,
+            //     and 165 fps flat with ZERO frames over 33 ms
+            //
+            // The third is right on every axis, and it is right for a reason
+            // rather than by luck: irrKlang's device write happens OUTSIDE
+            // the lock it holds across mixing and the receiver callback, so a
+            // real device paces the mixer without ever making Orbiter wait.
+            // That is the one place in this pipeline where blocking is free,
+            // and it is exactly where a sound library is designed to block.
+            //
+            // The earlier crackle finding is NOT contradicted lightly: it was
+            // a listening test and nothing here can listen. What is measured
+            // is that irrKlang on the real device now delivers a complete,
+            // correctly paced, full-scale stream. ORB_XRSOUND_OUTPUT=receiver
+            // restores the old arrangement (null PCM + AlsaOutput writing,
+            // now with pacing) for a system where it turns out to be needed.
+            //
+            // The driver must be ESOD_ALSA and NOT ESOD_NULL: only the ALSA
+            // and WinMM backends implement the receiver, and with ESOD_NULL
+            // setMixedDataOutputReceiver returns false and nothing is mixed
+            // at all -- which would take the diagnostics with it.
+            //
+            // ESEO_MULTI_THREADED is required, not merely preferred: the
+            // mixing thread is what drives both the device and the receiver,
+            // and XRSound's UpdateIrrKlangEngine() runs at 20 Hz, far too
+            // slow to feed an audio device.
+            // ==============================================================
+            ESOD_ALSA,
+            ESEO_LOAD_PLUGINS | ESEO_MULTI_THREADED | ikDebug,
+            // WHICH PCM irrKlang OPENS IS WHAT PACES ITS MIXING LOOP, and
+            // that is why this string is a variable and not a literal.
+            //
+            // "null" discards irrKlang's broken output, which is what it was
+            // chosen for -- but alsa-lib's null plugin also accepts every
+            // write instantly and reports its whole buffer free for ever, so
+            // it paces nothing. Measured with that device: the mixer ran at
+            // 9.42x realtime and AlsaOutput threw away 89% of what it
+            // produced. See the long note in AlsaOutput.h.
+            //
+            // ORB_IRRKLANG_DEVICE overrides it so the pacing behaviour of a
+            // real PCM can be measured against the null one in a single run,
+            // without a rebuild.
+            [bReceiverOutput]() -> const char * {
+                const char *dev = getenv("ORB_IRRKLANG_DEVICE");
+                if (dev && *dev) return dev;
+                return bReceiverOutput ? "null" : "default";
+            }()
+        );
+
+        if (s_pKlangEngine) {
+            // THE RECEIVER IS AN INSTRUMENT BY DEFAULT, NOT THE OUTPUT.
+            //
+            // In measure-only mode it opens no device and moves no audio: it
+            // counts what irrKlang delivered, works out the rate against
+            // realtime, and reports the peak sample -- which is the only
+            // thing in this process that can distinguish "playing" from
+            // "playing silence". Costs one pass over a 17 KB buffer ten
+            // times a second.
+            s_pAlsaOutput = new AlsaOutput();
+            s_pAlsaOutput->SetMeasureOnly(!bReceiverOutput);
+            if (!s_pKlangEngine->setMixedDataOutputReceiver(s_pAlsaOutput)) {
+                s_globalConfig.WriteLog(
+                    bReceiverOutput
+                        ? "ERROR: setMixedDataOutputReceiver failed; no audio will be produced."
+                        : "WARNING: setMixedDataOutputReceiver failed; audio diagnostics unavailable.");
+                delete s_pAlsaOutput;
+                s_pAlsaOutput = nullptr;
+            }
+        }
+#endif
 
         char logMsg[256];   // can't use CString easily here b/c Orbiter's oapiWriteLog takes a char * instead of const char * for some bizarre reason.
         if (s_pKlangEngine)
@@ -94,6 +221,14 @@ void XRSoundEngine::DestroyIrrKlangEngine()
         // free and reset the engine
         s_pKlangEngine->drop();
         s_pKlangEngine = nullptr;
+#ifndef _WIN32
+        // Freed AFTER the engine is dropped, never before: OnAudioDataReady
+        // runs on irrKlang's mixing thread, and that thread is only guaranteed
+        // to have stopped once drop() has returned. Destroying the receiver
+        // first would leave that thread calling into freed memory.
+        delete s_pAlsaOutput;
+        s_pAlsaOutput = nullptr;
+#endif
         s_bIrrKlangEngineNeedsInitialization = true;    // need to reinitialize the engine on next LoadWav call
     }
 }

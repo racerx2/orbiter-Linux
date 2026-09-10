@@ -235,6 +235,11 @@ protected:
     
     // data
     static ISoundEngine *s_pKlangEngine;        // initialized by InitializeIrrKlangEngine
+#ifndef _WIN32
+    // Receives irrKlang's mixed output and writes it to ALSA, because
+    // irrKlang's own ALSA backend is unusable here. See AlsaOutput.cpp.
+    static class AlsaOutput *s_pAlsaOutput;
+#endif
     static bool s_bIrrKlangEngineNeedsInitialization; // used to handle one-time startup items
 
     XRSoundConfigFileParser *m_pConfig;   // this is per-engine instance instead of static so that we can per-vessel or per-module configuration overrides if we want to    

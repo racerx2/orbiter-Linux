@@ -15,7 +15,7 @@
 // Constructor
 XRSoundConfigFileParser::XRSoundConfigFileParser(const char *pConfigFile) :
     ConfigFileParser(pConfigFile, XRSOUND_LOG_FILE),
-    EnableVerboseLogging(false), LogVesselAnimations(false), LogThrusterData(false), MasterVolume(1.0), CabinAmbienceMin(7), CabinAmbienceMax(35), MusicVolume(1.0),
+    EnableVerboseLogging(false), EnableIrrKlangDebugOutput(false), LogVesselAnimations(false), LogThrusterData(false), MasterVolume(1.0), CabinAmbienceMin(7), CabinAmbienceMax(35), MusicVolume(1.0),
     ATCVolume(1.0), ATCMinDelay(15), ATCMaxDelay(120), ATCAllowWhileLanded(true), ATCAllowDuringReentry(false), ATCAllowInAtmosphere(true),
     ATCDelayPlanetDistance(400.0), ATCDelayPlanetMultiplier(5.0), LandingGearAnimationID(-1),
     MusicOrder(SeqRandom::Random), MusicPlayInternal(MusicPlay::Off), MusicPlayExternal(MusicPlay::Space), UpdateInterval(0.05), SilenceOfSpace(true),
@@ -145,6 +145,10 @@ bool XRSoundConfigFileParser::ParseLine(const char *pSection, const char *pPrope
 #ifndef _DEBUG
             SSCANF_BOOL("%c", &EnableVerboseLogging);
 #endif
+        }
+        else if (PNAME_MATCHES("EnableIrrKlangDebugOutput"))
+        {
+            SSCANF_BOOL("%c", &EnableIrrKlangDebugOutput);
         }
         else if (PNAME_MATCHES("MasterVolume"))
         {

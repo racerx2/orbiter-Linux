@@ -173,6 +173,27 @@ bool ConfigFileParser::ParseFile(const char *pFilename)
             TrimString(m_parsedName);
             TrimString(m_parsedValue);
 
+#ifndef _WIN32
+            // Path separators in config VALUES.
+            //
+            // The shipped .cfg files spell sound paths the Windows way --
+            //     Opening = XRSound\Default\Gear Down.wav
+            //     Cabin Ambience = XRSound\Default\Cabin Ambience
+            // -- so nothing resolves here and every sound and folder was
+            // reported missing. The files are data shared with the Windows
+            // build and are not ours to rewrite.
+            //
+            // This is the one point every parsed value passes through, and it
+            // covers both the fail-fast readability check and the later load,
+            // which are separate code paths: converting in only one of them
+            // would let a file pass validation and then fail to open.
+            //
+            // Values in this format that contain a backslash are always
+            // paths; there is no escaping syntax for it to collide with.
+            for (char *q = m_parsedValue; *q; ++q)
+                if (*q == '\\') *q = '/';
+#endif
+
             // invoke the subclass to parse these values
             if (ParseLine(m_section, m_parsedName, m_parsedValue, bParsingOverrideFile) == false)
             {
@@ -256,7 +277,19 @@ void ConfigFileParser::TrimString(char *pStr)
     }
 
     // final step: shift string left to delete trimmed whitespace
-    strcpy(pOrgStart, pStart);
+    //
+    // memmove, not strcpy: pStart points INTO pOrgStart's own buffer, so the
+    // source and destination overlap and strcpy is undefined behaviour there.
+    // MSVC's implementation copies a byte at a time and happens to survive a
+    // leftward shift; glibc's is vectorised and reads and writes in
+    // overlapping 16- and 32-byte chunks, which corrupts the tail. Every path
+    // in the XRSound config files came out mangled --
+    //     'XRSound\Dult\Gear Down and Locked.wav'
+    // parsed as
+    //     'XRSound\Dlt\Gear Down and nd Locked.waav'
+    // with characters dropped and duplicated -- so no sound file was ever
+    // found and every vessel fell back to silence.
+    memmove(pOrgStart, pStart, strlen(pStart) + 1);
 }
 
 // log a message

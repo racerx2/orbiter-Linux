@@ -16,7 +16,13 @@
 #include <unordered_map>
 #include <sstream>
 
-static const char *XRSOUND_CONFIG_FILE = "XRSound\\XRSound.cfg";
+// Forward slash: Windows accepts it too, and it is the only form that
+// resolves on a case-sensitive POSIX filesystem. With the backslash the
+// parser reported
+//     ERROR: fopen failed for 'XRSound\XRSound.cfg'; GetLastError=0x2
+// and XRSound ran with no configuration at all -- every sound group
+// silently at its built-in default.
+static const char *XRSOUND_CONFIG_FILE = "XRSound/XRSound.cfg";
 
 // XRSound.log always resides in the Orbiter root folder, alongside Orbiter.log and the XR vessel log files
 static const char *XRSOUND_LOG_FILE = "XRSound.log";
@@ -120,6 +126,10 @@ public:
 
     float MasterVolume;
     bool EnableVerboseLogging;
+    // Prints irrKlang's own startup diagnostics (device, driver, plugin
+    // loading) to stdout. Off by default; only useful when the audio
+    // back end itself is being investigated.
+    bool EnableIrrKlangDebugOutput;
     bool LogVesselAnimations;
     bool LogThrusterData;
     bool SilenceOfSpace;

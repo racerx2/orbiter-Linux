@@ -28,8 +28,18 @@ elseif(NOT EXISTS ${IRRKLANG_DIR})
 endif()
 
 if(BUILD64)
-	set(IRRKLANG_BIN_DIR ${IRRKLANG_DIR}/bin/winx64-visualStudio)
-	set(IRRKLANG_LIB_DIR ${IRRKLANG_DIR}/lib/Winx64-visualStudio)
+	if(WIN32)
+		set(IRRKLANG_BIN_DIR ${IRRKLANG_DIR}/bin/winx64-visualStudio)
+		set(IRRKLANG_LIB_DIR ${IRRKLANG_DIR}/lib/Winx64-visualStudio)
+	else()
+		# The 64-bit archive carries Linux binaries alongside the MSVC ones:
+		#     bin/linux-gcc-64/libIrrKlang.so, ikpFlac.so, ikpMP3.so
+		# so nothing has to be built and the same download serves both. On ELF
+		# there is no separate import library -- the shared object IS the link
+		# target -- so BIN and LIB are the same directory.
+		set(IRRKLANG_BIN_DIR ${IRRKLANG_DIR}/bin/linux-gcc-64)
+		set(IRRKLANG_LIB_DIR ${IRRKLANG_DIR}/bin/linux-gcc-64)
+	endif()
 else()
 	# because of a bug in the 32bit version of irrKlang (it has hidden "__MACOSX" dir),
 	# CMake does not strip the top-level directory
@@ -38,7 +48,21 @@ else()
 	set(IRRKLANG_BIN_DIR ${IRRKLANG_DIR}/bin/win32-visualStudio)
 	set(IRRKLANG_LIB_DIR ${IRRKLANG_DIR}/lib/Win32-visualStudio)
 endif()
-set(IRRKLANG_LIB ${IRRKLANG_LIB_DIR}/irrKlang.lib)
+
+if(WIN32)
+	set(IRRKLANG_LIB ${IRRKLANG_LIB_DIR}/irrKlang.lib)
+	# The three runtime DLLs XRSound loads beside the executable.
+	set(IRRKLANG_RUNTIME
+		${IRRKLANG_BIN_DIR}/ikpMP3.dll
+		${IRRKLANG_BIN_DIR}/ikpFlac.dll
+		${IRRKLANG_BIN_DIR}/irrKlang.dll)
+else()
+	set(IRRKLANG_LIB ${IRRKLANG_LIB_DIR}/libIrrKlang.so)
+	set(IRRKLANG_RUNTIME
+		${IRRKLANG_BIN_DIR}/ikpMP3.so
+		${IRRKLANG_BIN_DIR}/ikpFlac.so
+		${IRRKLANG_BIN_DIR}/libIrrKlang.so)
+endif()
 
 ## XRSound
 set(ASSET_DIR ${CMAKE_CURRENT_SOURCE_DIR}/assets)
@@ -55,9 +79,7 @@ add_custom_target(XRSound_assets ALL
 	COMMAND ${CMAKE_COMMAND} -E copy ${ASSET_DIR}/XRSound/ReadMe.txt ${ORBITER_BINARY_ROOT_DIR}/XRSound/
 	COMMAND ${CMAKE_COMMAND} -E copy "${ASSET_DIR}/Doc/XRSound User Manual.pdf" ${ORBITER_BINARY_ROOT_DIR}/Doc/
 	COMMAND ${CMAKE_COMMAND} -E copy_if_different ${SOLUTION_DIR}/XRSound.h ${ORBITER_BINARY_SDK_DIR}/XRSound/
-	COMMAND ${CMAKE_COMMAND} -E copy ${IRRKLANG_BIN_DIR}/ikpMP3.dll ${ORBITER_BINARY_ROOT_DIR}
-	COMMAND ${CMAKE_COMMAND} -E copy ${IRRKLANG_BIN_DIR}/ikpFlac.dll ${ORBITER_BINARY_ROOT_DIR}
-	COMMAND ${CMAKE_COMMAND} -E copy ${IRRKLANG_BIN_DIR}/irrKlang.dll ${ORBITER_BINARY_ROOT_DIR}
+	COMMAND ${CMAKE_COMMAND} -E copy ${IRRKLANG_RUNTIME} ${ORBITER_BINARY_ROOT_DIR}
 	COMMAND ${CMAKE_COMMAND} -E copy_directory ${ASSET_DIR}/XRSound/Default ${ORBITER_BINARY_ROOT_DIR}/XRSound/Default
 )
 
@@ -73,7 +95,7 @@ install(DIRECTORY ${ORBITER_BINARY_ROOT_DIR}/XRSound/Default
 install(FILES "${ORBITER_BINARY_ROOT_DIR}/Doc/XRSound User Manual.pdf"
 	DESTINATION ${ORBITER_INSTALL_DOC_DIR}/
 )
-install(FILES ${ORBITER_BINARY_ROOT_DIR}/ikpMP3.dll ${ORBITER_BINARY_ROOT_DIR}/ikpFlac.dll ${ORBITER_BINARY_ROOT_DIR}/irrKlang.dll
+install(FILES ${IRRKLANG_RUNTIME}
 	DESTINATION ${ORBITER_INSTALL_ROOT_DIR}/
 )
 
