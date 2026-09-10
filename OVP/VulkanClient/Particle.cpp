@@ -1,0 +1,928 @@
+// ==============================================================
+// Particle.cpp
+// Part of the ORBITER VISUALISATION PROJECT (OVP)
+// Dual licensed under GPL v3 and LGPL v3
+// Copyright (C) 2006-2026 Martin Schweiger
+//				 2011 - 2016 Jarmo Nikkanen (D3D9Client modification)
+// ==============================================================
+//
+// CONVERTED FROM OVP/D3D9Client/Particle.cpp, read end to end (851 lines).
+//
+// Exhaust and re-entry smoke. Three quarters of the file is particle
+// physics -- creation rate, atmospheric slowdown, wind, the ground
+// intersection of a shadow -- and every line of it converts unchanged. The
+// three render functions are where the work is, and they all have the same
+// shape, so the notes are given once here:
+//
+//  1. SetVertexDeclaration MOVES UP, out of the pass and in front of
+//     Begin(), because the vertex layout is baked into the VkPipeline that
+//     BeginPass binds. The topology goes with it, and it is set EXPLICITLY
+//     rather than relied on: VulkanEffectFile remembers the last topology it
+//     was given, and HazeManager's sky dome sets TRIANGLESTRIP. A triangle
+//     list drawn through a strip pipeline is not an error, it is a mess.
+//
+//  2. FX->CommitChanges() BECOMES EndPass() + BeginPass(). D3DX buffered
+//     parameter writes and CommitChanges pushed them to the device; here the
+//     uniform block is uploaded and the descriptor set written AT BeginPass,
+//     so a parameter set afterwards does not reach the draw. Each batch
+//     therefore closes and reopens its pass. Same as SurfMgr, CloudMgr and
+//     CelSphere.
+//
+//  3. DrawIndexedPrimitiveUP -> VulkanEffectFile::DrawUP, and the count
+//     changes meaning. The Windows call takes a PRIMITIVE count (n*2
+//     triangles); DrawUP takes an INDEX count, which is n*6. Getting this
+//     wrong draws a third of the particles.
+//
+//  4. HR() IS DROPPED FROM THE FX CALLS. It checks a VkResult now, and
+//     VulkanEffectFile::SetTechnique returns void while the Set* return
+//     bool -- so the macro cannot wrap them at all. The calls are otherwise
+//     unchanged.
+//
+// TWO DEAD `smokemat` LOCALS. RenderDiffuse and RenderEmissive each declare
+// a `static D3DMATERIAL9 smokemat` and neither reads it -- the emissive
+// colour actually used comes from SetMaterial() into eColor. They are
+// commented out, in their converted form (D3DMATERIAL9 -> MATERIAL, whose
+// four COLOUR4 and float sit in the same order), because MSVC's C4189 is off
+// by default and GCC's -Wunused-variable is inside -Wall.
+//
+// The type mapping is the usual one: D3D9ParticleStream ->
+// VulkanParticleStream, D3D9Client -> VulkanClient, D3D9Effect ->
+// VulkanEffect, LPDIRECT3DDEVICE9 -> VulkanDevice*, LPDIRECT3DTEXTURE9 ->
+// VulkanTexture*, D3DCOLORVALUE -> COLOUR4, D3DMAT_Identity -> VMAT_Identity.
+// ==============================================================
+
+#define STRICT 1
+
+#include "Particle.h"
+#include "Scene.h"
+#include "VulkanSurface.h"
+#include "VulkanConfig.h"
+#include <stdio.h>
+
+static bool needsetup = true;
+
+static VERTEX_XYZ_TEX evtx[MAXPARTICLE*4]; // vertex list for emissive trail (no normals)
+static NTVERTEX       dvtx[MAXPARTICLE*4]; // vertex list for diffusive trail
+static WORD            idx[MAXPARTICLE*6]; // index list
+
+static float tu[8*4] = {0.0,0.5,0.5,0.0, 0.5,1.0,1.0,0.5, 0.0,0.5,0.5,0.0, 0.5,1.0,1.0,0.5,
+						0.5,0.5,0.0,0.0, 1.0,1.0,0.5,0.5, 0.5,0.5,0.0,0.0, 1.0,1.0,0.5,0.5};
+
+static float tv[8*4] = {0.0,0.0,0.5,0.5, 0.0,0.0,0.5,0.5, 0.5,0.5,1.0,1.0, 0.5,0.5,1.0,1.0,
+						0.0,0.5,0.5,0.0, 0.0,0.5,0.5,0.0, 0.5,1.0,1.0,0.5, 0.5,1.0,1.0,0.5};
+
+using namespace oapi;
+
+static PARTICLESTREAMSPEC DefaultParticleStreamSpec = {
+	0,                            // flags
+	8.0,                          // creation size
+	0.5,                          // creation rate
+	100,                          // emission velocity
+	0.3,                          // velocity randomisation
+	8.0,                          // lifetime
+	0.5,                          // growth rate
+	3.0,                          // atmospheric slowdown
+	PARTICLESTREAMSPEC::DIFFUSE,  // render lighting method
+	PARTICLESTREAMSPEC::LVL_SQRT, // mapping from level to alpha
+	0, 1,						  // lmin and lmax levels for mapping
+	PARTICLESTREAMSPEC::ATM_PLOG, // mapping from atmosphere to alpha
+	1e-4, 1,					  // amin and amax densities for mapping
+	// PARTICLESTREAMSPEC's last member, `SURFHANDLE tex`, is not in the
+	// Windows initialiser. Aggregate initialisation value-initialises the
+	// members that are left out, so it was already NULL and "NULL for
+	// default" is what the SDK documents -- but MSVC does not report the
+	// omission and -Wextra's -Wmissing-field-initializers does. Spelled out
+	// rather than suppressed: the value is identical, and the reader no
+	// longer has to know the rule to see what the texture is.
+	NULL						  // particle texture (NULL = default)
+};
+
+SURFHANDLE VulkanParticleStream::deftex = 0;
+SURFHANDLE VulkanParticleStream::deftexems = 0;
+bool VulkanParticleStream::bShadows = false;
+
+VulkanParticleStream::VulkanParticleStream(GraphicsClient *_gc, PARTICLESTREAMSPEC *pss) : ParticleStream (_gc, pss), VulkanEffect()
+{
+	pGC = (VulkanClient*)_gc;
+
+	//cam_ref = &gc->GetScene()->GetCameraGPos();
+	//src_ref = 0;
+	//src_ofs = _V(0,0,0);
+
+	interval = 0.1;
+	SetSpecs (pss ? pss : &DefaultParticleStreamSpec);
+	t0 = oapiGetSimTime();
+	//active = false;
+	pfirst = NULL;
+	plast = NULL;
+	np = 0;
+	VMAT_Identity(&mWorld);
+
+	if (needsetup) {
+		int i, j, k, r, ofs;
+		for (i = j = 0; i < MAXPARTICLE; i++) {
+			ofs = i*4;
+			idx[j++] = ofs;
+			idx[j++] = ofs+2;
+			idx[j++] = ofs+1;
+			idx[j++] = ofs+2;
+			idx[j++] = ofs;
+			idx[j++] = ofs+3;
+			r = rand() & 7;
+			for (k = 0; k < 4; k++) {
+				evtx[ofs+k].tu = dvtx[ofs+k].tu = tu[r*4+k];
+				evtx[ofs+k].tv = dvtx[ofs+k].tv = tv[r*4+k];
+			}
+		}
+		needsetup = false;
+	}
+}
+
+VulkanParticleStream::~VulkanParticleStream()
+{
+	while (pfirst) {
+		ParticleSpec *tmp = pfirst;
+		pfirst = pfirst->next;
+		delete tmp;
+	}
+}
+
+void VulkanParticleStream::GlobalInit (oapi::VulkanClient *gclient)
+{
+	deftex = SURFACE(gclient->clbkLoadTexture("Contrail1.dds", 0));
+	deftexems = SURFACE(gclient->clbkLoadTexture("Contrail1.dds", 0));
+	bShadows = *(bool*)gclient->GetConfigParam (CFGPRM_VESSELSHADOWS);
+}
+
+void VulkanParticleStream::GlobalExit ()
+{
+	DELETE_SURFACE(deftex);
+	DELETE_SURFACE(deftexems);
+}
+
+void VulkanParticleStream::SetSpecs(PARTICLESTREAMSPEC *pss)
+{
+	SetParticleHalflife (pss->lifetime);
+	size0 = pss->srcsize;
+	speed = pss->v0;
+	vrand = pss->srcspread;
+	alpha = pss->growthrate;
+	beta  = pss->atmslowdown;
+	pdensity = pss->srcrate;
+	diffuse = (pss->ltype == PARTICLESTREAMSPEC::DIFFUSE);
+	lmap  = pss->levelmap;
+	lmin  = pss->lmin, lmax = pss->lmax;
+	amap  = pss->atmsmap;
+	amin  = pss->amin;
+
+	switch (amap) {
+		case PARTICLESTREAMSPEC::ATM_PLIN: afac = 1.0/(pss->amax-amin); break;
+		case PARTICLESTREAMSPEC::ATM_PLOG: afac = 1.0/log(pss->amax/amin); break;
+		default: break;
+	}
+
+	if (diffuse) tex = (SURFACE(pss->tex) ? SURFACE(pss->tex) : deftex);
+	else		 tex = (SURFACE(pss->tex) ? SURFACE(pss->tex) : deftexems);
+}
+
+void VulkanParticleStream::SetParticleHalflife (double pht)
+{
+	exp_rate = RAND_MAX/pht;
+	stride = max (1, min (20,(int)pht));
+	ipht2 = 0.5/pht;
+}
+
+void VulkanParticleStream::SetObserverRef (const VECTOR3 *cam)
+{
+	LogErr("VulkanParticleStream::SetObserverRef() NOT IMPLEMENTED");
+	//cam_ref = cam;
+}
+
+void VulkanParticleStream::SetSourceRef (const VECTOR3 *src)
+{
+	LogErr("VulkanParticleStream::SetSourceRef() NOT IMPLEMENTED");
+	//src_ref = src;
+}
+
+void VulkanParticleStream::SetSourceOffset (const VECTOR3 &ofs)
+{
+	LogErr("VulkanParticleStream::SetSourceOffset() NOT IMPLEMENTED");
+	//src_ofs = ofs;
+}
+
+void VulkanParticleStream::SetIntensityLevelRef (double *lvl)
+{
+	level = lvl;
+}
+
+double VulkanParticleStream::Level2Alpha(double level) const
+{
+	switch (lmap) {
+		case PARTICLESTREAMSPEC::LVL_FLAT:	return lmin;
+		case PARTICLESTREAMSPEC::LVL_LIN:	return level;
+		case PARTICLESTREAMSPEC::LVL_SQRT:	return sqrt (level);
+		case PARTICLESTREAMSPEC::LVL_PLIN:	return max (0.0, min (1.0, (level-lmin)/(lmax-lmin)));
+		case PARTICLESTREAMSPEC::LVL_PSQRT:	return (level <= lmin ? 0 : level >= lmax ? 1 : sqrt ((level-lmin)/(lmax-lmin)));
+	}
+	return 0; // should not happen
+}
+
+double VulkanParticleStream::Atm2Alpha(double prm) const
+{
+	switch (amap) {
+		case PARTICLESTREAMSPEC::ATM_FLAT:	return amin;
+		case PARTICLESTREAMSPEC::ATM_PLIN:	return max (0.0, min (1.0, (prm-amin)*afac));
+		case PARTICLESTREAMSPEC::ATM_PLOG:	return max (0.0, min (1.0, log(prm/amin)*afac));
+	}
+	return 0; // should not happen
+}
+
+ParticleSpec *VulkanParticleStream::CreateParticle (const VECTOR3 &pos, const VECTOR3 &vel, double size, double alpha)
+{
+	ParticleSpec *p = new ParticleSpec;
+	p->pos = pos;
+	p->vel = vel;
+	p->size = size;
+	p->alpha0 = alpha;
+	p->t0 = oapiGetSimTime();
+	p->texidx = (rand() & 7) * 4;
+	p->flag = 0;
+	p->next = NULL;
+	p->prev = plast;
+	if (plast) plast->next = p;
+	else       pfirst = p;
+	plast = p;
+	np++;
+
+	if (np > MAXPARTICLE)
+		DeleteParticle (pfirst);
+
+	return p;
+}
+
+void VulkanParticleStream::DeleteParticle (ParticleSpec *p)
+{
+	if (p->prev) p->prev->next = p->next;
+	else         pfirst = p->next;
+	if (p->next) p->next->prev = p->prev;
+	else         plast = p->prev;
+	delete p;
+	np--;
+}
+
+void VulkanParticleStream::Update ()
+{
+	ParticleSpec *p, *tmp;
+	double dt = oapiGetSimStep();
+
+	for (p = pfirst; p;) {
+		if (dt * exp_rate > rand()) {
+			tmp = p;
+			p = p->next;
+			DeleteParticle (tmp);
+		} else {
+			p->pos += p->vel*dt;
+			p = p->next;
+		}
+	}
+}
+
+void VulkanParticleStream::Timejump()
+{
+	while (pfirst) {
+		ParticleSpec *tmp = pfirst;
+		pfirst = pfirst->next;
+		delete tmp;
+	}
+	pfirst = NULL;
+	plast = NULL;
+	np = 0;
+	t0 = oapiGetSimTime();
+}
+
+void VulkanParticleStream::SetDParticleCoords(const VECTOR3 &ppos, double scale, NTVERTEX *vtx)
+{
+	VECTOR3 cdir = ppos;
+	double ux, uy, uz, vx, vy, vz, len;
+	if (cdir.y || cdir.z) {
+		ux =  0;
+		uy =  cdir.z;
+		uz = -cdir.y;
+		len = scale / sqrt (uy*uy + uz*uz);
+		uy *= len;
+		uz *= len;
+		vx = cdir.y*cdir.y + cdir.z*cdir.z;
+		vy = -cdir.x*cdir.y;
+		vz = -cdir.x*cdir.z;
+		len = scale / sqrt(vx*vx + vy*vy + vz*vz);
+		vx *= len;
+		vy *= len;
+		vz *= len;
+	} else {
+		ux = 0;
+		uy = scale;
+		uz = 0;
+		vx = 0;
+		vy = 0;
+		vz = scale;
+	}
+	vtx[0].x = (float)(ppos.x-ux-vx);
+	vtx[0].y = (float)(ppos.y-uy-vy);
+	vtx[0].z = (float)(ppos.z-uz-vz);
+	vtx[1].x = (float)(ppos.x-ux+vx);
+	vtx[1].y = (float)(ppos.y-uy+vy);
+	vtx[1].z = (float)(ppos.z-uz+vz);
+	vtx[2].x = (float)(ppos.x+ux+vx);
+	vtx[2].y = (float)(ppos.y+uy+vy);
+	vtx[2].z = (float)(ppos.z+uz+vz);
+	vtx[3].x = (float)(ppos.x+ux-vx);
+	vtx[3].y = (float)(ppos.y+uy-vy);
+	vtx[3].z = (float)(ppos.z+uz-vz);
+}
+
+void VulkanParticleStream::SetEParticleCoords (const VECTOR3 &ppos, double scale, VERTEX_XYZ_TEX *vtx)
+{
+	VECTOR3 cdir = ppos;
+	double ux, uy, uz, vx, vy, vz, len;
+	if (cdir.y || cdir.z) {
+		ux =  0;
+		uy =  cdir.z;
+		uz = -cdir.y;
+		len = scale / sqrt (uy*uy + uz*uz);
+		uy *= len;
+		uz *= len;
+		vx = cdir.y*cdir.y + cdir.z*cdir.z;
+		vy = -cdir.x*cdir.y;
+		vz = -cdir.x*cdir.z;
+		len = scale / sqrt(vx*vx + vy*vy + vz*vz);
+		vx *= len;
+		vy *= len;
+		vz *= len;
+	} else {
+		ux = 0;
+		uy = scale;
+		uz = 0;
+		vx = 0;
+		vy = 0;
+		vz = scale;
+	}
+	vtx[0].x = (float)(ppos.x-ux-vx);
+	vtx[0].y = (float)(ppos.y-uy-vy);
+	vtx[0].z = (float)(ppos.z-uz-vz);
+	vtx[1].x = (float)(ppos.x-ux+vx);
+	vtx[1].y = (float)(ppos.y-uy+vy);
+	vtx[1].z = (float)(ppos.z-uz+vz);
+	vtx[2].x = (float)(ppos.x+ux+vx);
+	vtx[2].y = (float)(ppos.y+uy+vy);
+	vtx[2].z = (float)(ppos.z+uz+vz);
+	vtx[3].x = (float)(ppos.x+ux-vx);
+	vtx[3].y = (float)(ppos.y+uy-vy);
+	vtx[3].z = (float)(ppos.z+uz-vz);
+}
+
+void VulkanParticleStream::SetShadowCoords(const VECTOR3 &ppos, const VECTOR3 &cdir, double scale, VERTEX_XYZ_TEX *vtx)
+{
+	double ux, uy, uz, vx, vy, vz, len;
+
+	if (cdir.y || cdir.z) {
+		ux =  0;
+		uy =  cdir.z;
+		uz = -cdir.y;
+		len = scale / sqrt (uy*uy + uz*uz);
+		uy *= len;
+		uz *= len;
+		vx = cdir.y*cdir.y + cdir.z*cdir.z;
+		vy = -cdir.x*cdir.y;
+		vz = -cdir.x*cdir.z;
+		len = scale / sqrt(vx*vx + vy*vy + vz*vz);
+		vx *= len;
+		vy *= len;
+		vz *= len;
+	}
+	else {
+		ux = 0;
+		uy = scale;
+		uz = 0;
+		vx = 0;
+		vy = 0;
+		vz = scale;
+	}
+	vtx[0].x = (float)(ppos.x-ux-vx);
+	vtx[0].y = (float)(ppos.y-uy-vy);
+	vtx[0].z = (float)(ppos.z-uz-vz);
+	vtx[1].x = (float)(ppos.x-ux+vx);
+	vtx[1].y = (float)(ppos.y-uy+vy);
+	vtx[1].z = (float)(ppos.z-uz+vz);
+	vtx[2].x = (float)(ppos.x+ux+vx);
+	vtx[2].y = (float)(ppos.y+uy+vy);
+	vtx[2].z = (float)(ppos.z+uz+vz);
+	vtx[3].x = (float)(ppos.x+ux-vx);
+	vtx[3].y = (float)(ppos.y+uy-vy);
+	vtx[3].z = (float)(ppos.z+uz-vz);
+}
+
+void VulkanParticleStream::CalcNormals(const VECTOR3 &ppos, NTVERTEX *vtx)
+{
+	VECTOR3 cdir = unit (ppos);
+	double ux, uy, uz, vx, vy, vz, len;
+	if (cdir.y || cdir.z) {
+		ux =  0;
+		uy =  cdir.z;
+		uz = -cdir.y;
+		len = 3.0 / sqrt (uy*uy + uz*uz);
+		uy *= len;
+		uz *= len;
+		vx = cdir.y*cdir.y + cdir.z*cdir.z;
+		vy = -cdir.x*cdir.y;
+		vz = -cdir.x*cdir.z;
+		len = 3.0 / sqrt(vx*vx + vy*vy + vz*vz);
+		vx *= len;
+		vy *= len;
+		vz *= len;
+	}
+	else {
+		ux = 0;
+		uy = 1.0;
+		uz = 0;
+		vx = 0;
+		vy = 0;
+		vz = 1.0;
+	}
+	static float scale = (float)(1.0/sqrt(19.0));
+	vtx[0].nx = scale*(float)(-cdir.x-ux-vx);
+	vtx[0].ny = scale*(float)(-cdir.y-uy-vy);
+	vtx[0].nz = scale*(float)(-cdir.z-uz-vz);
+	vtx[1].nx = scale*(float)(-cdir.x-ux+vx);
+	vtx[1].ny = scale*(float)(-cdir.y-uy+vy);
+	vtx[1].nz = scale*(float)(-cdir.z-uz+vz);
+	vtx[2].nx = scale*(float)(-cdir.x+ux+vx);
+	vtx[2].ny = scale*(float)(-cdir.y+uy+vy);
+	vtx[2].nz = scale*(float)(-cdir.z+uz+vz);
+	vtx[3].nx = scale*(float)(-cdir.x+ux-vx);
+	vtx[3].ny = scale*(float)(-cdir.y+uy-vy);
+	vtx[3].nz = scale*(float)(-cdir.z+uz-vz);
+}
+
+void VulkanParticleStream::Render(VulkanDevice *dev)
+{
+	if (!pfirst) return;
+	if (diffuse) RenderDiffuse(dev);
+	else         RenderEmissive(dev);
+}
+
+void VulkanParticleStream::RenderDiffuse(VulkanDevice *dev)
+{
+	// Declared and never read; see the file header. D3DMATERIAL9's five
+	// members are Diffuse, Ambient, Specular, Emissive and Power, which is
+	// MATERIAL's four COLOUR4 and float in the same order.
+	//static MATERIAL smokemat = { // emissive material for engine exhaust
+	//	{1,1,1,1},
+	//	{0,0,0,1},
+	//	{0,0,0,1},
+	//	{0.2f,0.2f,0.2f,1},
+	//	0.0
+	//};
+	UINT numPasses=0;
+	ParticleSpec *p;
+	int i0, j, n, stride = np/16+1;
+	float *u, *v;
+	NTVERTEX *vtx;
+
+	VECTOR3 camera_gpos = pGC->GetScene()->GetCameraGPos();
+
+	CalcNormals(plast->pos - camera_gpos, dvtx);
+
+	// Was dev->SetVertexDeclaration(pNTVertexDecl) inside the pass. Both this
+	// and the topology are pipeline state -- see point 1 in the file header.
+	FX->SetVertexDecl(pNTVertexDecl);
+	FX->SetTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+
+	FX->SetTechnique(eDiffuseTech);
+	FX->SetMatrix(eW, &mWorld);
+
+	if (tex) FX->SetTexture(eTex0, SURFACE(tex)->GetTexture());
+
+	FX->Begin(&numPasses, 0);		// was D3DXFX_DONOTSAVESTATE
+	FX->BeginPass(0);
+
+	for (p = pfirst, vtx = dvtx, n = i0 = 0; p; p = p->next) {
+
+		SetDParticleCoords(p->pos - camera_gpos, p->size, vtx);
+
+		u = tu + p->texidx;
+		v = tv + p->texidx;
+
+		for (j = 0; j < 4; j++, vtx++) {
+			vtx->nx = dvtx[j].nx;
+			vtx->ny = dvtx[j].ny;
+			vtx->nz = dvtx[j].nz;
+			vtx->tu = u[j];
+			vtx->tv = v[j];
+		}
+
+		if (++n == stride || n+i0 == np) {
+			float alpha = (float)max (0.1, p->alpha0*(1.0-(oapiGetSimTime()-p->t0)*ipht2));
+			FX->SetFloat(eMix, alpha);
+			// FX->CommitChanges() -- see point 2 in the file header.
+			FX->EndPass();
+			FX->BeginPass(0);
+			// DrawIndexedPrimitiveUP(TRIANGLELIST, 0, n*4, n*2, idx,
+			// INDEX16, dvtx+i0*4, sizeof(NTVERTEX)). The fourth argument is
+			// a PRIMITIVE count; DrawUP's last is an INDEX count, and n*2
+			// triangles need n*6 indices.
+			FX->DrawUP(dvtx+i0*4, n*4, sizeof(NTVERTEX), idx, n*6);
+			i0 += n;
+			n = 0;
+		}
+	}
+
+	FX->EndPass();
+	FX->End();
+}
+
+
+void VulkanParticleStream::RenderEmissive(VulkanDevice *dev)
+{
+	// Declared and never read; see the file header.
+	//static MATERIAL smokemat = { // emissive material for engine exhaust
+	//	{0,0,0,1},
+	//	{0,0,0,1},
+	//	{0,0,0,1},
+	//	{1,1,1,1},
+	//	0.0
+	//};
+	UINT numPasses=0;
+	ParticleSpec *p = NULL;
+	int i0, j, n;
+	float *u, *v;
+	VERTEX_XYZ_TEX *vtx;
+
+	VECTOR3 camera_gpos = pGC->GetScene()->GetCameraGPos();
+
+	FX->SetVertexDecl(pPosTexDecl);
+	FX->SetTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+
+	FX->SetTechnique(eEmissiveTech);
+	FX->SetMatrix(eW, &mWorld);
+
+	if (tex) FX->SetTexture(eTex0, SURFACE(tex)->GetTexture());
+
+	// D3DCOLORVALUE is four floats named r,g,b,a; COLOUR4 is the same four
+	// floats with the same names, so the upload size is unchanged.
+	COLOUR4 color;
+	color.r = color.g = color.b = color.a = 1.0f;
+	SetMaterial(color);
+
+	FX->SetValue(eColor, &color, sizeof(COLOUR4));
+
+	FX->Begin(&numPasses, 0);		// was D3DXFX_DONOTSAVESTATE
+	FX->BeginPass(0);
+
+	for (p = pfirst, vtx = evtx, n = i0 = 0; p; p = p->next) {
+
+		SetEParticleCoords(p->pos - camera_gpos, p->size, vtx);
+
+		u = tu + p->texidx;
+		v = tv + p->texidx;
+		for (j = 0; j < 4; j++, vtx++) {
+			vtx->tu = u[j];
+			vtx->tv = v[j];
+		}
+
+		if (++n == stride || n+i0 == np) {
+
+			float alpha = (float)max (0.1, p->alpha0*(1.0-(oapiGetSimTime()-p->t0)*ipht2));
+			FX->SetFloat(eMix, alpha);
+			FX->EndPass();
+			FX->BeginPass(0);
+			FX->DrawUP(evtx+i0*4, n*4, sizeof(VERTEX_XYZ_TEX), idx, n*6);
+			i0 += n;
+			n = 0;
+		}
+	}
+
+	FX->EndPass();
+	FX->End();
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+// =======================================================================
+
+ExhaustStream::ExhaustStream (oapi::GraphicsClient *_gc, OBJHANDLE hV,
+	const double *srclevel, const VECTOR3 *thref, const VECTOR3 *thdir,
+	PARTICLESTREAMSPEC *pss)
+: VulkanParticleStream (_gc, pss)
+{
+	Attach (hV, thref, thdir, srclevel);
+	hPlanet = 0;
+}
+
+ExhaustStream::ExhaustStream (oapi::GraphicsClient *_gc, OBJHANDLE hV,
+	const double *srclevel, const VECTOR3 &ref, const VECTOR3 &_dir,
+	PARTICLESTREAMSPEC *pss)
+: VulkanParticleStream (_gc, pss)
+{
+	Attach (hV, ref, _dir, srclevel);
+	hPlanet = 0;
+}
+
+void ExhaustStream::Update ()
+{
+	VulkanParticleStream::Update();
+
+	double simt = oapiGetSimTime();
+	double dt = oapiGetSimStep();
+	double alpha0;
+
+	VESSEL *vessel = (hRef ? oapiGetVesselInterface (hRef) : 0);
+
+	if (np) {
+		ParticleSpec *p;
+		double lng, lat, r1, r2, rad, pref, slow;
+		int i;
+		if (vessel) hPlanet = vessel->GetSurfaceRef();
+		if (hPlanet) {
+			VECTOR3 pp;
+			oapiGetGlobalPos (hPlanet, &pp);
+			rad = oapiGetSize (hPlanet);
+			VECTOR3 dv = pp-plast->pos; // gravitational dv
+			double d = length (dv);
+			dv *= GGRAV * oapiGetMass(hPlanet)/(d*d*d) * dt;
+
+			ATMPARAM prm;
+			oapiGetPlanetAtmParams (hPlanet, d, &prm);
+			if (prm.rho) {
+				pref = sqrt(prm.rho) / 1.1371;
+				slow = exp(-beta*pref*dt);
+				dv *= exp(-prm.rho*2.0); // reduce gravitational effect in atmosphere (buoyancy)
+			} else {
+			//	pref = 0.0;
+				slow = 1.0;
+			}
+			(void)pref;	// written in one branch, read in neither
+			oapiGlobalToEqu (hPlanet, pfirst->pos, &lng, &lat, &r1);
+			VECTOR3 av1 = oapiGetWindVector (hPlanet, lng, lat, r1-rad, 3);
+			oapiGlobalToEqu (hPlanet, plast->pos, &lng, &lat, &r2);
+			VECTOR3 av2 = oapiGetWindVector (hPlanet, lng, lat, r2-rad, 3);
+			VECTOR3 dav = (av2-av1)/np;
+			double r = oapiGetSize (hPlanet);
+			if (vessel) r += vessel->GetSurfaceElevation();
+
+			for (p = pfirst, i = 0; p; p = p->next, i++) {
+				p->vel += dv;
+				VECTOR3 av = dav*i + av1; // atmosphere velocity
+				VECTOR3 vv = p->vel-av;   // velocity difference
+				p->vel = vv*slow + av;
+				p->size += alpha * dt;
+
+				VECTOR3 s (p->pos - pp);
+				if (length(s) < r) {
+					VECTOR3 dp = s * (r/length(s)-1.0);
+					p->pos += dp;
+
+					static double dv_scale = length(vv)*0.2;
+					VECTOR3 dv = {((double)rand()/(double)RAND_MAX-0.5)*dv_scale,
+								  ((double)rand()/(double)RAND_MAX-0.5)*dv_scale,
+								  ((double)rand()/(double)RAND_MAX-0.5)*dv_scale};
+					dv += vv;
+
+					normalise(s);
+					VECTOR3 vv2 = dv - s*dotp(s,dv);
+					if (length(vv2)) vv2 *= 0.5*length(vv)/length(vv2);
+					vv2 += s*(((double)rand()/(double)RAND_MAX)*dv_scale);
+					p->vel = vv2*1.0/*2.0*/+av;
+					double r = (double)rand()/(double)RAND_MAX;
+					p->pos += (vv2-vv) * dt * r;
+					//p->size *= (1.0+r);
+				}
+			}
+		}
+	}
+
+	if (level && *level > 0 && vessel && (alpha0 = Level2Alpha(*level) * Atm2Alpha (vessel->GetAtmDensity())) > 0.01) {
+		if (simt > t0+interval) {
+			VECTOR3 vp, vv;
+			MATRIX3 vR;
+			vessel->GetRotationMatrix (vR);
+			vessel->GetGlobalPos (vp);
+			vessel->GetGlobalVel (vv);
+			VECTOR3 vr = mul (vR, *dir) * (-speed);
+			while (simt > t0+interval) {
+				// create new particle
+				double dt = simt-t0-interval;
+				double dv_scale = speed*vrand; // exhaust velocity randomisation
+				VECTOR3 dv = {((double)rand()/(double)RAND_MAX-0.5)*dv_scale,
+						      ((double)rand()/(double)RAND_MAX-0.5)*dv_scale,
+							  ((double)rand()/(double)RAND_MAX-0.5)*dv_scale};
+				ParticleSpec *p = CreateParticle (mul (vR, *pos) + vp + (vr+dv)*dt,
+					vv + vr+dv, size0, alpha0);
+				p->size += alpha * dt;
+
+				if (diffuse && hPlanet && bShadows) { // check for shadow render
+					double lng, lat, alt;
+					static const double eps = 1e-2;
+					oapiGlobalToEqu (hPlanet, p->pos, &lng, &lat, &alt);
+					//planet->GlobalToEquatorial (MakeVector(p->pos), lng, lat, alt);
+					alt -= oapiGetSize(hPlanet);
+					if (vessel) alt -= vessel->GetSurfaceElevation();
+					if (alt*eps < vessel->GetSize()) p->flag |= 1; // render shadow
+				}
+
+				// determine next interval (pretty hacky)
+				t0 += interval;
+				if (speed > 10) {
+					interval = max (0.015, size0 / (pdensity * (0.1*vessel->GetAirspeed() + size0)));
+				} else {
+					interval = 1.0/pdensity;
+				}
+				interval *= (double)rand()/(double)RAND_MAX + 0.5;
+			}
+		}
+	} else t0 = simt;
+
+}
+
+
+void ExhaustStream::RenderGroundShadow (VulkanDevice *dev, VulkanTexture *&prevtex)
+{
+	if (!diffuse || !hPlanet || !pfirst) return;
+	if (Config->TerrainShadowing == 0) return;
+
+	ParticleSpec *p = pfirst;
+
+	VESSEL *vessel = (hRef ? oapiGetVesselInterface (hRef) : 0);
+
+	double R;
+	float *u, *v, alpha;
+	int n, j, i0;
+	VECTOR3 sd, hn;
+
+	VERTEX_XYZ_TEX *vtx;
+
+	VECTOR3 pp,gcam;
+	oapiGetGlobalPos (hPlanet, &pp);
+	gcam = pGC->GetScene()->GetCameraGPos();
+
+	R = oapiGetSize(hPlanet);
+	if (vessel) R += vessel->GetSurfaceElevation();
+	sd = unit(p->pos);  // shadow projection direction
+	VECTOR3 pv0 = p->pos - pp;   // rel. particle position
+	// calculate the intersection of the vessel's shadow with the planet surface
+	double fac1 = dotp (sd, pv0);
+	if (fac1 > 0.0) return;       // shadow doesn't intersect planet surface
+	double arg  = fac1*fac1 - (dotp (pv0, pv0) - R*R);
+	if (arg <= 0.0) return;       // shadow doesn't intersect with planet surface
+	double a = -fac1 - sqrt(arg);
+	VECTOR3 shp = sd*a;           // projection point in global frame
+	hn = unit (shp + pv0);        // horizon normal in global frame
+
+	FX->SetVertexDecl(pPosTexDecl);
+	FX->SetTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+
+	FX->SetTechnique(eEmissiveTech);
+	FX->SetMatrix(eW, &mWorld);
+
+	if (tex) FX->SetTexture(eTex0, SURFACE(tex)->GetTexture());
+
+	UINT numPasses = 0;
+
+	FX->Begin(&numPasses, 0);		// was D3DXFX_DONOTSAVESTATE
+	FX->BeginPass(1);
+
+	for (p = pfirst, vtx = evtx, n = i0 = 0; p; p = p->next) {
+
+		if (!(p->flag & 1)) continue;
+
+		VECTOR3 pvr = p->pos - pp;   // rel. particle position
+
+		// calculate the intersection of the vessel's shadow with the planet surface
+		double fac1 = dotp (sd, pvr);
+		if (fac1 > 0.0) break;       // shadow doesn't intersect planet surface
+		double arg  = fac1*fac1 - (dotp (pvr, pvr) - R*R);
+		if (arg <= 0.0) break;       // shadow doesn't intersect with planet surface
+		double a = -fac1 - sqrt(arg);
+
+		SetShadowCoords (p->pos - gcam + sd*a, -hn, p->size, vtx);
+
+		u = tu + p->texidx;
+		v = tv + p->texidx;
+		for (j = 0; j < 4; j++, vtx++) {
+			vtx->tu = u[j];
+			vtx->tv = v[j];
+		}
+		if (++n == stride || n+i0 == np) {
+			alpha = (float)max (0.1, 0.60 * p->alpha0*(1.0-(oapiGetSimTime()-p->t0)*ipht2));
+			if (alpha>0.01f) {
+				FX->SetFloat(eMix, alpha);
+				FX->EndPass();
+				FX->BeginPass(1);
+				FX->DrawUP(evtx+i0*4, n*4, sizeof(VERTEX_XYZ_TEX), idx, n*6);
+			}
+			i0 += n;
+			n = 0;
+		}
+	}
+
+	FX->EndPass();
+	FX->End();
+}
+
+
+// =======================================================================
+
+ReentryStream::ReentryStream (oapi::GraphicsClient *_gc, OBJHANDLE hV, PARTICLESTREAMSPEC *pss)
+: VulkanParticleStream (_gc, pss)
+{
+	llevel = 1.0;
+	Attach (hV, _V(0,0,0), _V(0,0,0), &llevel);
+	hPlanet = 0;
+}
+
+void ReentryStream::SetMaterial (COLOUR4 &col)
+{
+	// should be heating-dependent
+	col.r = 1.0f;
+	col.g = 0.7f;
+	col.b = 0.5f;
+}
+
+void ReentryStream::Update ()
+{
+	VulkanParticleStream::Update ();
+	VESSEL *vessel = (hRef ? oapiGetVesselInterface (hRef) : 0);
+
+	double simt = oapiGetSimTime();
+	double simdt = oapiGetSimStep();
+	double friction = vessel
+	                ? 0.5 * pow(vessel->GetAtmDensity(), 0.6)
+	                      * pow(vessel->GetAirspeed()  , 3  )
+	                : 0.0;
+	double alpha0;
+
+	if (np) {
+		ParticleSpec *p;
+		double lng, lat, r1, r2, rad;
+		int i;
+		if (vessel) hPlanet = vessel->GetSurfaceRef();
+		if (hPlanet) {
+			rad = oapiGetSize (hPlanet);
+			oapiGlobalToEqu (hPlanet, pfirst->pos, &lng, &lat, &r1);
+			VECTOR3 av1 = oapiGetWindVector (hPlanet, lng, lat, r1-rad, 3);
+			oapiGlobalToEqu (hPlanet, plast->pos, &lng, &lat, &r2);
+			VECTOR3 av2 = oapiGetWindVector (hPlanet, lng, lat, r2-rad, 3);
+			VECTOR3 dav = (av2-av1)/np;
+			// double r = oapiGetSize (hPlanet);
+
+			for (p = pfirst, i = 0; p; p = p->next, i++) {
+				VECTOR3 av = dav*i + av1;
+				VECTOR3 vv = p->vel-av;
+				double slow = exp(-beta*simdt);
+				p->vel = vv*slow + av;
+				p->size += alpha * simdt;
+			}
+		}
+	}
+
+	if (friction > 0 && (alpha0 = Atm2Alpha (friction)) > 0.01) {
+		if (simt > t0+interval) {
+			VECTOR3 vp, vv, av;
+			vessel->GetGlobalPos (vp);
+			vessel->GetGlobalVel (vv);
+
+			if (hPlanet) {
+				double lng, lat, r, rad;
+				rad = oapiGetSize (hPlanet);
+				oapiGlobalToEqu (hPlanet, vp, &lng, &lat, &r);
+				av = oapiGetWindVector (hPlanet, lng, lat, r-rad, 3);
+			} else
+				av = vv;
+
+			while (simt > t0+interval) {
+				// create new particle
+				double dt = simt-t0-interval;
+				double ebt = exp(-beta*dt);
+				double dv_scale = vessel->GetAirspeed()*vrand; // exhaust velocity randomisation
+				VECTOR3 dv = {((double)rand()/(double)RAND_MAX-0.5)*dv_scale,
+						      ((double)rand()/(double)RAND_MAX-0.5)*dv_scale,
+							  ((double)rand()/(double)RAND_MAX-0.5)*dv_scale};
+				VECTOR3 dx = (vv-av) * (1.0-ebt)/beta + av*dt;
+				CreateParticle (vp + dx - vv*dt, (vv+dv-av)*ebt + av, size0, alpha0);
+				// determine next interval
+				t0 += interval;
+				interval = max (0.015, size0 / (pdensity * (0.1*vessel->GetAirspeed() + size0)));
+				interval *= (double)rand()/(double)RAND_MAX + 0.5;
+			}
+		}
+	} else t0 = simt;
+}

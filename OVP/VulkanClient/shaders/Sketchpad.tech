@@ -1,0 +1,110 @@
+// ===========================================================================
+// Sketchpad.tech -- the technique table for Sketchpad.glsl.
+// Copyright (C) 2012-2026 Jarmo Nikkanen
+// licensed under LGPL v2
+// ===========================================================================
+//
+// COPIED VERBATIM FROM OVP/D3D9Client/shaders/Sketchpad.fx, lines 283 and
+// 346. See the header of VulkanClient.tech for why the technique table is a
+// separate file now: glslang understands the shader half of an .fx and
+// nothing of the technique half, so the two halves are two files. Both are
+// still data, both are still read at load time.
+//
+// SketchTech's TWO PASSES are the pad's two view modes and VulkanPad::Flush
+// selects between them by index, unchanged: pass 0 is ORTHO and pass 1 is the
+// 3D view. Only the vertex shader differs between them.
+//
+// The render state that VulkanPad::Flush overrides per draw -- the colour
+// write mask, the blend enable, the depth test and write, the sampler filter
+// and the scissor rectangle -- is NOT here and cannot be: it is chosen from
+// dwBlendState and bDepthEnable at draw time. What is here is the state the
+// pass sets and the pad does not touch. See VulkanEffectFile::PassOverride.
+//
+// THE THREE SAMPLER_STATE BLOCKS ARE HERE FOR THE SAME REASON, transcribed
+// verbatim from Sketchpad.fx lines 66, 77 and 88. `sampler_state` is D3DX
+// effect-framework syntax, not HLSL. Their `Texture = <gTex0>` lines are what
+// make VulkanPad's FX->SetTexture(eTex0, ...) reach the binding that reads
+// it; see VulkanClient.tech's header.
+//
+// `: register(s0)` / `(s1)` / `(s2)` are dropped: they pinned each sampler to
+// a numbered D3D9 slot, and here the binding is declared in Sketchpad.glsl
+// and read back from reflection.
+// ===========================================================================
+
+sampler TexS
+{
+	Texture = <gTex0>;
+	MinFilter = LINEAR;
+	MagFilter = LINEAR;
+	MipFilter = LINEAR;
+	MaxAnisotropy = 8;
+	AddressU = CLAMP;
+	AddressV = CLAMP;
+};
+
+sampler FntS
+{
+	Texture = <gFnt0>;
+	MinFilter = LINEAR;
+	MagFilter = LINEAR;
+	MipFilter = LINEAR;
+	MaxAnisotropy = 8;
+	AddressU = CLAMP;
+	AddressV = CLAMP;
+};
+
+sampler NoiseS
+{
+	Texture = <gNoiseTex>;
+	MinFilter = LINEAR;
+	MagFilter = LINEAR;
+	MipFilter = LINEAR;
+	AddressU = WRAP;
+	AddressV = WRAP;
+};
+
+
+technique SketchTech
+{
+	pass P0
+	{
+		vertexShader = compile vs_3_0 OrthoVS();
+		pixelShader  = compile ps_3_0 SketchpadPS();
+		AlphaBlendEnable = true;
+		BlendOp = Add;
+		SrcBlend = SrcAlpha;
+		DestBlend = InvSrcAlpha;
+		ZEnable = false;
+		ZWriteEnable = false;
+		CullMode = None;
+	}
+
+	pass P1
+	{
+		vertexShader = compile vs_3_0 Sketch3DVS();
+		pixelShader = compile ps_3_0 SketchpadPS();
+		AlphaBlendEnable = true;
+		BlendOp = Add;
+		SrcBlend = SrcAlpha;
+		DestBlend = InvSrcAlpha;
+		ZEnable = false;
+		ZWriteEnable = false;
+		CullMode = None;
+	}
+}
+
+
+technique SketchMesh
+{
+	pass P0
+	{
+		vertexShader = compile vs_3_0 SketchMeshVS();
+		pixelShader = compile ps_3_0 SketchMeshPS();
+		AlphaBlendEnable = true;
+		BlendOp = Add;
+		SrcBlend = SrcAlpha;
+		DestBlend = InvSrcAlpha;
+		ZEnable = false;
+		ZWriteEnable = false;
+	}
+}

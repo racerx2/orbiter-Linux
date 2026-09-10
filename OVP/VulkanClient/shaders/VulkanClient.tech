@@ -1,0 +1,863 @@
+// ===========================================================================
+// VulkanClient.tech -- the technique table.
+// Part of the ORBITER VISUALISATION PROJECT (OVP)
+// Dual licensed under GPL v3 and LGPL v3
+// Copyright (C) 2011-2026 Jarmo Nikkanen
+// ===========================================================================
+//
+// EVERY BLOCK BELOW IS COPIED VERBATIM FROM THE .fx FILE THAT DECLARED IT.
+// Nothing here is new and nothing has been reordered or renamed; each block
+// carries the file and line it came from so it can be diffed against the
+// reference.
+//
+// WHY IT IS A SEPARATE FILE NOW. D3DXCreateEffectFromFileA compiled one .fx
+// into an object holding both the shaders and these technique declarations,
+// because its compiler understood both halves of the language. glslang
+// understands only the shader half -- GLSL has no `technique` and no render
+// state -- so the two halves are two files. They are still both DATA, still
+// read at load time, and a technique's blend or depth mode is still changed
+// by editing a file rather than by rebuilding the client. That property is
+// the reason this is a file at all rather than a table in VulkanEffect.cpp.
+//
+// The `compile vs_3_0` / `compile ps_3_0` words are kept exactly as the
+// reference writes them, and the parser skips them: SPIR-V has no shader
+// profiles, so the entry-point name is all that survives of those lines. They
+// are left in place so this file stays diffable against the .fx sources.
+//
+// The state names are the ones the reference uses and are translated in
+// VulkanEffect.cpp -- ParseBlendFactor, ParseBlendOp, ParseCompareOp,
+// ParseStencilOp and ParseCullMode. A name that appears here and not there is
+// reported by name at load time rather than defaulting silently.
+//
+// TWO TECHNIQUES THE CLIENT LOOKS UP ARE NOT HERE AND WERE NEVER ANYWHERE:
+// SkyDomeTech and BaseShadowTech. Searched across all eleven .fx files of the
+// reference; they exist only as the two GetTechniqueByName calls in
+// D3D9Effect.cpp, which have therefore returned NULL for the life of the
+// client. See the note in VulkanEffect::VulkanTechInit.
+//
+// THE SAMPLER_STATE BLOCKS ARE HERE FOR THE SAME REASON THE TECHNIQUES ARE.
+// `sampler_state` is D3DX effect-framework syntax, not HLSL: glslang has no
+// idea what AddressU or MaxAnisotropy mean, because in GLSL a sampler IS the
+// combination of an image and its state and carries none of it in the source.
+// So the blocks are transcribed verbatim from D3D9Client.fx, in its order,
+// and VulkanEffectFile builds one VkSampler per block.
+//
+// The `= sampler_state` between the name and the brace is dropped -- the
+// `sampler` keyword already said it, and the parser skips it either way.
+//
+// `Texture = <gTex0>` is what makes FX->SetTexture(eTex0, ...) work: it is
+// the join between a texture parameter, which the client sets by name, and
+// the bindings that read it. Eight of these blocks name gTex0.
+// ===========================================================================
+
+
+// ---------------------------------------------------------------------------
+// Texture Sampler implementations -- from D3D9Client.fx
+// ---------------------------------------------------------------------------
+
+sampler IrradS                      // Irradiance map sampler
+{
+	Texture = <gIrradianceMap>;
+	MinFilter = LINEAR;
+	MagFilter = LINEAR;
+	MipFilter = LINEAR;
+	AddressU = CLAMP;
+	AddressV = CLAMP;
+};
+
+sampler ShadowS                     // Shadow map sampler
+{
+	Texture = <gShadowMap>;
+	MinFilter = POINT;
+	MagFilter = POINT;
+	MipFilter = POINT;
+	AddressU = CLAMP;
+	AddressV = CLAMP;
+};
+
+sampler WrapS                       // Primary Mesh texture sampler
+{
+	Texture = <gTex0>;
+	MinFilter = ANISOTROPIC;
+	MagFilter = LINEAR;
+	MipFilter = LINEAR;
+	MaxAnisotropy = ANISOTROPY_MACRO;
+	MipMapLODBias = 0;
+	AddressU = WRAP;
+	AddressV = WRAP;
+};
+
+sampler ClampS                      // Base tile sampler
+{
+	Texture = <gTex0>;
+	MinFilter = ANISOTROPIC;
+	MagFilter = LINEAR;
+	MipFilter = LINEAR;
+	MaxAnisotropy = ANISOTROPY_MACRO;
+	MipMapLODBias = 0;
+	AddressU = CLAMP;
+	AddressV = CLAMP;
+};
+
+sampler SpecS                       // Primary Mesh texture sampler
+{
+	Texture = <gSpecMap>;
+	MinFilter = ANISOTROPIC;
+	MagFilter = LINEAR;
+	MipFilter = LINEAR;
+	MaxAnisotropy = ANISOTROPY_MACRO;
+	MipMapLODBias = 0;
+	AddressU = WRAP;
+	AddressV = WRAP;
+};
+
+sampler EmisS                       // Primary Mesh texture sampler
+{
+	Texture = <gEmisMap>;
+	MinFilter = ANISOTROPIC;
+	MagFilter = LINEAR;
+	MipFilter = LINEAR;
+	MaxAnisotropy = ANISOTROPY_MACRO;
+	MipMapLODBias = 0;
+	AddressU = WRAP;
+	AddressV = WRAP;
+};
+
+sampler ReflS                       // Primary Mesh texture sampler
+{
+	Texture = <gReflMap>;
+	MinFilter = ANISOTROPIC;
+	MagFilter = LINEAR;
+	MipFilter = LINEAR;
+	MaxAnisotropy = ANISOTROPY_MACRO;
+	MipMapLODBias = 0;
+	AddressU = WRAP;
+	AddressV = WRAP;
+};
+
+sampler MetlS                       // Primary Mesh texture sampler
+{
+	Texture = <gMetlMap>;
+	MinFilter = ANISOTROPIC;
+	MagFilter = LINEAR;
+	MipFilter = LINEAR;
+	MaxAnisotropy = ANISOTROPY_MACRO;
+	MipMapLODBias = 0;
+	AddressU = WRAP;
+	AddressV = WRAP;
+};
+
+sampler HeatS                       // Primary Mesh texture sampler
+{
+	Texture = <gHeatMap>;
+	MinFilter = ANISOTROPIC;
+	MagFilter = LINEAR;
+	MipFilter = LINEAR;
+	MaxAnisotropy = ANISOTROPY_MACRO;
+	MipMapLODBias = 0;
+	AddressU = WRAP;
+	AddressV = WRAP;
+};
+
+sampler RghnS                       // Primary Mesh texture sampler
+{
+	Texture = <gRghnMap>;
+	MinFilter = ANISOTROPIC;
+	MagFilter = LINEAR;
+	MipFilter = LINEAR;
+	MaxAnisotropy = ANISOTROPY_MACRO;
+	MipMapLODBias = 0;
+	AddressU = WRAP;
+	AddressV = WRAP;
+};
+
+sampler TranslS                     // Translucence texture sampler
+{
+	Texture = <gTranslMap>;
+	MinFilter = ANISOTROPIC;
+	MagFilter = LINEAR;
+	MipFilter = LINEAR;
+	MaxAnisotropy = ANISOTROPY_MACRO;
+	MipMapLODBias = 0;
+	AddressU = WRAP;
+	AddressV = WRAP;
+};
+
+sampler TransmS                     // Transmittance texture sampler
+{
+	Texture = <gTransmMap>;
+	MinFilter = ANISOTROPIC;
+	MagFilter = LINEAR;
+	MipFilter = LINEAR;
+	MaxAnisotropy = ANISOTROPY_MACRO;
+	MipMapLODBias = 0;
+	AddressU = WRAP;
+	AddressV = WRAP;
+};
+
+sampler Tex1S                       // Secundary mesh texture sampler (i.e. night texture)
+{
+	Texture = <gTex1>;
+	MinFilter = ANISOTROPIC;
+	MagFilter = LINEAR;
+	MipFilter = LINEAR;
+	MaxAnisotropy = ANISOTROPY_MACRO;
+	AddressU = WRAP;
+	AddressV = WRAP;
+};
+
+sampler Nrm0S                       // Normal Map Sampler
+{
+	Texture = <gTex3>;
+	MinFilter = ANISOTROPIC;
+	MagFilter = LINEAR;
+	MipFilter = LINEAR;
+	MaxAnisotropy = ANISOTROPY_MACRO;
+	MipMapLODBias = 0;
+	AddressU = WRAP;
+	AddressV = WRAP;
+};
+
+sampler MFDSamp                     // Virtual Cockpit MFD screen sampler
+{
+	Texture = <gTex0>;
+	MinFilter = ANISOTROPIC;
+	MagFilter = LINEAR;
+	MipFilter = LINEAR;
+	MaxAnisotropy = ANISOTROPY_MACRO;
+	AddressU = CLAMP;
+	AddressV = CLAMP;
+};
+
+sampler Panel0S                     // Sampler for mesh based panels, Panel MFDs. Must be compatible with Non-power of two conditional due to MFD screens.
+{
+	Texture = <gTex0>;
+	MinFilter = POINT;
+	MagFilter = LINEAR;
+	MipFilter = NONE;
+	AddressU  = CLAMP;
+	AddressV  = CLAMP;
+};
+
+sampler SimpleS                     // Sampler used for SimpleTech. (Star, VC HUD)
+{
+	Texture = <gTex0>;
+	MinFilter = ANISOTROPIC;
+	MagFilter = LINEAR;
+	MipFilter = LINEAR;
+	MaxAnisotropy = ANISOTROPY_MACRO;
+	MipMapLODBias = 0;
+	AddressU = CLAMP; // Modified for RC29 to fix the line issue in top-right corner
+	AddressV = CLAMP;
+};
+
+sampler ExhaustS
+{
+	Texture = <gTex0>;
+	MinFilter = LINEAR;
+	MagFilter = LINEAR;
+	MipFilter = NONE;
+	MaxAnisotropy = ANISOTROPY_MACRO;
+	AddressU = CLAMP;
+	AddressV = CLAMP;
+};
+
+sampler RingS                       // Planetary rings sampler
+{
+	Texture = <gTex0>;
+	MinFilter = ANISOTROPIC;
+	MagFilter = LINEAR;
+	MipFilter = LINEAR;
+	MaxAnisotropy = ANISOTROPY_MACRO;
+	AddressU = WRAP;
+	AddressV = WRAP;
+};
+
+sampler EnvMapAS
+{
+	Texture = <gEnvMapA>;
+	MinFilter = LINEAR;
+	MagFilter = LINEAR;
+	MipFilter = LINEAR;
+	AddressU = CLAMP;
+	AddressV = CLAMP;
+	AddressW = CLAMP;
+};
+
+sampler EnvMapBS
+{
+	Texture = <gEnvMapB>;
+	MinFilter = LINEAR;
+	MagFilter = LINEAR;
+	MipFilter = LINEAR;
+	AddressU = CLAMP;
+	AddressV = CLAMP;
+	AddressW = CLAMP;
+};
+
+
+// Planet surface samplers ----------------------------------------------------
+
+sampler Planet0S                    // Planet/Cloud diffuse texture sampler
+{
+	Texture = <gTex0>;
+	MinFilter = ANISOTROPIC;
+	MagFilter = LINEAR;
+	MipFilter = LINEAR;
+	MaxAnisotropy = ANISOTROPY_MACRO;
+	AddressU = CLAMP;
+	AddressV = CLAMP;
+};
+
+sampler Planet1S                    // Planet nightlights/specular mask sampler
+{
+	Texture = <gTex1>;
+	MinFilter = ANISOTROPIC;
+	MagFilter = LINEAR;
+	MipFilter = LINEAR;
+	MaxAnisotropy = ANISOTROPY_MACRO;
+	AddressU = CLAMP;
+	AddressV = CLAMP;
+};
+
+sampler Planet3S                    // Planet/Cloud micro texture sampler
+{
+	Texture = <gTex3>;
+	MinFilter = ANISOTROPIC;
+	MagFilter = LINEAR;
+	MipFilter = LINEAR;
+	MaxAnisotropy = ANISOTROPY_MACRO;
+	AddressU = WRAP;
+	AddressV = WRAP;
+};
+
+
+// ---------------------------------------------------------------------------
+// From D3D9Client.fx
+// ---------------------------------------------------------------------------
+
+// This is used for rendering grapple points ----------------------------------
+//
+technique ArrowTech
+{
+	pass P0
+	{
+		vertexShader = compile vs_3_0 ArrowTechVS();
+		pixelShader = compile ps_3_0 ArrowTechPS();
+
+		AlphaBlendEnable = true;
+		BlendOp = Add;
+		SrcBlend = SrcAlpha;
+		DestBlend = InvSrcAlpha;
+		ZWriteEnable = false;
+		ZEnable = true;
+	}
+}
+
+
+// This is used for many simple renderings ------------------------------------
+//
+technique SimpleTech
+{
+	pass P0
+	{
+		vertexShader = compile vs_3_0 BasicVS();
+		pixelShader  = compile ps_3_0 SimpleTechPS();
+
+		AlphaBlendEnable = true;
+		BlendOp = Add;
+		SrcBlend = SrcAlpha;
+		DestBlend = InvSrcAlpha;
+		ZEnable = false;
+		ZWriteEnable = false;
+	}
+}
+
+// This is used for 2DPanel and Glass cockpit ---------------------------------
+//
+technique PanelTech
+{
+	pass P0
+	{
+		vertexShader = compile vs_3_0 BasicVS();
+		pixelShader  = compile ps_3_0 PanelTechPS();
+
+		AlphaBlendEnable = true;
+		BlendOp = Add;
+		SrcBlend = SrcAlpha;
+		DestBlend = InvSrcAlpha;
+		ZEnable = false;
+		ZWriteEnable = false;
+	}
+}
+
+technique PanelTechB
+{
+	pass P0
+	{
+		vertexShader = compile vs_3_0 BasicVS();
+		pixelShader  = compile ps_3_0 PanelTechBPS();
+
+		AlphaBlendEnable = true;
+		BlendOp = Add;
+		SrcBlend = SrcAlpha;
+		DestBlend = InvSrcAlpha;
+		ZEnable = false;
+		ZWriteEnable = false;
+	}
+}
+
+
+// Thil will render exhaust textures ------------------------------------------
+//
+technique ExhaustTech
+{
+	pass P0
+	{
+		vertexShader = compile vs_3_0 BasicVS();
+		pixelShader  = compile ps_3_0 ExhaustTechPS();
+
+		AlphaBlendEnable = true;
+		BlendOp = Add;
+		SrcBlend = SrcAlpha;
+		DestBlend = InvSrcAlpha;
+		ZWriteEnable = false;
+		ZEnable = true;
+	}
+}
+
+// This is used for rendering beacons -----------------------------------------
+//
+technique SpotTech
+{
+	pass P0
+	{
+		vertexShader = compile vs_3_0 BasicVS();
+		pixelShader  = compile ps_3_0 SpotTechPS();
+
+		AlphaBlendEnable = true;
+		BlendOp = Add;
+		SrcBlend = SrcAlpha;
+		DestBlend = InvSrcAlpha;
+		ZWriteEnable = false;
+		ZEnable = true;
+	}
+}
+
+
+// ---------------------------------------------------------------------------
+// From Mesh.fx
+// ---------------------------------------------------------------------------
+
+technique AxisTech
+{
+	pass P0
+	{
+		vertexShader = compile vs_3_0 AxisTechVS();
+		pixelShader  = compile ps_3_0 AxisTechPS();
+
+		AlphaBlendEnable = true;
+		SrcBlend = SrcAlpha;
+		DestBlend = InvSrcAlpha;
+		ZEnable = true;
+		ZWriteEnable = true;
+	}
+}
+
+technique GeometryTech
+{
+	pass P0
+	{
+		vertexShader = compile vs_3_0 ShadowMapVS();
+		pixelShader = compile ps_3_0 ShadowMapPS();
+
+		AlphaBlendEnable = false;
+		ZEnable = true;
+		ZWriteEnable = true;
+		StencilEnable = false;
+	}
+
+	pass P1
+	{
+		vertexShader = compile vs_3_0 ShadowMapOIT_VS();
+		pixelShader = compile ps_3_0 ShadowMapOIT_PS();
+
+		AlphaBlendEnable = false;
+		ZEnable = true;
+		ZWriteEnable = true;
+		StencilEnable = false;
+	}
+}
+
+technique ShadowTech
+{
+	pass P0
+	{
+		vertexShader = compile vs_3_0 ShadowMeshTechVS();
+		pixelShader  = compile ps_3_0 ShadowTechPS();
+
+		AlphaBlendEnable = true;
+		BlendOp = Add;
+		SrcBlend = SrcAlpha;
+		DestBlend = InvSrcAlpha;
+		ZEnable = false;
+		ZWriteEnable = false;
+
+		StencilEnable = true;
+		StencilRef    = 1;
+		StencilMask   = 1;
+		StencilFunc   = NotEqual;
+		StencilPass   = Replace;
+	}
+
+	pass P1
+	{
+		vertexShader = compile vs_3_0 ShadowMeshTechExVS();
+		pixelShader  = compile ps_3_0 ShadowTechPS();
+
+		AlphaBlendEnable = true;
+		BlendOp = Add;
+		SrcBlend = SrcAlpha;
+		DestBlend = InvSrcAlpha;
+		ZEnable = false;
+		ZWriteEnable = false;
+
+		StencilEnable = true;
+		StencilRef    = 1;
+		StencilMask   = 1;
+		StencilFunc   = NotEqual;
+		StencilPass   = Replace;
+	}
+}
+
+technique TileBoxTech
+{
+	pass P0
+	{
+		vertexShader = compile vs_3_0 BoundingSphereVS();
+		pixelShader  = compile ps_3_0 BoundingBoxPS();
+
+		AlphaBlendEnable = true;
+		SrcBlend = SrcAlpha;
+		DestBlend = InvSrcAlpha;
+		ZEnable = true;
+		ZWriteEnable = true;
+	}
+}
+
+technique BoundingBoxTech
+{
+	pass P0
+	{
+		vertexShader = compile vs_3_0 BoundingBoxVS();
+		pixelShader  = compile ps_3_0 BoundingBoxPS();
+
+		AlphaBlendEnable = true;
+		SrcBlend = SrcAlpha;
+		DestBlend = InvSrcAlpha;
+		ZEnable = true;
+		ZWriteEnable = true;
+	}
+}
+
+technique BoundingSphereTech
+{
+	pass P0
+	{
+		vertexShader = compile vs_3_0 BoundingSphereVS();
+		pixelShader  = compile ps_3_0 BoundingBoxPS();
+
+		AlphaBlendEnable = true;
+		SrcBlend = SrcAlpha;
+		DestBlend = InvSrcAlpha;
+		ZEnable = true;
+		ZWriteEnable = true;
+	}
+}
+
+technique BaseTileTech
+{
+	pass P0
+	{
+		vertexShader = compile vs_3_0 BaseTileVS();
+		pixelShader  = compile ps_3_0 BaseTilePS();
+
+		AlphaBlendEnable = true;
+		BlendOp = Add;
+		SrcBlend = SrcAlpha;
+		DestBlend = InvSrcAlpha;
+		ZEnable = false;
+		ZWriteEnable = false;
+		CullMode = CCW;
+	}
+}
+
+technique RingTech
+{
+	pass P0
+	{
+		vertexShader = compile vs_3_0 TinyMeshTechVS();
+		pixelShader  = compile ps_3_0 RingTechPS();
+
+		AlphaBlendEnable = true;
+		BlendOp = Add;
+		SrcBlend = SrcAlpha;
+		DestBlend = InvSrcAlpha;
+		ZWriteEnable = true;
+		ZEnable = false;
+		CullMode = NONE;
+	}
+}
+
+technique RingTech2
+{
+	pass P0
+	{
+		vertexShader = compile vs_3_0 TinyMeshTechVS();
+		pixelShader  = compile ps_3_0 RingTech2PS();
+
+		AlphaBlendEnable = true;
+		BlendOp = Add;
+		SrcBlend = SrcAlpha;
+		DestBlend = InvSrcAlpha;
+		ZWriteEnable = true;
+		ZEnable = false;
+		CullMode = NONE;
+	}
+}
+
+technique SimplifiedTech
+{
+	pass P0
+	{
+		vertexShader = compile vs_3_0 TinyMeshTechVS();
+		pixelShader = compile ps_3_0 TinyMeshTechPS();
+
+		AlphaBlendEnable = true;
+		BlendOp = Add;
+		SrcBlend = SrcAlpha;
+		DestBlend = InvSrcAlpha;
+		ZWriteEnable = true;
+		ZEnable = true;
+	}
+}
+
+
+// ---------------------------------------------------------------------------
+// From Vessel.fx
+// ---------------------------------------------------------------------------
+
+technique VesselTech
+{
+	pass P0
+	{
+		vertexShader = compile vs_3_0 PBR_VS();
+		pixelShader = compile ps_3_0 PBR_PS();
+
+		AlphaBlendEnable = true;
+		BlendOp = Add;
+		ZEnable = true;
+		SrcBlend = SrcAlpha;
+		DestBlend = InvSrcAlpha;
+		ZWriteEnable = true;
+	}
+
+	pass P1
+	{
+		vertexShader = compile vs_3_0 AdvancedVS();
+		pixelShader = compile ps_3_0 AdvancedPS();
+
+		AlphaBlendEnable = true;
+		BlendOp = Add;
+		ZEnable = true;
+		SrcBlend = SrcAlpha;
+		DestBlend = InvSrcAlpha;
+		ZWriteEnable = true;
+	}
+
+	pass P2
+	{
+		vertexShader = compile vs_3_0 FAST_VS();
+		pixelShader = compile ps_3_0 FAST_PS();
+
+		AlphaBlendEnable = true;
+		BlendOp = Add;
+		ZEnable = true;
+		SrcBlend = SrcAlpha;
+		DestBlend = InvSrcAlpha;
+		ZWriteEnable = true;
+	}
+
+	pass P3	// XR2 HUD PASS
+	{
+		vertexShader = compile vs_3_0 FAST_VS();
+		pixelShader = compile ps_3_0 XRHUD_PS();
+
+		AlphaBlendEnable = true;
+		BlendOp = Add;
+		ZEnable = true;
+		SrcBlend = SrcAlpha;
+		DestBlend = InvSrcAlpha;
+		ZWriteEnable = true;
+	}
+
+	pass P4
+	{
+		vertexShader = compile vs_3_0 MetalnessVS();
+		pixelShader = compile ps_3_0 MetalnessPS();
+
+		AlphaBlendEnable = true;
+		BlendOp = Add;
+		ZEnable = true;
+		SrcBlend = SrcAlpha;
+		DestBlend = InvSrcAlpha;
+		ZWriteEnable = true;
+	}
+}
+
+
+// ---------------------------------------------------------------------------
+// From Planet.fx
+// ---------------------------------------------------------------------------
+
+technique PlanetTech
+{
+	pass P0
+	{
+		vertexShader = compile vs_3_0 PlanetTechVS();
+		pixelShader  = compile ps_3_0 PlanetTechPS();
+
+		AlphaBlendEnable = false;
+		ZEnable = false;
+		ZWriteEnable = false;
+	}
+}
+
+technique PlanetCloudTech
+{
+	pass P0
+	{
+		vertexShader = compile vs_3_0 PlanetTechVS();
+		pixelShader  = compile ps_3_0 CloudTechPS();
+
+		AlphaBlendEnable = true;
+		BlendOp = Add;
+		SrcBlend = SrcAlpha;
+		DestBlend = InvSrcAlpha;
+		ZEnable = false;
+		ZWriteEnable = false;
+	}
+}
+
+technique PlanetCloudShadowTech
+{
+	pass P0
+	{
+		vertexShader = compile vs_3_0 CloudShadowTechVS();
+		pixelShader  = compile ps_3_0 CloudShadowPS();
+
+		AlphaBlendEnable = true;
+		BlendOp = Add;
+		SrcBlend = SrcAlpha;
+		DestBlend = InvSrcAlpha;
+		ZEnable = false;
+		ZWriteEnable = false;
+	}
+}
+
+
+// ---------------------------------------------------------------------------
+// From Particle.fx
+// ---------------------------------------------------------------------------
+
+technique ParticleDiffuseTech
+{
+	pass P0
+	{
+		vertexShader = compile vs_3_0 ParticleDiffuseVS();
+		pixelShader  = compile ps_3_0 ParticleDiffusePS();
+
+		AlphaBlendEnable = true;
+		BlendOp = Add;
+		ZEnable = true;
+		SrcBlend = SrcAlpha;
+		DestBlend = InvSrcAlpha;
+		ZWriteEnable = false;
+	}
+}
+
+technique ParticleEmissiveTech
+{
+	pass P0
+	{
+		vertexShader = compile vs_3_0 ParticleEmissiveVS();
+		pixelShader  = compile ps_3_0 ParticleEmissivePS();
+
+		AlphaBlendEnable = true;
+		BlendOp = Add;
+		ZEnable = true;
+		SrcBlend = SrcAlpha;
+		DestBlend = InvSrcAlpha;
+		ZWriteEnable = false;
+	}
+
+	// ------------------------------------------------------------------------
+	// Ground shadows are rendered only for DIFFUSE particles
+	// Shadow rendering is defined here because of identical vertex declarations [EPVERTEX]
+	// ------------------------------------------------------------------------
+	pass P1
+	{
+		vertexShader = compile vs_3_0 ParticleEmissiveVS();
+		pixelShader  = compile ps_3_0 ParticleShadowPS();
+
+		AlphaBlendEnable = true;
+		BlendOp = Add;
+		ZEnable = false;
+		SrcBlend = SrcAlpha;
+		DestBlend = InvSrcAlpha;
+		ZWriteEnable = false;
+	}
+}
+
+
+// ---------------------------------------------------------------------------
+// From HorizonHaze.fx
+// ---------------------------------------------------------------------------
+
+technique HazeTech
+{
+	pass P0
+	{
+		vertexShader = compile vs_3_0 HazeTechVS();
+		pixelShader  = compile ps_3_0 HazeTechPS();
+
+		AlphaBlendEnable = true;
+		BlendOp = Add;
+		SrcBlend = SrcAlpha;
+		DestBlend = InvSrcAlpha;
+		ZEnable = false;
+		ZWriteEnable = false;
+	}
+}
+
+
+// ---------------------------------------------------------------------------
+// From BeaconArray.fx
+// ---------------------------------------------------------------------------
+
+technique BeaconArrayTech
+{
+	pass P0
+	{
+		vertexShader = compile vs_3_0 BeaconArrayVS();
+		pixelShader  = compile ps_3_0 BeaconArrayPS();
+
+		PointSpriteEnable = true;
+		AlphaBlendEnable = true;
+		BlendOp = Add;
+		SrcBlend = SrcAlpha;
+		DestBlend = InvSrcAlpha;
+		ZEnable = false;
+		ZWriteEnable = false;
+	}
+}

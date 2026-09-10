@@ -1,0 +1,73 @@
+// ===========================================================================
+// SceneTech.tech -- the technique table for SceneTech.glsl.
+// Part of the ORBITER VISUALISATION PROJECT (OVP)
+// Dual licensed under GPL v3 and LGPL v3
+// Copyright (C) 2012 - 2026 Jarmo Nikkanen
+// ===========================================================================
+//
+// EVERY BLOCK BELOW IS COPIED VERBATIM FROM OVP/D3D9Client/shaders/SceneTech.fx.
+// Nothing here is new and nothing has been reordered or renamed. See
+// VulkanClient.tech's header for why the technique and sampler_state blocks
+// live in a file of their own.
+//
+// The `compile vs_2_0` / `ps_2_0` words are kept exactly as the reference
+// writes them -- SceneTech.fx asks for shader model 2 where the rest of the
+// client asks for 3 -- and the parser skips them: SPIR-V has no shader
+// profiles, so the entry-point name is all that survives of those lines.
+//
+// `sampler Tex0S : register (s0)` loses its register assignment here, for the
+// reason given in SceneTech.glsl's header.
+// ===========================================================================
+
+
+sampler Tex0S
+{
+	Texture = <gTex0>;
+	MinFilter = Anisotropic;
+	MagFilter = LINEAR;
+	MipFilter = LINEAR;
+	MaxAnisotropy = 8;
+	AddressU = WRAP;
+	AddressV = WRAP;
+};
+
+
+technique LineTech
+{
+	pass P0
+	{
+		vertexShader = compile vs_2_0 LineTechVS();
+		pixelShader  = compile ps_2_0 LineTechPS();
+		ZEnable = false;
+		AlphaBlendEnable = false;
+	}
+}
+
+
+technique StarTech
+{
+	pass P0
+	{
+		vertexShader = compile vs_2_0 StarTechVS();
+		pixelShader  = compile ps_2_0 StarTechPS();
+		ZEnable = false;
+		AlphaBlendEnable = false;
+		ZWriteEnable = false;
+	}
+}
+
+
+technique LabelTech
+{
+	pass P0
+	{
+		vertexShader = compile vs_3_0 LabelTechVS();
+		pixelShader = compile ps_3_0 LabelTechPS();
+		ZEnable = false;
+		ZWriteEnable = false;
+		AlphaBlendEnable = true;
+		BlendOp = Add;
+		SrcBlend = SrcAlpha;
+		DestBlend = InvSrcAlpha;
+	}
+}
