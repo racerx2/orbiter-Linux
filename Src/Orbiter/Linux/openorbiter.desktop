@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=OpenOrbiter
+GenericName=Space Flight Simulator
+Comment=Orbiter Space Flight Simulator
+Icon=openorbiter
+Exec=Orbiter
+Terminal=false
+Categories=Game;Simulation;
+StartupWMClass=openorbiter

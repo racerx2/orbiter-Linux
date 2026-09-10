@@ -8,6 +8,10 @@
 #include <windows.h>
 #include "vectors.h"
 #include "orbitersdk.h"
+// HGLRC is a Win32 OpenGL context handle, declared in windows.h -- not a class
+// belonging to this module. An earlier automated pass added a `class HGLRC;`
+// forward declaration here, which made the `HGLRC hRC` member below an
+// incomplete type. The handle typedef is the correct declaration.
 
 
 class Panel;
