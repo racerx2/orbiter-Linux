@@ -2,8 +2,12 @@
 
 # Orbiter for Linux — a native Vulkan port
 
-This is a fork of [orbitersim/orbiter](https://github.com/orbitersim/orbiter) that runs
-**natively on Linux**. No Wine, no compatibility layer.
+A **native 64-bit Linux build** of [orbitersim/orbiter](https://github.com/orbitersim/orbiter) —
+`x86-64`, running directly on Vulkan. No Wine, no compatibility layer, no 32-bit target.
+
+Orbiter is the work of **Dr. Martin Schweiger**, who created it and has maintained it since 2000.
+This fork ports his simulator to Linux; the physics, the flight model, the vessels and the scenarios
+are all his. See [Credits](#credits).
 
 Two things had to be built for that:
 
@@ -17,8 +21,10 @@ Two things had to be built for that:
 
 Both are selected automatically. `cmake` needs no extra flags.
 
-**This is a 64-bit build** — `x86-64`, and the only one. Upstream Orbiter for Windows is 32-bit, so
-any add-on binary built against it will not load here; it has to be rebuilt from source.
+## The 64-bit target
+
+Upstream Orbiter for Windows is 32-bit. This is `x86-64`, and the only target — so any add-on binary
+built against the Windows version will not load here; it has to be rebuilt from source.
 
 That difference is not cosmetic. Windows x64 is LLP64, where `long` stays 32 bits; Linux is LP64,
 where it is 64. Every `DWORD`, `LONG` and `uLongf` in the original had to be checked rather than
@@ -155,6 +161,22 @@ is in the `Doc` subfolder if you built the documentation.
 
 For Orbiter itself, the community is at [orbiter-forum.com](https://www.orbiter-forum.com).
 For **this Linux port**, use [Discord](https://discord.gg/fnxQYTKPFK) or the issue tracker.
+
+## Credits
+
+**Orbiter Space Flight Simulator was created by Dr. Martin Schweiger**, and has been developed and
+maintained by him since 2000. The simulator — its Newtonian physics, the flight and atmospheric
+models, the vessels, the planetary system, the scenarios — is his work. This repository is a port of
+it to a different operating system and graphics API, and nothing more than that.
+
+| | |
+|---|---|
+| **Dr. Martin Schweiger** | Orbiter Space Flight Simulator, and much of the D3D9 client. Copyright © 2000–2026 |
+| **Jarmo Nikkanen** | The D3D9Client graphics engine that `OVP/VulkanClient` is a port of. Copyright © 2012–2026 |
+| **Douglas Beachy** | XRSound. Copyright © 2018–2026 |
+
+Orbiter is open source at [orbitersim/orbiter](https://github.com/orbitersim/orbiter); if you are
+here for Orbiter itself rather than for Linux, start there.
 
 ## License
 
