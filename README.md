@@ -17,6 +17,15 @@ Two things had to be built for that:
 
 Both are selected automatically. `cmake` needs no extra flags.
 
+**This is a 64-bit build** — `x86-64`, and the only one. Upstream Orbiter for Windows is 32-bit, so
+any add-on binary built against it will not load here; it has to be rebuilt from source.
+
+That difference is not cosmetic. Windows x64 is LLP64, where `long` stays 32 bits; Linux is LP64,
+where it is 64. Every `DWORD`, `LONG` and `uLongf` in the original had to be checked rather than
+assumed — `uncompress()` taking a `uLongf*` is the clearest case, and it is handled by keeping the
+Windows line under `#ifdef _WIN32` and using a correctly typed temporary here, so the original source
+reads the same character for character.
+
 **Come talk about it on Discord: https://discord.gg/fnxQYTKPFK**
 
 ---
@@ -114,6 +123,7 @@ ORBITER_GLFW_PLATFORM=x11 ./Orbiter
 
 | | |
 |---|---|
+| Target | `x86-64` (64-bit), LP64 |
 | CPU | Intel Core i9-13900K |
 | GPU | NVIDIA GeForce RTX 5070 Ti, driver 615.71.09 |
 | RAM | 32 GB |
