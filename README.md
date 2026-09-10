@@ -54,6 +54,18 @@ assumed — `uncompress()` taking a `uLongf*` is the clearest case, and it is ha
 Windows line under `#ifdef _WIN32` and using a correctly typed temporary here, so the original source
 reads the same character for character.
 
+## Collision detection (work in progress)
+
+![Two Delta-gliders colliding, and cargo settling in the Shuttle payload bay](./docs/media/collision.gif)
+
+Contact against the **actual mesh triangles** — no simplified collision hulls, and no vessel or
+add-on file is modified. The Shuttle's payload bay is a real cavity in the collider because the
+collider *is* the geometry. In two-body runs momentum is conserved to machine precision and kinetic
+energy never rises; nothing tunnels at closing speeds up to 200 m/s.
+
+**This is a standalone prototype and is not wired into the simulator yet.**
+([full-quality clip](./docs/media/collision.mp4))
+
 **Come talk about it on Discord: https://discord.gg/fnxQYTKPFK**
 
 ---
