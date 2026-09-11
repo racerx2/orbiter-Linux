@@ -75,7 +75,11 @@ leaves as a wing: a steep entry costs Atlantis **711 pieces and 77% of its hull*
 nothing at all. No vessel file, mesh or texture is altered; the plasma sheath is presentation.
 ([full-quality clip](./docs/media/reentry.mp4))
 
-**Both are standalone prototypes and are not wired into the simulator yet.**
+Both come from one add-on — `Modules/Plugin/CollisionDetection.so`, built with the tree and switched
+on from the Launchpad's **Modules** tab like any other module. Nothing else is installed and nothing
+in the Orbiter core changes. Breakup also wants Orbiter's own **Damage and failure simulation**
+ticked, on the Launchpad's *Parameters* tab — it is off by default and cannot be changed once a
+session has started.
 
 **Come talk about it on Discord: https://discord.gg/fnxQYTKPFK**
 
