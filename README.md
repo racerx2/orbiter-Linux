@@ -73,11 +73,20 @@ heating limits the airframe starts failing, and what comes off is **the ship's o
 connected components of `Atlantis.msh`, taken out of the collider and out of the picture together,
 then flown on their own trajectories. Nothing is added to the vessel; no mesh or texture is altered.
 
-Atlantis entering at 12 km/s and 6.5° nose-down loses **117 pieces and 26,311 kg — 34% of its empty
-mass** in fourteen seconds. The debris trails because it is worse at flying than the ship is: a
-piece carries the hull's areal density, which puts its ballistic coefficient near 110 kg/m² against
-the orbiter's 334, so it decelerates about three times harder and streams away behind. The sparks
-are Orbiter's own particle streams, thrown where each piece tore off and swept back by the same air.
+Atlantis entering at 12 km/s and 6.5° nose-down loses **711 pieces and 77% of its hull** in fourteen
+seconds — 77,564 kg down to 17,619. The wings are gone by 128% of the heating limit, and what is
+still flying at the end is the primary fuselage structure and nothing else.
+
+Failure follows the structure rather than the surface. The air tears at what faces it, and what
+fails **carries what it was bolted to** — two components occupying the same volume are two parts of
+one assembly, which is how a wing leaves as a wing instead of the model shedding one skin of it and
+keeping the other. How big a thing may fail opens with the overload, from panels to assemblies to
+the primary structure itself, because an airframe far enough past its limit has none of it intact.
+
+The debris trails because it is worse at flying than the ship is: a piece carries the hull's areal
+density, which puts its ballistic coefficient near 110 kg/m² against the orbiter's 334, so it
+decelerates about three times harder and streams away behind. The sparks are Orbiter's own particle
+streams, thrown where each piece tore off and swept back by the same air.
 
 A *nominal* Shuttle entry peaks at 42% of the heating limit and loses nothing, which is the answer it
 ought to give. The atmosphere here is Orbiter's: feeding altitude and Mach from the simulator's own
