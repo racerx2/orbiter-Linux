@@ -62,9 +62,33 @@ Contact against the **actual mesh triangles** — no simplified collision hulls,
 add-on file is modified. The Shuttle's payload bay is a real cavity in the collider because the
 collider *is* the geometry. In two-body runs momentum is conserved to machine precision and kinetic
 energy never rises; nothing tunnels at closing speeds up to 200 m/s.
-
-**This is a standalone prototype and is not wired into the simulator yet.**
 ([full-quality clip](./docs/media/collision.mp4))
+
+### Reentry breakup
+
+![The Space Shuttle coming apart during entry](./docs/media/reentry.gif)
+
+The same damage model, driven by the air instead of by a contact. Past the dynamic-pressure and
+heating limits the airframe starts failing, and what comes off is **the ship's own mesh** —
+connected components of `Atlantis.msh`, taken out of the collider and out of the picture together,
+then flown on their own trajectories. Nothing is added to the vessel; no mesh or texture is altered.
+
+Atlantis entering at 12 km/s and 6.5° nose-down loses **117 pieces and 26,311 kg — 34% of its empty
+mass** in fourteen seconds. The debris trails because it is worse at flying than the ship is: a
+piece carries the hull's areal density, which puts its ballistic coefficient near 110 kg/m² against
+the orbiter's 334, so it decelerates about three times harder and streams away behind. The sparks
+are Orbiter's own particle streams, thrown where each piece tore off and swept back by the same air.
+
+A *nominal* Shuttle entry peaks at 42% of the heating limit and loses nothing, which is the answer it
+ought to give. The atmosphere here is Orbiter's: feeding altitude and Mach from the simulator's own
+logged entry back through US Standard Atmosphere 1976 reproduces its heating and dynamic pressure to
+the kilopascal.
+
+The plasma sheath and the heat colouring on the hull are presentation — there is no plasma model in
+this. Everything with a number attached is the model's own output.
+([full-quality clip](./docs/media/reentry.mp4))
+
+**Both are standalone prototypes and are not wired into the simulator yet.**
 
 **Come talk about it on Discord: https://discord.gg/fnxQYTKPFK**
 
