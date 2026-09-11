@@ -68,38 +68,15 @@ energy never rises; nothing tunnels at closing speeds up to 200 m/s.
 
 ![The Space Shuttle coming apart during entry](./docs/media/reentry.gif)
 
-The same damage model, driven by the air instead of by a contact. Past the dynamic-pressure and
-heating limits the airframe starts failing, and what comes off is **the ship's own mesh** —
-connected components of `Atlantis.msh`, taken out of the collider and out of the picture together,
-then flown on their own trajectories. Nothing is added to the vessel; no mesh or texture is altered.
-
-Atlantis entering at 12 km/s and 6.5° nose-down loses **711 pieces and 77% of its hull** in fourteen
-seconds — 77,564 kg down to 17,619. The wings are gone by 128% of the heating limit, and what is
-still flying at the end is the primary fuselage structure and nothing else.
-
-Failure follows the structure rather than the surface. The air tears at what faces it, and what
-fails **carries what it was bolted to** — two components occupying the same volume are two parts of
-one assembly, which is how a wing leaves as a wing instead of the model shedding one skin of it and
-keeping the other. How big a thing may fail opens with the overload, from panels to assemblies to
-the primary structure itself, because an airframe far enough past its limit has none of it intact.
-
-The debris trails because it is worse at flying than the ship is: a piece carries the hull's areal
-density, which puts its ballistic coefficient near 110 kg/m² against the orbiter's 334, so it
-decelerates about three times harder and streams away behind. The sparks are Orbiter's own particle
-streams, thrown where each piece tore off and swept back by the same air.
-
-A *nominal* Shuttle entry peaks at 42% of the heating limit and loses nothing, which is the answer it
-ought to give. The atmosphere here is Orbiter's: feeding altitude and Mach from the simulator's own
-logged entry back through US Standard Atmosphere 1976 reproduces its heating and dynamic pressure to
-the kilopascal.
-
-The hull and the debris glow with the **add-on's own emissive**, written into the mesh materials
-from the same heating number that decides whether the ship survives — so the colour in the clip is
-what the simulator draws, not a ramp invented for the recording. Two things in the frame are the
-clip's own: the plasma sheath, because there is no plasma model here, and a bias of the glow towards
-the windward face, because a material belongs to a whole mesh and the simulator can only light a
-hull evenly. Everything with a number attached is the model's output.
-([full-quality clip](./docs/media/reentry.mp4))
+The same damage model, driven by the air instead of by a contact. What comes off is **the ship's own
+mesh** — connected components of `Atlantis.msh`, taken out of the collider and out of the picture
+together and then flown; nothing is added to the vessel and no mesh or texture is altered. Failure
+follows the structure rather than the surface, so what fails carries what it was bolted to and a wing
+leaves as a wing. Atlantis entering at 12 km/s and 6.5° nose-down loses **711 pieces and 77% of its
+hull** in fourteen seconds, wings gone by 128% of the heating limit — while a *nominal* entry peaks
+at 42% of that limit and loses nothing, which is the answer it ought to give. The glow is the
+add-on's own emissive and the sparks are Orbiter's own particle streams; the plasma sheath is
+presentation. ([full-quality clip](./docs/media/reentry.mp4))
 
 **Both are standalone prototypes and are not wired into the simulator yet.**
 
