@@ -68,18 +68,11 @@ energy never rises; nothing tunnels at closing speeds up to 200 m/s.
 
 ![The Space Shuttle coming apart during entry](./docs/media/reentry.gif)
 
-The same damage model, driven by the air instead of by a contact, and it runs on **every vessel in
-the session** — Atlantis here is only the example. Every threshold is a share of a ship's own hull
-rather than a number of joules, so one set of constants takes apart a 649 m² Delta-glider and a
-2,344 m² Shuttle alike, and an add-on the model has never seen needs nothing done to it. What comes
-off is **the ship's own mesh** — connected components of whatever mesh that vessel already has,
-taken out of the collider and out of the picture together and then flown; nothing is added to any
-vessel and no mesh or texture is altered. Failure follows the structure rather than the surface, so
-what fails carries what it was bolted to and a wing leaves as a wing. Atlantis entering at 12 km/s
-and 6.5° nose-down loses **711 pieces and 77% of its hull** in fourteen seconds, wings gone by 128%
-of the heating limit — while a *nominal* entry peaks at 42% of that limit and loses nothing, which
-is the answer it ought to give. The glow is the add-on's own emissive and the sparks are Orbiter's
-own particle streams; the plasma sheath is presentation.
+The same damage model, driven by the air instead of by a contact. It runs on **every vessel in the
+session** — Atlantis here is only the example — and sizes itself to whatever hull it is given, so an
+add-on it has never seen needs nothing done to it. The ship comes apart along its own mesh, so a wing
+leaves as a wing: a steep entry costs Atlantis **711 pieces and 77% of its hull**, a nominal one
+nothing at all. No vessel file, mesh or texture is altered; the plasma sheath is presentation.
 ([full-quality clip](./docs/media/reentry.mp4))
 
 **Both are standalone prototypes and are not wired into the simulator yet.**
