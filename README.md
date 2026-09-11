@@ -84,8 +84,12 @@ ought to give. The atmosphere here is Orbiter's: feeding altitude and Mach from 
 logged entry back through US Standard Atmosphere 1976 reproduces its heating and dynamic pressure to
 the kilopascal.
 
-The plasma sheath and the heat colouring on the hull are presentation — there is no plasma model in
-this. Everything with a number attached is the model's own output.
+The hull and the debris glow with the **add-on's own emissive**, written into the mesh materials
+from the same heating number that decides whether the ship survives — so the colour in the clip is
+what the simulator draws, not a ramp invented for the recording. Two things in the frame are the
+clip's own: the plasma sheath, because there is no plasma model here, and a bias of the glow towards
+the windward face, because a material belongs to a whole mesh and the simulator can only light a
+hull evenly. Everything with a number attached is the model's output.
 ([full-quality clip](./docs/media/reentry.mp4))
 
 **Both are standalone prototypes and are not wired into the simulator yet.**
