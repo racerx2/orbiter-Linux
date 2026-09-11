@@ -6,7 +6,7 @@ it. A control is only marked **traced** when the last column names a specific
 function that reads the value and does something with it -- "written to
 Orbiter.cfg" is not an end function.
 
-Cross-checked against the read-only reference at `/home/racerx/Orbiter/orbiter/`.
+Cross-checked against a read-only install of stock Windows Orbiter.
 
 Legend: **OK** verified working · **FIXED** was broken, now works ·
 **OPEN** trace incomplete · **N/A** no simulator effect by design

@@ -59,10 +59,10 @@ have no name in common.
   control, trackbar, up-down. Only these are imitated, and `Orbiter.rc` is the
   specification for where they go.
 
-Guessing at the first category produces something that looks invented. Ask
-first which category a control is in.
+Guessing at the first category produces something that looks invented. Settle
+which category a control is in before changing it.
 
-## 3. Constraints from the user, in force throughout
+## 3. Constraints on this port
 
 - Targeted edits. The original code is preserved; changes are `#ifdef`-guarded
   or additive wherever possible.
@@ -80,8 +80,9 @@ first which category a control is in.
 
 The Linux port of the Orbiter core -- everything under `Src/Orbiter/Linux/`,
 plus the `NOT WIN32` additions scattered through `Src/`, `Orbitersdk/` and the
-CMake files -- was written by an assistant that was not reliably following
-these rules. **Treat it as suspect code, not as reference code.**
+CMake files -- was written before these rules were, and without the
+file-by-file cross-check against the Windows original that the graphics client
+got. **Treat it as suspect code, not as reference code.**
 
 The reference is exact and always available: the base commit
 `ce32858854aa67277ea61528afad9cfadd19852b` **is** upstream Win32 Orbiter, so
@@ -143,6 +144,6 @@ are unported Windows command-line tools.
 
 ## 5. Verify before claiming
 
-"It builds" is not "it works". "It runs" is not "it looks right". Say which
-one is actually established, and say plainly what is still missing rather than
-leading with what succeeded.
+"It builds" is not "it works". "It runs" is not "it looks right". A change is
+described by what has actually been established about it, and what is still
+missing is stated plainly rather than left behind what succeeded.

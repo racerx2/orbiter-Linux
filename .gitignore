@@ -51,3 +51,10 @@ shot*.png
 # Runtime state written into the source tree by a run.
 Orbiter.log
 imgui.ini
+
+# Working notes. These are scratch for whoever is mid-port -- machine-specific
+# paths, stale architecture, running commentary -- not documentation of the
+# tree. PORTING-RULES.md and Src/Orbiter/Linux/LAUNCHPAD-TRACE.md are the two
+# that earned their place in the repository; these did not.
+HANDOFF.md
+HANDOFF-VULKAN.md
