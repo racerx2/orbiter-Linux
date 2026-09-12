@@ -4,47 +4,23 @@
 // Copyright (C) 2012-2026 Jarmo Nikkanen
 // ==============================================================
 //
-// CONVERTED FROM OVP/D3D9Client/D3D9Surface.h, read end to end (159 lines),
-// against D3D9Surface.cpp read end to end (1321 lines).
-//
-// THE STRUCTURAL CHANGE: D3D9 HAS TWO RESOURCE TYPES, VULKAN HAS ONE.
-//
-// IDirect3DSurface9 and IDirect3DTexture9 are different interfaces with
-// different capabilities, and SurfNative is built around telling them apart:
-// it stores a D3DRESOURCETYPE, and GetTexture(), GetSurface(), GetSizeInBytes(),
-// Decompress(), GenerateMipMaps(), NatSaveSurface() and NatCompressSurface()
-// all branch on it. A texture additionally needs GetSurfaceLevel(0) to be
-// usable as a render target, which is what the pTexSurf cache is for.
-//
-// A VkImage is one type. It is a texture if it was created with
+// D3D9 has two resource types where Vulkan has one. IDirect3DSurface9 and
+// IDirect3DTexture9 are distinct interfaces, and SurfNative stored a
+// D3DRESOURCETYPE to branch on; a VkImage is a texture if it was created with
 // VK_IMAGE_USAGE_SAMPLED_BIT and a render target if it was created with
-// VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, and it can be both at once. So:
+// VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, and can be both at once. So 'type' and
+// the pTexSurf mip-0 cache are gone, and every branch on them collapses to one
+// path.
 //
-//   - 'type' (D3DRESOURCETYPE) is gone. IsTexture() asks the usage flags
-//     instead, which is what the question always meant.
-//   - pTexSurf IS GONE. There is no separate surface object for mip 0; the
-//     image is the render target. GetSurface() and GetTexture() therefore
-//     return the same thing, and both names are kept only so call sites do
-//     not change.
-//   - every branch on 'type' collapses to one path.
+// D3DSURFACE_DESC became VulkanImageDesc (VulkanTypes.h), which the client
+// fills in rather than reads back -- a VkImage remembers nothing you can query.
 //
-// D3DSURFACE_DESC became VulkanImageDesc (see VulkanTypes.h), which the
-// client fills in rather than reads back -- a VkImage remembers nothing you
-// can query.
-//
-// pDX7, CreateDX7() and DX7Sync() ARE GONE. They existed for one purpose:
-// IDirect3DSurface9::GetDC() does not work on a render target, so the code
-// made a lockable X8R8G8B8 copy, StretchRect'd the render target into it, got
-// a GDI DC on THAT, and blitted back on release. There is no
-// IDirect3DSurface9::GetDC() here to work around -- GetDC() on Linux returns
-// a recording DC from Src/Orbiter/Linux/Gdi.cpp, which is a display-list
-// recorder and not tied to any image at all. So the workaround has nothing to
-// work around, and the three members and two methods go with it.
-//
-// D3D9Pad.h and GDIPad.h are FORWARD-DECLARED rather than included. The
-// Windows header includes both but uses only D3D9Pad*, and D3D9Pad.h includes
-// D3D9Surface.h back -- a cycle MSVC tolerates through include guards. A
-// forward declaration is enough and the cycle does not exist here.
+// pDX7, CreateDX7() and DX7Sync() are gone. They existed because
+// IDirect3DSurface9::GetDC() does not work on a render target, so the code made
+// a lockable X8R8G8B8 copy, StretchRect'd the render target into it, took a GDI
+// DC on that, and blitted back on release. GetDC() here returns a recording DC
+// from Src/Orbiter/Linux/Gdi.cpp, a display-list recorder not tied to any
+// image, so there is nothing left to work around.
 // ==============================================================
 
 #ifndef __VULKANSURFACE_H
@@ -77,10 +53,8 @@ class GDIPad;
 #define OAPISURF_SKP_GDI_WARN	0x00000001
 
 VulkanTexture *		NatLoadSpecialTexture(const char* fname, const char* ext);
-// Counterpart of D3DXCreateTextureFromFileA -- decode a file into a texture,
-// DDS or not, with no SurfNative around it. DEFINED IN VulkanSurface.cpp SINCE
-// THAT FILE WAS WRITTEN and declared here now that a second file needs it:
-// Scene.cpp loads its noise and colour-lookup textures with exactly this call.
+// Counterpart of D3DXCreateTextureFromFileA: decode a file into a texture,
+// DDS or not, with no SurfNative around it.
 VulkanTexture *		NatLoadTexture(const char* path);
 SURFHANDLE			NatLoadSurface(const char* file, DWORD flags, bool bPath = false);
 bool				NatSaveSurface(const char* file, VulkanTexture *pResource);
@@ -91,43 +65,27 @@ SURFHANDLE			NatCompressSurface(SURFHANDLE hSurface, DWORD flags);
 bool				NatCreateName(char* out, int mlen, const char* fname, const char* id);
 
 // ------------------------------------------------------------------------------------
-// DDS decoding.
-//
-// D3DX supplied this: D3DXGetImageInfoFromFileA, D3DXCreateTextureFromFileExA
-// and D3DXCreateTextureFromFileInMemoryEx between them read the header, chose
-// a format and uploaded every mip level. There is no D3DX here, so the client
-// reads DDS itself.
-//
-// It lives in VulkanSurface.cpp and is declared here because TWO files need
-// it: this one, for NatLoadSurface, and VulkanUtil.cpp's LoadPlanetTextures,
-// which walks a file of several DDS images laid end to end. Writing the parser
-// twice is how the two would drift.
-//
-// NatDDSImageBytes answers only "how long is the image starting here",
-// which is what that walk needs; it does not decode.
+// DDS decoding. D3DXGetImageInfoFromFileA, D3DXCreateTextureFromFileExA and
+// D3DXCreateTextureFromFileInMemoryEx between them read the header, chose a
+// format and uploaded every mip level. There is no D3DX here, so the client
+// reads DDS itself. NatDDSImageBytes only measures the image starting at
+// `data`; it does not decode. VulkanUtil.cpp's LoadPlanetTextures needs that to
+// walk a file of several DDS images laid end to end.
 // ------------------------------------------------------------------------------------
 long				NatDDSImageBytes(const void* data, long bytesAvailable);
 // bFullMipChain is D3DXCreateTextureFromFileInMemoryEx's `MipLevels = 0,
 // Filter = D3DX_FILTER_BOX` pair: generate the levels the file does not carry.
-// Tile textures need it -- see NatBuildMipChain in VulkanSurface.cpp.
 VulkanTexture *		NatCreateTextureFromDDSInMemory(const void* data, size_t bytes,
 													bool bFullMipChain = false);
 // Counterpart of D3DXLoadSurfaceFromFileInMemory for the non-DDS formats.
-// VulkanClient.cpp's SplashScreen() decodes the splash image out of the
-// executable's resources, where there is no file to open. See the definition.
 VulkanTexture *		NatCreateTextureFromMemory(const void* data, size_t bytes,
 											   uint32_t *pW = NULL, uint32_t *pH = NULL);
 
-// Was NatConvertFormat_DX_to_OAPI / _OAPI_to_DX.
-//
-// The OAPI -> VK direction is exact. The VK -> OAPI direction CANNOT BE, and
-// the reason is worth stating: D3DFMT_X8R8G8B8 and D3DFMT_A8R8G8B8 are
-// different D3D formats but the same Vulkan format -- VK_FORMAT_B8G8R8A8_UNORM
-// -- because "X8" only ever meant "there is an alpha channel and I am
-// ignoring it", which is not a property Vulkan records. So the reverse
-// mapping reports the ARGB form, and whether alpha is meaningful is read from
-// the surface's own OAPISURFACE_ALPHA / OAPISURFACE_NOALPHA flag, which
-// SurfNative already carries.
+// The OAPI -> VK direction is exact; VK -> OAPI cannot be. D3DFMT_X8R8G8B8 and
+// D3DFMT_A8R8G8B8 are one Vulkan format, VK_FORMAT_B8G8R8A8_UNORM, because "X8"
+// only meant "alpha present, ignored" and Vulkan does not record that. The
+// reverse mapping reports the ARGB form; whether alpha is meaningful comes from
+// the surface's own OAPISURFACE_ALPHA / OAPISURFACE_NOALPHA flag.
 DWORD				NatConvertFormat_VK_to_OAPI(VkFormat Format);
 VkFormat			NatConvertFormat_OAPI_to_VK(DWORD Format);
 
@@ -206,11 +164,10 @@ public:
 	VulkanTexture *			GetResource() const { return pResource; }
 	VulkanTexture *			GetDepthStencil() const { return pDepth; }
 
-	// GetSurface() and GetTexture() were different things in D3D9 -- the
-	// second returned NULL unless the resource was a texture, and the first
-	// had to fetch mip level 0 to get a bindable render target out of one.
-	// A VkImage is both, so both return the resource. The two names are kept
-	// because ~90 call sites spell one or the other.
+	// Different things in D3D9: GetSurface() had to fetch mip level 0 to get a
+	// bindable render target out of a texture. A VkImage is both, so both
+	// return the resource; the two names survive because call sites spell one
+	// or the other.
 	VulkanTexture *			GetSurface() { return pResource; }
 	VulkanTexture *			GetTexture() const { return IsTexture() ? pResource : NULL; }
 
@@ -225,17 +182,12 @@ public:
 	DWORD					GetTextureSizeInBytes(VulkanTexture *pT);
 	DWORD					GetFormatSizeInBytes(VkFormat Format, DWORD pixels);
 
-	// The same table, reachable without a SurfNative. GetFormatSizeInBytes is
-	// a non-static member on Windows although it uses no member state, and
-	// VulkanUtil.cpp's CreateVolumeTexture needs the answer while holding only
-	// a VulkanTexture. Making the member forward to this keeps one table.
+	// The same table, reachable without a SurfNative: GetFormatSizeInBytes is a
+	// non-static member on Windows though it uses no member state, and callers
+	// holding only a VulkanTexture need the answer. The member forwards here.
 	static DWORD			StaticFormatSizeInBytes(VkFormat Format, DWORD pixels);
 
 	void					LogSpecs() const;
-
-	// CreateDX7() and DX7Sync() stood here. See the file header: they worked
-	// around IDirect3DSurface9::GetDC() not working on a render target, and
-	// there is no such call here to work around.
 
 	// -------------------------------------------------------------------------------
 

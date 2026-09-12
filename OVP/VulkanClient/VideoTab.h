@@ -5,20 +5,6 @@
 //				 2012-2016 Jarmo Nikkanen
 // ==============================================================
 
-// CONVERTED FROM OVP/D3D9Client/VideoTab.h, read end to end (68 lines).
-//
-// The Launchpad video tab. It is a WIN32 DIALOG and nothing else -- HWND,
-// HINSTANCE, WPARAM, LPARAM, INT_PTR and CALLBACK are all Win32, not
-// Direct3D, and the shim supplies every one of them. So one type changes:
-//
-//   oapi::VulkanClient -> oapi::VulkanClient
-//
-// Two more things are made explicit rather than changed: `string` is spelled
-// `std::string` (the Windows file relies on a `using namespace std` reaching
-// it from an includer, which is not guaranteed here), and VulkanClient.h is
-// included by name because the class is used, not merely pointed at through
-// a declaration the includer happened to have.
-
 #ifndef __VIDEOTAB_H
 #define __VIDEOTAB_H
 #include "VulkanClient.h"

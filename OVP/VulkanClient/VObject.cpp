@@ -20,33 +20,6 @@
 // with a particular scene. In multi-scene environments, a single
 // logical object may have multiple vObjects associated with it.
 // ==============================================================
-//
-// CONVERTED FROM OVP/D3D9Client/VObject.cpp, read end to end (472 lines).
-//
-// The base class of every visual. Its Update() is double-precision
-// astronomy and converts unchanged; its four render helpers build a matrix by
-// hand and hand it to VulkanEffect or to a stock mesh. Every change is a
-// rename, and the list is the usual one:
-//
-//   D3DXMatrixIdentity / D3DMAT_SetTranslation / D3DMAT_SetInvRotation /
-//   D3DMAT_CreateX_Billboard -> VMAT_*. The D3DMAT_ ones are the CLIENT'S OWN
-//   helpers; only their names referred to Direct3D.
-//
-//   D3DXVec3TransformCoord -> DrawAPI.h's TransformCoord;
-//   D3DXVec3Normalize -> unit(); D3DXVec3Dot -> dot(). All three are D3DX
-//   UTILITY entry points with no Vulkan counterpart, and all three are one
-//   line of arithmetic.
-//
-//   D3DXCOLOR -> FVECTOR4, and its implicit conversion to a packed D3DCOLOR
-//   (SetTextColor's argument) written as .dword_argb().
-//
-//   W._11 -> W.m11, and D3D9SM_ARROW -> VULKANSM_ARROW.
-//
-// TWO STRINGS DELIBERATELY DO NOT CHANGE: `new VulkanMesh("D3D9Arrow")` and
-// `"D3D9Sphere"`. Those are the names of MESH FILES shipped in Meshes/ --
-// Meshes/D3D9Arrow.msh and Meshes/D3D9Sphere.msh -- and the data files are
-// not ours to rename. Renaming the string would simply fail to load them.
-// ==============================================================
 
 #include "VObject.h"
 #include "VVessel.h"
@@ -71,12 +44,8 @@ VulkanMesh*		vObject::hStockMesh[16] = { NULL };
 
 // ===========================================================================================
 //
-// The list is reordered to the declaration order in VObject.h --
-// bStencilShadow, bOmit, bBSRecompute, active, scn, cdist, sunapprad, sundst,
-// ctgtdst, lng, lat, hPlanet. Members are initialised in DECLARATION order
-// whatever the list says; every value here is a constant, so nothing
-// observable changes. Same finding as Objmgr's, ScatterParams's,
-// TreeFileHeader's, VBMESH's and TileBuffer's.
+// Initialiser list reordered to declaration order (-Wreorder). Every value is
+// a constant, so nothing observable changes.
 vObject::vObject(OBJHANDLE _hObj, const Scene *scene)
 	: VisObject (_hObj)
 	, bStencilShadow(true)
@@ -135,8 +104,8 @@ void vObject::GlobalInit(VulkanClient *gclient)
 
 	// Create Some Stock Meshes ----------------------------------------
 	//
-	// The two names are FILE names -- Meshes/D3D9Arrow.msh and
-	// Meshes/D3D9Sphere.msh. See the file header.
+	// The two strings are file names -- Meshes/D3D9Arrow.msh and
+	// Meshes/D3D9Sphere.msh. Renaming them would just fail to load.
 	hStockMesh[VULKANSM_ARROW] = new VulkanMesh("D3D9Arrow");
 	hStockMesh[VULKANSM_SPHERE] = new VulkanMesh("D3D9Sphere");
 
@@ -252,16 +221,14 @@ void vObject::UpdateBoundingBox()
 }
 
 // ===========================================================================================
-// Was GetBoundingSpherePosDX; see VObject.h. The "DX" distinguished the
-// D3DXVECTOR3 form from the VECTOR3 one below it, and there is no DX any more.
+// Was GetBoundingSpherePosDX: the suffix distinguished the D3DXVECTOR3 form
+// from the VECTOR3 one below it.
 //
 FVECTOR3 vObject::GetBoundingSpherePosF()
 {
 	if (bBSRecompute) UpdateBoundingBox();
-	// Was D3DXVec3TransformCoord(&pos, (LPD3DXVECTOR3)&BBox.bs, &mWorld) --
-	// the cast reinterpreted the first three floats of the bounding SPHERE
-	// (xyz plus a radius in w) as a position. Written without the cast; the
-	// three components are named.
+	// The D3DX cast reinterpreted the first three floats of the bounding
+	// sphere (xyz, radius in w) as a position; the components are named here.
 	return TransformCoord(FVECTOR3(BBox.bs.x, BBox.bs.y, BBox.bs.z), mWorld);
 }
 
@@ -303,8 +270,6 @@ bool vObject::IsVisible()
 	if ((objtp == OBJTP_VESSEL) && apprad < 0.005*apr) return false;
 	if ((objtp == OBJTP_SURFBASE) && apprad < 0.02*apr) return false;
 
-	// D3DXVEC(v) built a D3DXVECTOR3 from a VECTOR3; FVEC(v) is that, under
-	// the name VulkanUtil.h gives it.
 	return gc->GetScene()->IsVisibleInCamera(ptr(FVEC(pos)), rad);
 
 	/* 
@@ -337,15 +302,11 @@ void vObject::RenderSpot(VulkanDevice *dev, const VECTOR3 *ofs, float size, cons
 
 	FMATRIX4 W;
 	FVECTOR3 vPos(float(pos.x), float(pos.y), float(pos.z));
-	// D3DXVec3Normalize -- a D3DX utility with no Vulkan counterpart, and one
-	// that DrawAPI.h already spells as unit().
 	FVECTOR3 vCam = unit(vPos);
 	VMAT_CreateX_Billboard(&vCam, &vPos, size, &W);
 
 	FVECTOR4 color((float)col.x, (float)col.y, (float)col.z, 1.0f);
 
-	// The (const LPD3DXMATRIX) cast existed because W was a D3DXMATRIX and
-	// the parameter was the pointer typedef. Both are FMATRIX4 now.
 	VulkanEffect::RenderSpot((float)intens, &color, &W, blobtex[shape]);
 }
 
@@ -409,10 +370,10 @@ void vObject::RenderVectors (VulkanDevice *dev, VulkanPad* pSkp)
 				//scale *= 0.99f; // 1% "slimmer" to avoid z-fighting with force vector(s)
 				float ascale = float(size) * sclset * 0.5f;
 
-				// D3DXCOLOR(1, 0, 0, alpha) -> FVECTOR4, with the integer
-				// literals written as floats: D3DXCOLOR had one four-float
-				// constructor and converted them silently, while FVECTOR4 has
-				// an all-int one as well and a mixed call is ambiguous.
+				// The integer literals are written as floats: D3DXCOLOR had
+				// one four-float constructor and converted them silently,
+				// while FVECTOR4 also has an all-int one, so a mixed call is
+				// ambiguous.
 				RenderAxisVector(pSkp, ptr(FVECTOR4(1.0f, 0.0f, 0.0f, alpha)), _V(1, 0, 0), ascale, scale);
 				RenderAxisLabel(pSkp, ptr(FVECTOR4(1.0f, 0.0f, 0.0f, alpha)), _V(1, 0, 0), ascale, scale, "+X");
 
@@ -456,7 +417,6 @@ void vObject::RenderAxisVector(VulkanPad *pSkp, const FVECTOR4 *pColor, VECTOR3 
 
     VMAT_Identity(&W);
 
-	// W._11 is W.m11 -- the same element under FMATRIX4's naming.
     W.m11 = float(x.x); W.m12 = float(x.y); W.m13 = float(x.z);
     W.m21 = float(y.x); W.m22 = float(y.y); W.m23 = float(y.z);
     W.m31 = float(z.x); W.m32 = float(z.y); W.m33 = float(z.z);
@@ -511,18 +471,17 @@ void vObject::RenderAxisLabel(VulkanPad *pSkp, const FVECTOR4 *clr, VECTOR3 vect
 	ws = TransformCoord(FVECTOR3(0.0f, len, 0.0f), W);
 	homog = TransformCoord(ws, *scn->GetProjectionViewMatrix());
 
-	// D3DXVec3Dot, written out. GetCameraZ() returns an FVECTOR3*.
+	// D3DXVec3Dot, written out.
 	const FVECTOR3 *cz = scn->GetCameraZ();
 	if ((ws.x*cz->x + ws.y*cz->y + ws.z*cz->z) < 0) return;
 
 	if (homog.x >= -1.0f && homog.x <= 1.0f && homog.y >= -1.0f && homog.y <= 1.0f) {
 		int xc = (int)(scn->ViewW()*0.5*(1.0f + homog.x));
 		int yc = (int)(scn->ViewH()*0.5*(1.0f - homog.y));
-		// SetTextColor takes a packed DWORD, and the Windows call passed a
-		// D3DXCOLOR, relying on its conversion operator: clamp and pack
-		// 0xAARRGGBB. dword_argb() is that operator by name. NOTE THE
-		// CHANNEL ORDER -- the arguments are (b, g, r, a), which is the
-		// Windows code's own swap and is preserved.
+		// SetTextColor takes a packed 0xAARRGGBB DWORD; the Windows call
+		// relied on D3DXCOLOR's implicit conversion, and dword_argb() is that
+		// operator by name. The (b, g, r, a) argument order is the Windows
+		// code's own channel swap, preserved.
 		pSkp->SetTextColor(FVECTOR4(clr->b, clr->g, clr->r, clr->a).dword_argb());
 		pSkp->Text(xc + 10, yc, label, lstrlen(label));
 	}

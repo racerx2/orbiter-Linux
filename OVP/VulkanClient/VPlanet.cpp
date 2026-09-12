@@ -14,78 +14,6 @@
 // Currently this only supports spherical objects, without
 // variations in elevation.
 // ==============================================================
-//
-// CONVERTED FROM OVP/D3D9Client/VPlanet.cpp, read end to end (1589 lines).
-//
-// The planet visual: it owns the tile managers, the haze, the rings, the
-// surface bases and the terrain-flattening data, and it decides each frame
-// what gets drawn and in what order. Most of it is that decision-making and
-// converts line for line. FIVE THINGS ARE REAL WORK.
-//
-//  1. EnumerateDirectory IS PURE WIN32 AND HAS NO SHIM. FindFirstFile,
-//     FindNextFile, FindClose, WIN32_FIND_DATA, INVALID_HANDLE_VALUE and
-//     FILE_ATTRIBUTE_DIRECTORY are the Win32 directory search; the shim
-//     implements none of them, and VulkanUtil.h's note on AutoHandle records
-//     that it does not even define INVALID_HANDLE_VALUE. The counterpart is
-//     std::filesystem::directory_iterator, which this file already includes
-//     <filesystem> for. The glob argument is always "*.<ext>", so it becomes
-//     an extension test -- case-insensitively, because FindFirstFile matched
-//     that way.
-//
-//  2. THE ECLIPSE OCCLUSION TABLE. D3DXCreateTexture of a 512x1 D3DFMT_R32F
-//     in D3DPOOL_DEFAULT with D3DUSAGE_DYNAMIC, then LockRect/write/UnlockRect
-//     every frame it changes. VK_FORMAT_R32_SFLOAT is the exact format
-//     counterpart, but the memory is NOT mappable: VulkanDevice::CreateTexture
-//     places an image with VK_IMAGE_USAGE_SAMPLED_BIT in device-local memory,
-//     which is the whole point of D3DPOOL_DEFAULT as well -- D3D9 could
-//     Lock it only because the runtime kept a shadow copy that Vulkan does not.
-//     So the 512 floats are built in a local array and pushed with
-//     UploadTexture, which is the documented counterpart of
-//     LockRect/memcpy/UnlockRect for a device-local image.
-//
-//  3. FIVE SetRenderState(D3DRS_CULLMODE, ...) CALLS, AND THEY ARE NOT ALL
-//     THE SAME CASE. The three that restore D3DCULL_CCW after the ring
-//     manager and after base shadows have no counterpart and need none -- the
-//     next pipeline bind carries its own cull. The TWO IN RenderCloudLayER DO:
-//     the cloud layer is drawn once from below with D3DCULL_NONE and once
-//     from above with D3DCULL_CCW, and dropping that would draw the far side
-//     of the cloud sphere. Cull is immutable pipeline state here, so the
-//     value has to travel to where the pipeline is built: it is set on the
-//     manager (TileManager::cullMode for the v1 engine,
-//     TileManager2Base::cullMode for the v2) and applied there. The two
-//     enumerations are numbered alike -- NONE 0, CW 1, CCW 2 -- so one value
-//     serves both.
-//
-//     The D3DRS_STENCILENABLE restore in RenderBaseShadows goes the same way
-//     as the cull restores: stencil is pipeline state.
-//
-//  4. FMATRIX4 HAS NO m[4][4], and the cloud world matrix is scaled through
-//     one. D3DMATRIX offers both `m[i][j]` and `_11..._44` over the same
-//     storage; FMATRIX4 offers `data[16]` and `m11...m44`, and DrawAPI.h
-//     declares the `_11` spelling only under #ifdef _WIN32. So `m[i][j]`
-//     becomes `data[i*4+j]`, which is the same element.
-//
-//  5. ShaderName("Auto\0") IS AN MSVC EXTENSION. `char ShaderName[32]` cannot
-//     be initialised from a string literal with PARENTHESES in a
-//     mem-initialiser; the standard spelling is braces, and
-//     `ShaderName{"Auto\0"}` is `char a[32] = {"Auto\0"}`, which is the same
-//     32 bytes.
-//
-// Two more things worth naming. `fscanf(f, "%s ...", fname, ...)` reads an
-// unbounded token into a MAX_PATH buffer -- a .flt file with a long first
-// word overruns it. Bounded to %255s, same class as finding 15. And
-// vPlanet::RenderSphere reads eFogDensity back to scale it for one draw and
-// then restores it, which needed VulkanEffectFile::GetFloat -- the same
-// read-modify-restore shape, and the same answer, as
-// CelSphere::RenderGridLabels's GetMatrix.
-//
-// The type list is the usual one: D3D9Client -> VulkanClient, D3D9Effect ->
-// VulkanEffect, D3D9Mesh -> VulkanMesh, D3D9Pad -> VulkanPad,
-// LPDIRECT3DDEVICE9 -> VulkanDevice*, LPDIRECT3DTEXTURE9 -> VulkanTexture*,
-// D3DXVECTOR3/4 -> FVECTOR3/4, D3DXCOLOR(DWORD) -> FCOLOR_ARGB (never
-// FVECTOR4(DWORD) -- that reads ABGR), D3DXVec3Length -> oapi::length,
-// D3DXMatrixMultiply -> VMAT_MatrixMultiply, mWorld._41 -> mWorld.m41.
-// ==============================================================
 
 #define D3D_OVERLOADS
 
@@ -170,17 +98,12 @@ std::vector<std::string> EnumerateDirectory(std::string directory, std::string f
 {
 	std::vector<std::string> result;
 
-	// Was:
-	//     std::string search_path = directory + "\\" + filter;
-	//     WIN32_FIND_DATA fd;
-	//     HANDLE hFind = ::FindFirstFile(search_path.c_str(), &fd);
-	//     if (hFind != INVALID_HANDLE_VALUE) { do { ... } while (::FindNextFile(...)); ::FindClose(hFind); }
-	//
-	// See point 1 in the file header. The glob is always "*.<ext>", so the
-	// pattern match becomes an extension test; FindFirstFile matched
-	// case-insensitively, so this does too. A directory that does not exist
-	// leaves the error_code set and the iterator equal to end(), which is the
-	// INVALID_HANDLE_VALUE case: an empty result, not a failure.
+	// Was FindFirstFile / FindNextFile / FindClose over directory + "\\" +
+	// filter, none of which the shim implements. The glob is always "*.<ext>",
+	// so the pattern match becomes an extension test, case-insensitive as
+	// FindFirstFile was. A directory that does not exist leaves the error_code
+	// set and the iterator equal to end(), which is the INVALID_HANDLE_VALUE
+	// case: an empty result, not a failure.
 	std::string ext;
 	size_t dot = filter.rfind('.');
 	if (dot != std::string::npos) ext = filter.substr(dot);
@@ -234,7 +157,7 @@ void ProcessPlanetFlats(OBJHANDLE hPlanet)
 	char name[MAX_PATH];
 	char fname[MAX_PATH];
 	oapiGetObjectName(hPlanet, name, ARRAYSIZE(name) - 6);
-	// "%s\\Flat" on Windows -- a filesystem path. Finding 24's class.
+	// Was "%s\\Flat" -- a filesystem path.
 	sprintf_s(fname, ARRAYSIZE(fname), "%s/Flat", name);
 	g_client->TexturePath(fname, name);
 	auto files = EnumerateDirectory(name, "*.flt");
@@ -250,13 +173,12 @@ void ProcessPlanetFlats(OBJHANDLE hPlanet)
 			{
 				int height, dim1, dim2, falloff, read;
 				double lat, lng, phi;
-				// "%s" reads an unbounded token into fname[MAX_PATH]. Bounded
-				// here; same class as finding 15.
+				// "%s" read an unbounded token into fname[MAX_PATH]: a .flt
+				// file with a long first word overran it. Bounded here.
 				if ((read = fscanf(f, "%255s %d %lf %lf %d %d %lf %d", fname, &height, &lng, &lat, &dim1, &dim2, &phi, &falloff)) < 5) continue; // Skip incomplete lines
 				if (fname[0] == '/' && fname[1] == '/') continue; // Skip commented lines
-				// _strlwr is the MSVC CRT's in-place lowercase; there is no
-				// standard C spelling, and the two strcmp tests below are what
-				// it exists for.
+				// _strlwr is the MSVC CRT's in-place lowercase, with no
+				// standard C spelling.
 				for (char *c = fname; *c; ++c) *c = (char)tolower((unsigned char)*c);
 				if (read < 6)	dim2 = dim1; // Fallback for one dimension only
 				if (read < 7)	phi = 0;     // Fallback for no angle given
@@ -441,8 +363,8 @@ void vPlanet::GlobalExit()
 	g_ShapesLoaded.clear();
 
 	SAFE_DELETE(pIP);
-	// SAFE_RELEASE(ptEclipse). No reference count; the device that made the
-	// image destroys it.
+	// Was SAFE_RELEASE(ptEclipse): there is no reference count, the device
+	// that made the image destroys it.
 	if (ptEclipse) { pDev->DestroyTexture(ptEclipse); ptEclipse = NULL; }
 
 	for (int i=0;i<8;i++) SAFE_DELETE(pRender[i]);
@@ -455,10 +377,9 @@ void vPlanet::GlobalInit(oapi::VulkanClient* gc)
 	pDev = gc->GetDevice();
 
 	// Was D3DXCreateTexture(pDev, 512, 1, 1, D3DUSAGE_DYNAMIC, D3DFMT_R32F,
-	// D3DPOOL_DEFAULT, &ptEclipse). See point 2 in the file header:
-	// VK_FORMAT_R32_SFLOAT is D3DFMT_R32F exactly, and TRANSFER_DST is what
-	// D3DUSAGE_DYNAMIC turns into -- the image is device-local (SAMPLED puts
-	// it there) and is written by a staged copy rather than by a map.
+	// D3DPOOL_DEFAULT, &ptEclipse). VK_FORMAT_R32_SFLOAT is D3DFMT_R32F
+	// exactly; the image is device-local, so D3DUSAGE_DYNAMIC becomes
+	// TRANSFER_DST and it is written by a staged copy rather than by a map.
 	ptEclipse = pDev->CreateTexture(512, 1, 1, VK_FORMAT_R32_SFLOAT,
 									VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
 	if (!ptEclipse) LogErr("vPlanet::GlobalInit: failed to create the eclipse occlusion table");
@@ -472,9 +393,8 @@ void vPlanet::GlobalInit(oapi::VulkanClient* gc)
 vPlanet::vPlanet (OBJHANDLE _hObj, const Scene *scene) :
 	vObject (_hObj, scene),
 	pSunColor(), pRaySkyView(), pMieSkyView(), pLandViewRay(), pLandViewMie(), pAmbientSky(), pLandViewAtn(),
-	// ShaderName("Auto\0") on Windows. See point 5 in the file header: an
-	// array member is initialised from a string literal with BRACES, not
-	// parentheses; the 32 bytes are the same.
+	// ShaderName("Auto\0") is an MSVC extension: a char array member takes a
+	// string literal in braces, not parentheses. The 32 bytes are the same.
 	ShaderName{"Auto\0"}
 {
 	memset(&MicroCfg, 0, sizeof(MicroCfg));
@@ -663,8 +583,7 @@ vPlanet::~vPlanet ()
 	else if (surfmgr2) delete surfmgr2;
 	if (cloudmgr2) delete cloudmgr2;
 
-	// y->Release() -- a COM reference count on an overlay texture the planet
-	// owns. vkDestroyImage takes the device that made it.
+	// Was y->Release(), a COM reference count; vkDestroyImage takes the device.
 	for (auto x : overlays) for (auto y : x->pSurf) if (y) pDev->DestroyTexture(y);
 
 	if (clouddata) {
@@ -804,8 +723,7 @@ bool vPlanet::GetMinMaxDistance(float *zmin, float *zmax, float *dmin)
 	if (mesh==NULL) return false;
 	if (bBSRecompute) UpdateBoundingBox();
 
-	// mWorld._41.._43 are mWorld.m41..m43 -- DrawAPI.h declares the _11 view
-	// only under #ifdef _WIN32. Same three elements.
+	// _41.._43 are m41..m43: DrawAPI.h declares the _11 view only under _WIN32.
 	FVECTOR3 pos = FVECTOR3(mWorld.m41, mWorld.m42, mWorld.m43);
 
 	float dst = length(pos);
@@ -922,11 +840,10 @@ bool vPlanet::Update (bool bMainScene)
 			// world matrix for cloud shadows on the surface
 			memcpy (&clouddata->mWorldC0, &mWorld, sizeof (FMATRIX4));
 			if (prm.cloudrot) {
-				// Was `static D3DXMATRIX crot(1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1);`
-				// -- a sixteen-float constructor FMATRIX4 does not have.
-				// Ident() writes the same matrix, and writing it every call
-				// rather than once costs sixteen stores and removes the
-				// question of what the other twelve elements hold.
+				// Was `static D3DXMATRIX crot(1,0,0,0, 0,1,0,0, 0,0,1,0,
+				// 0,0,0,1);`, a sixteen-float constructor FMATRIX4 does not
+				// have. Ident() writes the same matrix; doing it every call
+				// rather than once costs sixteen stores.
 				static FMATRIX4 crot;
 				crot.Ident();
 				crot.m11 =   crot.m33 = (float)cos(prm.cloudrot);
@@ -938,8 +855,7 @@ bool vPlanet::Update (bool bMainScene)
 			memcpy (&clouddata->mWorldC, &clouddata->mWorldC0, sizeof (FMATRIX4));
 			for (i = 0; i < 3; i++)
 				for (j = 0; j < 3; j++) {
-					// m[i][j] -- D3DMATRIX has that view over the same
-					// storage and FMATRIX4 has data[16]. Same element.
+					// FMATRIX4 has data[16] where D3DMATRIX had m[i][j].
 					clouddata->mWorldC.data[i*4+j] *= cloudscale;
 				}
 
@@ -1013,9 +929,8 @@ void vPlanet::CheckResolution()
 	}
 	(void)ntx;	// written in both branches and read only in the second
 	// `new_patchres` is a DWORD and `patchres` an int, so the bare comparison
-	// is signed against unsigned (-Wsign-compare; MSVC's C4018 is off at the
-	// default level). The cast changes nothing: patchres starts at 0 and is
-	// only ever assigned from new_patchres, so it is never negative.
+	// is signed against unsigned (-Wsign-compare). The cast changes nothing:
+	// patchres starts at 0 and is only ever assigned from new_patchres.
 	if (new_patchres != DWORD(patchres)) {
 		if (hashaze) {
 			if (new_patchres < 1) {
@@ -1060,8 +975,8 @@ bool vPlanet::Render(VulkanDevice *dev)
 		DWORD displ  = *(DWORD*)gc->GetConfigParam(CFGPRM_GETDISPLAYMODE);
 		vObject *vSel =  DebugControls::GetVisual();
 		if (vSel && displ>0) {
-			// GetObjectA -- see the note on the Win32 GetObject macro in
-			// RunwayLights.cpp. GetObject() is what the code means.
+			// GetObjectA existed because <windows.h> defines GetObject as a
+			// macro; GetObject() is what the code means.
 			if (vSel->GetObject()) {
 				if (oapiGetObjectType(vSel->GetObject())==OBJTP_VESSEL) return false;
 			}
@@ -1117,8 +1032,8 @@ bool vPlanet::Render(VulkanDevice *dev)
 		prm.bTint		= prm.bFogEnabled;
 		prm.bAddBkg		= ((bg & 0xFFFFFF) && (hObj != scn->GetCameraProxyBody()));
 		prm.FogDensity	= 0.0f;
-		// D3DXCOLOR(DWORD) unpacks ARGB. FVECTOR4's DWORD constructor reads
-		// ABGR, so FCOLOR_ARGB is the one that means this.
+		// D3DXCOLOR(DWORD) unpacks ARGB; FVECTOR4's DWORD constructor reads
+		// ABGR, so FCOLOR_ARGB is the spelling that means this.
 		prm.SkyColor	= FCOLOR_ARGB(bg);
 		prm.AmbColor	= FVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
 		prm.FogColor	= FVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
@@ -1132,8 +1047,8 @@ bool vPlanet::Render(VulkanDevice *dev)
 		if (ringmgr) {
 			ringmgr->Render(dev, mWorld, false);
 			// SetRenderState(D3DRS_CULLMODE, D3DCULL_CCW) stood here,
-			// restoring what the ring pass changed. Nothing to restore: the
-			// next pipeline bind carries its own cull.
+			// restoring what the ring pass changed. The next pipeline bind
+			// carries its own cull, so there is nothing to restore.
 		}
 
 		if (hazemgr2) {
@@ -1313,16 +1228,14 @@ void vPlanet::RenderSphere (VulkanDevice *dev)
 	}
 	else {
 		float fogfactor = 0.0f;
-		// Was FX->GetFloat(eFogDensity, &fogfactor). See the note at the head
-		// of the file: the read comes out of the effect's own staged
-		// parameter block, which is where the write went.
+		// The read comes out of the effect's own staged parameter block, which
+		// is where the write went.
 		VulkanEffect::FX->GetFloat(VulkanEffect::eFogDensity, &fogfactor);
 		// SetRenderState(D3DRS_CULLMODE, D3DCULL_CCW) stood here; the v1
 		// surface manager's cull comes from its technique's pass state.
 		if (prm.bFog) VulkanEffect::FX->SetFloat(VulkanEffect::eFogDensity, fogfactor/dist_scale);
-		// prm.AmbColor was a D3DXCOLOR handed to a D3DCOLOR parameter, which
-		// invoked its packing conversion operator. dword_argb() is that
-		// operator, spelled.
+		// A D3DXCOLOR handed to a D3DCOLOR parameter invoked its packing
+		// conversion operator; dword_argb() is that operator, spelled.
 		surfmgr->SetAmbientColor(prm.AmbColor.dword_argb());
 		surfmgr->Render (dev, mWorld, dist_scale, patchres, 0.0, prm.bFog); // surface
 		if (prm.bFog) VulkanEffect::FX->SetFloat(VulkanEffect::eFogDensity, fogfactor);
@@ -1344,19 +1257,13 @@ void vPlanet::RenderSphere (VulkanDevice *dev)
 
 void vPlanet::RenderCloudLayer (VulkanDevice *dev, DWORD cullmode)
 {
-	// Was:
-	//     if (cullmode != D3DCULL_CCW) dev->SetRenderState(D3DRS_CULLMODE, cullmode);
-	//     ... render ...
-	//     if (cullmode != D3DCULL_CCW) dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_CCW);
-	//
-	// THIS IS THE ONE CULL SETTING IN THIS FILE THAT MATTERS: the layer is
-	// drawn once from below with D3DCULL_NONE and once from above with
-	// D3DCULL_CCW, and drawing the second with no culling would show the far
-	// side of the cloud sphere through the near side. Cull is pipeline state
-	// here, so the value travels on the manager to where the pipeline is
-	// built. See point 3 in the file header, TileManager::cullMode and
-	// TileManager2Base::cullMode. The restore has no counterpart -- the next
-	// bind carries its own cull -- so it is simply the end of this scope.
+	// The one cull setting in this file that matters: the layer is drawn once
+	// from below with CULL_NONE and once from above with CULL_CCW, and drawing
+	// the second without culling would show the far side of the cloud sphere
+	// through the near side. Cull is pipeline state here, so the value travels
+	// on the manager (TileManager::cullMode, TileManager2Base::cullMode) to
+	// where the pipeline is built; the two enumerations are numbered alike, so
+	// one value serves both. The restore that followed has no counterpart.
 	if (cloudmgr2) {
 		cloudmgr2->cullMode = int(cullmode);
 		cloudmgr2->Render(dmWorld, false, prm);
@@ -1482,10 +1389,10 @@ void vPlanet::SetupEclipse()
 	if (plnsize > 1.0 && ptEclipse && vE)
 	{
 		// Was LockRect(0, &rect, nullptr, D3DLOCK_DISCARD), a write into
-		// rect.pBits, and UnlockRect(0). See point 2 in the file header: the
-		// image is device-local -- D3DPOOL_DEFAULT was too, and D3D9 could
-		// map it only because the runtime kept a shadow copy. The table is
-		// built here and staged across, which is what UploadTexture is.
+		// rect.pBits, and UnlockRect(0). The image is device-local and cannot
+		// be mapped; D3D9 could map its D3DPOOL_DEFAULT texture only because
+		// the runtime kept a shadow copy. The table is built here and staged
+		// across instead.
 		float table[512];
 		for (int i = 0; i < 512; i++) {
 			float x = float(i) * float(plnsize + sunsize) / 512.0f;
@@ -1706,10 +1613,9 @@ vPlanet::sOverlay * vPlanet::AddOverlaySurface(VECTOR4 lnglat, gcCore::OlayType 
 void vPlanet::SetMicroTexture(VulkanTexture *pSrc, int slot)
 {
 	// Was D3DXCreateTexture into a D3DPOOL_DEFAULT copy followed by
-	// UpdateTexture -- allocate a matching texture and copy every mip into
-	// it. CreateTexture plus BlitTexture is that pair; BlitTexture takes the
-	// vkCmdCopyImage path for a same-format same-size pair, which is the only
-	// path a block-compressed source has.
+	// UpdateTexture. CreateTexture plus BlitTexture is that pair; BlitTexture
+	// takes the vkCmdCopyImage path for a same-format same-size pair, which is
+	// the only path a block-compressed source has.
 	if (!pSrc) return;
 	const VulkanImageDesc &desc = pSrc->Desc();
 	VulkanTexture *pTex = pDev->CreateTexture(desc.Width, desc.Height, desc.Mips, desc.Format,
@@ -1735,9 +1641,6 @@ void vPlanet::LoadMicroTextures(VulkanDevice *pDev)
 			
 			// If texture is not loaded, load it
 			if (MicroTextures.find(x.file) == MicroTextures.end()) {
-				// D3DXCreateTextureFromFileA: open, decode, allocate, upload.
-				// LoadDDSFile plus the client's own DDS decoder is that pair;
-				// declared in Tilemgr2.h and shared with the tile engine.
 				x.pTex = LoadDDSFile(file_path);
 				if (x.pTex) {
 					LogAlw("Microtexture [%s] loaded", x.file);
@@ -1752,9 +1655,9 @@ void vPlanet::LoadMicroTextures(VulkanDevice *pDev)
 			x.pTex = MicroTextures[x.file];
 			
 			if (x.pTex) {
-				// GetLevelDesc(0, &desc) asked the runtime what level 0 looks
-				// like; a VkImage answers nothing about itself, so
-				// VulkanTexture keeps what it was created with.
+				// GetLevelDesc(0, &desc) asked the runtime; a VkImage answers
+				// nothing about itself, so VulkanTexture keeps what it was
+				// created with.
 				const VulkanImageDesc &desc = x.pTex->Desc();
 				x.px = double(desc.Width);
 				x.size = double(desc.Width) / x.reso;

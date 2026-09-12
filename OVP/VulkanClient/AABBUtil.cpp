@@ -16,48 +16,12 @@
 // IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 // =================================================================================================================================
 //
-// CONVERTED FROM OVP/D3D9Client/AABBUtil.cpp. What changed, and why:
-//
-//   1. <xnamath.h> IS GONE, AND THAT IS THE BULK OF THIS FILE'S WORK.
-//      xnamath is Microsoft's SSE wrapper (XMVECTOR, XMLoadFloat4,
-//      XMVectorMin, XMVector3TransformCoord, XMVectorSelect ...). It ships
-//      with the DirectX SDK and has no Linux build and no drop-in equivalent,
-//      so every one of those calls is written out as the float arithmetic it
-//      performs. This is the "only where the difference forces it" case
-//      exactly: the arithmetic is unchanged, only its spelling is.
-//
-//      D9AddPointAABB, D9UpdateAABB and D9AddAABB are the three functions this
-//      touches. The one that needed care is D9AddAABB's XMVectorSelect over
-//      eight XMVectorSelectControl masks -- that is a loop over the eight
-//      CORNERS of the box, each corner picking x, y and z from either `min` or
-//      `max`. Written out, the mask becomes the three bits of the loop index,
-//      which is what the eight hand-written control words were spelling.
-//
-//   2. THE D3DX MATH BECAME THE SDK'S OWN. D3DXVec3TransformCoord,
-//      D3DXVec3TransformNormal, D3DXVec3Dot and D3DXVec3Normalize are
-//      TransformCoord, TransformNormal, dot and normalize in DrawAPI.h, with
-//      the same meaning and the same row-vector convention. Only
-//      D3DXMatrixInverse has no counterpart; it is MatrixInverse in
-//      VectorHelpers.h.
-//
-//   3. pProj->_22 BECAME pProj->m22. FMATRIX4 names its elements m11..m44
-//      where D3DXMATRIX names them _11.._44. Same storage, same order.
-//
-//   4. THE DEVICE PARAMETERS ARE GONE -- see the note in AABBUtil.h. Neither
-//      function that took one ever used it.
-//
-//   5. `using std::min;` BECAME an explicit std::min at the one call site.
-//      The Windows file hoists the name to shadow the min() macro that
-//      <windows.h> defines; there is no such macro here, and importing a name
-//      into the global namespace to dodge a macro that no longer exists is
-//      worth losing.
-//
-//   6. THE #pragma warning PUSH/POP PAIR IS GONE. It suppressed MSVC warning
-//      4838 for the xnamath include that is itself gone.
-//
-// AND ONE DEFECT NOT CARRIED OVER -- see WorldPickRay below. It is the only
-// place this file departs from what the Windows code DOES rather than from how
-// it says it.
+// <xnamath.h> is Microsoft's SSE wrapper (XMVECTOR, XMVectorMin,
+// XMVector3TransformCoord, XMVectorSelect) and has no Linux build, so every
+// such call here is written out as the float arithmetic it performed. The
+// D3DX vector math maps onto the SDK's own TransformCoord/TransformNormal/
+// dot/normalize; only D3DXMatrixInverse has no counterpart and becomes
+// MatrixInverse from VectorHelpers.h.
 // =================================================================================================================================
 
 #include "AABBUtil.h"
@@ -94,24 +58,11 @@ bool SolveLUSystem(int n, double *A, double *b, double *x, double *det)
 }
 
 
-// THE ONE BEHAVIOURAL DIVERGENCE IN THIS FILE, and it is a defect in the
-// Windows code rather than a Windows/Linux difference.
-//
-// The parameter is `const LPD3DXMATRIX mView` -- LPD3DXMATRIX is ALREADY a
-// pointer, so mView is the matrix. The Windows body then passes
-//
-//     D3DXMatrixInverse(&mViewI, NULL, (const D3DXMATRIX *)&mView);
-//
-// which is the address OF THE POINTER VARIABLE, cast so that the compiler
-// stays quiet about it. It inverts the sixteen bytes of stack holding the
-// pointer and whatever follows it, never the view matrix, so every ray this
-// function returns is garbage and picking cannot ever have worked through it.
-// The cast is what hides it: without it the types would not match and the
-// compiler would have said so.
-//
-// This passes the matrix. Recorded here rather than silently fixed, because a
-// future diff against the reference will show the difference and should find
-// the reason next to it.
+// Bug fixed from the Windows source: LPD3DXMATRIX is already a pointer, so
+// `D3DXMatrixInverse(&mViewI, NULL, (const D3DXMATRIX *)&mView)` inverted the
+// stack slot holding the pointer, not the view matrix -- the cast is what kept
+// the compiler quiet. Every ray it returned was garbage. This passes the
+// matrix.
 FVECTOR3 WorldPickRay(float x, float y, const FMATRIX4 *mProj, const FMATRIX4 *mView)
 {
 	x = float((x*2.0-1.0)/mProj->m11);
@@ -126,12 +77,9 @@ FVECTOR3 WorldPickRay(float x, float y, const FMATRIX4 *mProj, const FMATRIX4 *m
 
 void D9ZeroAABB(D9BBox *box)
 {
-	// memset(box, 0, sizeof(D9BBox)) on Windows. D9BBox is six FVECTOR4, and
-	// FVECTOR4 has user-declared constructors, so it is not trivially
-	// copyable and memset over it is formally undefined -- GCC reports it as
-	// -Wclass-memaccess. The result was correct in practice (0.0f is all-zero
-	// bits, and six alignas(16) members leave no padding), so this is the
-	// same 96 bytes of zero by a defined route rather than a behaviour change.
+	// Was memset(box, 0, sizeof(D9BBox)). FVECTOR4 has user-declared
+	// constructors, so memset over it is undefined (-Wclass-memaccess). Same
+	// 96 bytes of zero by a defined route.
 	*box = D9BBox();
 }
 
@@ -143,11 +91,6 @@ void D9InitAABB(D9BBox *box)
 }
 
 
-// Was four xnamath calls: load min, load max, load the point, store the
-// component-wise min and max back. The w lane is left alone exactly as
-// XMVectorMin/XMVectorMax left it, because the point is loaded as a FLOAT3 and
-// the stores write four lanes -- so w keeps whatever min/max held. Writing it
-// out makes that explicit rather than accidental.
 void D9AddPointAABB(D9BBox *box, const FVECTOR3 *point)
 {
 	box->min.x = std::min(box->min.x, point->x);
@@ -159,13 +102,11 @@ void D9AddPointAABB(D9BBox *box, const FVECTOR3 *point)
 }
 
 
-// THE SIGN OF m22 IS NOT ASSUMED HERE. The Windows body is 1.0f/pProj->_22 and
-// takes for granted that the element is positive, which is true of
-// D3DXMatrixPerspectiveFovLH. A projection built for Vulkan's top-left
-// framebuffer origin negates it. `a` would then be negative, `l` and the two
-// returned extents would follow, and every visibility test that multiplies by
-// them would reject everything -- silently, because a fully culled scene draws
-// without complaint. The magnitude is what the field of view means.
+// fabsf on m11/m22: the Windows body assumes m22 is positive, true of
+// D3DXMatrixPerspectiveFovLH but not of a projection built for Vulkan's
+// top-left framebuffer origin, which negates it. A negative extent makes every
+// visibility test reject everything, and a fully culled scene draws without
+// complaint. The magnitude is what the field of view means.
 FVECTOR4 D9LinearFieldOfView(const FMATRIX4 *pProj)
 {
 	float a = 1.0f/fabsf(pProj->m22);
@@ -181,8 +122,8 @@ float D9NearPlane(float znear, float zfar, float dmin, const FMATRIX4 *pProj, bo
 	float a = 1.0f/pProj->m22;
 	float q = atan(sqrt(a*a+b*b));
 
-	// The Windows body fetches the viewport here and never reads it; see the
-	// note in AABBUtil.h. Nothing else in the function mentions the device.
+	// The Windows body fetches the viewport here and never reads it, which is
+	// why the device parameter is gone.
 
 	dmin = dmin * cos(q);
 	
@@ -369,15 +310,6 @@ int D9ComputeMinMaxDistance(const D9BBox *in, const FMATRIX4 *pWV, const FVECTOR
 }
 
 
-// Was ten xnamath calls. The three axes start as the unit basis, the two
-// corners as min and max; each supplied matrix transforms the axes as NORMALS
-// and the corners as COORDINATES, in that order, first then second. Then the
-// bounding sphere centre is the midpoint of the two corners and its radius is
-// half the distance between them.
-//
-// One detail worth stating because the SIMD form hid it: the corners go
-// through XMVector3TransformCoord, which divides by w. TransformCoord does the
-// same, so a projective matrix behaves identically here and in the reference.
 void D9UpdateAABB(D9BBox *box, const FMATRIX4 *pFirst, const FMATRIX4 *pSecond)
 {
 	FVECTOR3 x(1.0f, 0.0f, 0.0f);
@@ -413,27 +345,12 @@ void D9UpdateAABB(D9BBox *box, const FMATRIX4 *pFirst, const FMATRIX4 *pSecond)
 }
 
 
-// Was the densest xnamath in the file, and the only part that needed thinking
-// about rather than transcribing.
-//
-// The Windows body builds eight XMVectorSelectControl masks and uses
-// XMVectorSelect to pick each of x, y and z from either `q` (the box minimum)
-// or `w` (the box maximum). That is an enumeration of the box's eight CORNERS.
-// Reading the eight control words in order --
-//
-//     (0,0,0) (1,1,1) (0,0,1) (0,1,0) (0,1,1) (1,0,0) (1,0,1) (1,1,0)
-//
-// -- they are the eight combinations of three bits, in a scrambled order.
-// XMVectorSelect takes the lane from the FIRST argument where the control bit
-// is 0, so a 0 bit means `q` and a 1 bit means `w`. Since all eight appear
-// exactly once and the result is a min/max over all of them, the ORDER cannot
-// matter, so the loop below runs 0..7 and reads the three bits of the index.
-// The result is identical and there is no table to get wrong.
-//
-// The w lane: the Windows body clears it on both corners with XMVectorSetW
-// before transforming, so the corners are positions with w = 0 going in. That
-// is preserved by transforming FVECTOR3 and letting TransformCoord supply the
-// translation, which is the same arithmetic.
+// The Windows body's eight XMVectorSelectControl masks enumerate the box's
+// eight corners, each lane taken from `q` (minimum) where the control bit is 0
+// and `w` (maximum) where it is 1. The eight words are the eight combinations
+// of three bits in scrambled order; since the result is a min/max over all of
+// them the order cannot matter, so the loop reads the three bits of its index
+// instead and there is no table to get wrong.
 void D9AddAABB(const D9BBox *in, const FMATRIX4 *pM, D9BBox *out, bool bReset)
 {
 	FVECTOR3 mi, mx;

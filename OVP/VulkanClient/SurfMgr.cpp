@@ -13,38 +13,21 @@
 // LOD (level-of-detail) algorithm for surface patch resolution.
 // ==============================================================
 //
-// CONVERTED FROM OVP/D3D9Client/SurfMgr.cpp, read end to end (226 lines).
+// FX->CommitChanges() has no counterpart. D3DX buffered parameter writes and
+// CommitChanges pushed them to the device mid-pass, so one BeginPass served many draws
+// with different textures and matrices. Here the uniform block is uploaded and
+// the descriptor set written at BeginPass, so a parameter set after it does not
+// reach the draw -- silently. Each draw therefore closes and reopens the pass.
 //
-// Three of the six functions are pure setup and convert unchanged. The three
-// that draw -- RenderSimple, InitRenderTile/EndRenderTile and RenderTile --
-// all have the same shape and the same four changes:
+// DrawIndexedPrimitive's last argument was a primitive count (mesh.nf
+// triangles); vkCmdDrawIndexed takes an index count, 3*mesh.nf.
 //
-//   1. FX->CommitChanges() HAS NO COUNTERPART, and its absence is not free.
-//      D3DX buffered parameter writes and CommitChanges pushed them to the
-//      device mid-pass, which is how one BeginPass could serve many draws
-//      with different textures and matrices. Here the uniform block is
-//      uploaded and the descriptor set written AT BeginPass, so a parameter
-//      set after it does not reach the draw. Each draw therefore closes and
-//      reopens the pass -- EndPass/BeginPass around it -- which is what
-//      VulkanEffect.cpp's RenderReEntry and VulkanPad2.cpp's DrawMeshGroup
-//      already do for the same reason.
+// D3DXCOLOR(cAmbient) becomes FCOLOR_ARGB(cAmbient), not FVECTOR4(cAmbient):
+// FVECTOR4's DWORD constructor reads ABGR and a D3DCOLOR is ARGB, so the
+// obvious spelling would exchange red and blue.
 //
-//   2. SetStreamSource / SetIndices / DrawIndexedPrimitive become
-//      vkCmdBindVertexBuffers / vkCmdBindIndexBuffer / vkCmdDrawIndexed. The
-//      last argument was a PRIMITIVE count (mesh.nf triangles); vkCmdDrawIndexed
-//      takes an INDEX count, which is 3*mesh.nf.
-//
-//   3. pDev->SetVertexDeclaration -> FX->SetVertexDecl, before Begin(), and
-//      FX->SetTopology beside it: topology is baked into the VkPipeline that
-//      BeginPass builds.
-//
-//   4. D3DXCOLOR(cAmbient) -> FCOLOR_ARGB(cAmbient). NOT FVECTOR4(cAmbient):
-//      FVECTOR4's DWORD constructor reads ABGR and a D3DCOLOR is ARGB, so the
-//      obvious spelling would exchange red and blue. See VulkanUtil.h.
-//
-// D3DMATERIAL9 -> MATERIAL and D3D9Sun -> VulkanSun are field-for-field; see
-// VulkanUtil.h's note 2. HR() is dropped where it wrapped an FX->Set*, which
-// returns bool rather than a VkResult.
+// HR() is dropped where it wrapped an FX->Set*, which returns bool rather than
+// a VkResult.
 // ==============================================================
 
 #include "SurfMgr.h"
@@ -55,9 +38,8 @@
 
 using namespace oapi;
 
-// Was D3DMATERIAL9, which is four D3DCOLORVALUE and a float. MATERIAL is four
-// COLOUR4 and a float -- the same struct under the SDK's names, so the braced
-// initialisers carry over as written.
+// Was D3DMATERIAL9. MATERIAL has the same layout under the SDK's names, so the
+// braced initialisers carry over as written.
 MATERIAL watermat = {{1,1,1,1},{1,1,1,1},{1,1,1,1},{0,0,0,0},20.0f};
 MATERIAL def_mat = {{1,1,1,1},{1,1,1,1},{1,1,1,1},{0,0,0,1},0};
 
@@ -130,7 +112,6 @@ void SurfaceManager::RenderSimple(int level, int npatch, TILEDESC *tile, FMATRIX
 	FX->SetMatrix(eW, mWrld);
 	FX->SetValue(eWater, &watermat, sizeof(MATERIAL));
 	FX->SetValue(eMat, &def_mat, sizeof(MATERIAL));
-	// D3DXCOLOR(cAmbient) -- an ARGB unpack. See the file header.
 	FX->SetValue(eColor, ptr(FCOLOR_ARGB(cAmbient)), sizeof(FVECTOR4));
 	FX->SetFloat(eTime, float(fmod(oapiGetSimTime(),60.0)));
 	FX->SetVector(eTexOff, ptr(FVECTOR4(1.0f, 0.0f, 1.0f, 0.0f)));
@@ -140,8 +121,8 @@ void SurfaceManager::RenderSimple(int level, int npatch, TILEDESC *tile, FMATRIX
 	if (!pDev->IsRecording()) return;
 	VkCommandBuffer cmd = pDev->GetCommandBuffer();
 
-	// Was pDev->SetVertexDeclaration(pPatchVertexDecl). Both of these are
-	// pipeline state now and must be declared before BeginPass builds it.
+	// Vertex layout and topology are pipeline state now, so both must be set
+	// before BeginPass builds the pipeline.
 	FX->SetVertexDecl(pPatchVertexDecl);
 	FX->SetTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
 
@@ -173,10 +154,8 @@ void SurfaceManager::RenderSimple(int level, int npatch, TILEDESC *tile, FMATRIX
 		FX->SetTexture(eTex0, tile[idx].tex);
 		FX->SetTexture(eTex1, ltex);
 
-		// FX->CommitChanges() stood here. BeginPass is where the parameters
-		// and the descriptor set are written, so the per-patch state above
-		// has to be set before it -- which means the pass opens inside the
-		// loop rather than outside it. See the file header.
+		// FX->CommitChanges() stood here; the pass now opens inside the loop,
+		// after the per-patch state above.
 		if (!FX->BeginPass(0)) continue;
 
 		VkBuffer vb = mesh.pVB->Buffer();
@@ -206,10 +185,10 @@ void SurfaceManager::InitRenderTile()
 
 	UINT numPasses = 0;
 	FX->Begin(&numPasses, 0);
-	// The BeginPass(0) that stood here has moved into RenderTile, for the
-	// reason in the file header: each tile sets its own textures, matrix and
-	// texture offsets, and those must be written BEFORE the pass opens. The
-	// Begin()/End() pair still brackets the whole hemisphere, as it did.
+	// The BeginPass(0) that stood here has moved into RenderTile: each tile
+	// sets its own textures, matrix and texture offsets, and those must be
+	// written before the pass opens. The Begin()/End() pair still brackets the
+	// whole hemisphere, as it did.
 }
 
 void SurfaceManager::EndRenderTile()
@@ -240,12 +219,10 @@ void SurfaceManager::RenderTile (int lvl, int hemisp, int ilat, int nlat, int il
 
 	if (DebugControls::IsActive()) {
 		if (flags&DBG_FLAGS_TILES) {
-			// The zeros are written 0.0f. D3DXVECTOR4 had ONE four-float
-			// constructor, so `D3DXVECTOR4(x, 0, 0, 0)` converted the ints
-			// silently. FVECTOR4 has three -- all-float, all-int and
-			// all-double (DrawAPI.h:460-476) -- so a mixed call matches none
-			// of them exactly and is ambiguous rather than wrong. Same
-			// values; the literals just have to say which overload.
+			// The zeros are written 0.0f. D3DXVECTOR4 had one four-float
+			// constructor and converted the int literals silently; FVECTOR4
+			// has all-float, all-int and all-double overloads, so a mixed
+			// call is ambiguous. Same values, spelled to pick an overload.
 			float x = 0.6f;
 			switch(lvl) {
 				case 14: FX->SetVector(eColor, ptr(FVECTOR4(x, 0.0f, 0.0f, 0.0f))); break;
@@ -278,7 +255,7 @@ void SurfaceManager::RenderTile (int lvl, int hemisp, int ilat, int nlat, int il
 	else if (purespec) FX->SetInt(eSpecularMode, 1);
 	else			   FX->SetInt(eSpecularMode, 0);
 
-	// FX->CommitChanges() stood here. See InitRenderTile.
+	// FX->CommitChanges() stood here; the pass opens instead.
 	if (!pDev->IsRecording() || !mesh.pVB || !mesh.pIB) return;
 	if (!FX->BeginPass(0)) return;
 
@@ -287,7 +264,6 @@ void SurfaceManager::RenderTile (int lvl, int hemisp, int ilat, int nlat, int il
 	VkDeviceSize offset = 0;
 	vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &offset);
 	vkCmdBindIndexBuffer(cmd, mesh.pIB->Buffer(), 0, VK_INDEX_TYPE_UINT16);
-	// mesh.nf TRIANGLES -> 3*mesh.nf indices.
 	vkCmdDrawIndexed(cmd, mesh.nf * 3, 1, 0, 0, 0);
 
 	FX->EndPass();

@@ -4,19 +4,6 @@
 //   Dual licensed under GPL v3 and LGPL v3
 // ==============================================================
 
-// CONVERTED FROM OVP/D3D9Client/Surfmgr2.h, read end to end (99 lines).
-//
-// SurfTile: Tile's main subclass, and the elevation engine's data. The
-// declarations that change are the four that name a Direct3D type:
-//
-//   the D3D9 texture pointer  -> VulkanTexture*  (SetOverlay, DeleteOverlay,
-//                                                 and the ltex member)
-//   the D3DX 2-vector         -> FVECTOR2        (MicroRep[3])
-//   the D3D9 Sketchpad        -> VulkanPad       (RenderLabels)
-//
-// Everything else -- the elevation grid, the edge-matching, the interpolation
-// -- is arithmetic on INT16 and float arrays and is untouched.
-
 #ifndef __SURFMGR2_H
 #define __SURFMGR2_H
 
@@ -24,8 +11,8 @@
 #include "TileLabel.h"
 #include "VulkanPad.h"
 
-// FORWARD DECLARATION ADDED, for a CIRCULAR INCLUDE that exists on both
-// platforms: TileLabel.h includes this file and this file includes
+// This forward declaration was added for a circular include that exists on
+// both platforms: TileLabel.h includes this file and this file includes
 // TileLabel.h. Whichever is included first, the other's guard is already set
 // when it is reached -- so if TileLabel.h comes first, `TileLabel *label`
 // below names a type that has not been declared yet. It happens to work on

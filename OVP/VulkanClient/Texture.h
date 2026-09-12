@@ -11,21 +11,6 @@
 // Methods for loading single (.dds) and multi-texture files (.tex)
 // stored in DXT? format.
 // ==============================================================
-//
-// CONVERTED FROM OVP/D3D9Client/Texture.h, read end to end (82 lines).
-//
-// A name -> SURFHANDLE repository, a linked list and a checksum. Three
-// renames: oapi::D3D9Client -> oapi::VulkanClient,
-// LPDIRECT3DDEVICE9 -> VulkanDevice*, LPDIRECT3DTEXTURE9 -> VulkanTexture*.
-//
-// The header comment's "DIRECTDRAWSURFACE7" is corrected: it named a DirectX
-// 7 type that this class stopped using long before the D3D9 client existed
-// -- it deals in SURFHANDLEs, which is what the code says.
-//
-// WORTH KNOWING: `LoadTextures` (plural) is declared here and DEFINED
-// NOWHERE, on Windows or here. It is dead, and converted rather than deleted
-// for the same reason CSphereManager::CreateDeviceObjects was.
-// ==============================================================
 
 #ifndef __TEXTURE_H
 #define __TEXTURE_H
@@ -44,7 +29,8 @@ public:
 	
 	HRESULT LoadTexture(const char *fname, SURFHANDLE *ppdds, int flags);
 
-	// Declared and never defined; see the file header.
+	// Declared here and defined nowhere, on Windows as here. Dead, and carried
+	// across rather than deleted.
 	int LoadTextures(const char *fname, VulkanTexture **ppdds, DWORD flags, int count);
 	// Read a texture from file 'fname' into the surface pointed to by 'ppdds'.
 

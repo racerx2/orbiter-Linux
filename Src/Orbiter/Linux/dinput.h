@@ -1,16 +1,10 @@
 // Linux <dinput.h> — the DirectInput 8 subset Orbiter uses.
 //
-// Src/Orbiter/Di7frame.{h,cpp} wraps DirectInput for keyboard, mouse and
-// joystick. That file is not modified; this header supplies the interface it
-// codes against, and the implementation in DInput.cpp is backed by GLFW, which
-// already provides keyboard, mouse and joystick on Linux.
-//
-// The interfaces are pure virtual, matching what DirectInput really is (COM).
-// That means Di7frame.cpp compiles and links against vtable dispatch with no
-// stub bodies, and the concrete GLFW-backed classes simply implement them.
-//
-// Only seven device methods are ever called: Acquire, Unacquire, Release,
-// SetProperty, GetDeviceState, GetDeviceData and EnumDevices.
+// Di7frame.{h,cpp} wraps DirectInput for keyboard, mouse and joystick. This
+// header supplies the interface it codes against; the implementation in
+// DInput.cpp is backed by GLFW. The interfaces are pure virtual, matching what
+// DirectInput really is (COM), so callers link against vtable dispatch with no
+// stub bodies.
 
 #ifndef ORBITER_LINUX_DINPUT_H
 #define ORBITER_LINUX_DINPUT_H
@@ -24,8 +18,6 @@
 #define DIRECTINPUT_VERSION 0x0800
 
 // GetDeviceData flag: inspect the buffered events without consuming them.
-// Real DirectInput value, so callers passing it behave as they would on
-// Windows.
 #define DIGDD_PEEK 0x00000001
 
 // ---------------------------------------------------------------------------
@@ -72,10 +64,10 @@ extern const GUID GUID_Joystick;
 #define DIERR_OTHERAPPHASPRIO  ((HRESULT)0x80070005L)
 #define DIERR_NOTINITIALIZED   ((HRESULT)0x80070015L)
 
-// Also mapped to strings by Src/Orbiter/Log.cpp's LogOut_DIErr, which switches
-// on them -- so every value below must be distinct or the switch will not
-// compile. Most alias a Win32 error in the 0x8007xxxx range; the two
-// force-feedback codes are in DirectInput's own 0x8004xxxx facility.
+// Log.cpp's LogOut_DIErr switches on these, so every value below must be
+// distinct or the switch will not compile. Most alias a Win32 error in the
+// 0x8007xxxx range; the two force-feedback codes are in DirectInput's own
+// 0x8004xxxx facility.
 #define DIERR_OBJECTNOTFOUND   ((HRESULT)0x80070002L)  // ERROR_FILE_NOT_FOUND
 #define DIERR_UNSUPPORTED      ((HRESULT)0x80004001L)  // E_NOTIMPL
 #define DIERR_DEVICENOTREG     ((HRESULT)0x80040154L)  // REGDB_E_CLASSNOTREG
@@ -272,7 +264,7 @@ HRESULT DirectInput8Create (HINSTANCE hinst, DWORD version, REFGUID riid,
                             LPVOID *out, LPVOID outer);
 }
 
-#define IID_IDirectInput8 GUID_SysKeyboard  // unused by this tree; see DInput.cpp
+#define IID_IDirectInput8 GUID_SysKeyboard  // unused by this tree
 
 // ---------------------------------------------------------------------------
 // Keyboard scan codes
@@ -281,10 +273,8 @@ HRESULT DirectInput8Create (HINSTANCE hinst, DWORD version, REFGUID riid,
 // position and are the values Orbiter stores in its key map and compares
 // against the 256-byte keyboard state buffer. The numbers are the standard
 // set-1 scan codes and must match exactly, because Orbiter's default key
-// bindings and saved keymap files are written in terms of them.
-//
-// Only the codes referenced by the tree are listed; the input implementation
-// translates GLFW key codes into this numbering.
+// bindings and saved keymap files are written in terms of them. The input
+// implementation translates GLFW key codes into this numbering.
 // ---------------------------------------------------------------------------
 
 #define DIK_ESCAPE      0x01
@@ -370,13 +360,9 @@ HRESULT DirectInput8Create (HINSTANCE hinst, DWORD version, REFGUID riid,
 #define DIK_NUMPAD3     0x51
 #define DIK_NUMPAD0     0x52
 
-// Keypad operators and the remaining navigation keys.
-//
-// Added for the graphics client, which routes its own window's key events into
-// the same DIK-indexed state buffer. Orbiter's camera controls use the keypad
-// heavily -- +/- zoom, . for decimal -- so these have to carry their real
-// DirectInput values, not invented ones: Orbiter's default bindings and any
-// saved keymap.cfg are written in terms of these numbers.
+// Keypad operators and the remaining navigation keys. The graphics client
+// routes its own window's key events into this same DIK-indexed state buffer,
+// and Orbiter's camera controls use the keypad heavily.
 #define DIK_SUBTRACT    0x4A
 #define DIK_ADD         0x4E
 #define DIK_MULTIPLY    0x37

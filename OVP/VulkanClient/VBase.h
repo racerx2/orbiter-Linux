@@ -4,12 +4,6 @@
 // Dual licensed under GPL v3 and LGPL v3
 // Copyright (C) 2007-2026 Martin Schweiger
 // ==============================================================
-//
-// CONVERTED FROM OVP/D3D9Client/VBase.h, read end to end (102 lines).
-// Types only: LPDIRECT3DDEVICE9 -> VulkanDevice*, D3DXVECTOR3 -> FVECTOR3,
-// D3DXMATRIX -> FMATRIX4, D3D9Mesh -> VulkanMesh. The one commented-out
-// declaration keeps its comment, with D3D9Light renamed with the rest.
-// ==============================================================
 
 #ifndef __VBASE_H
 #define __VBASE_H
@@ -22,9 +16,9 @@ class TaxiLights;
 // vBase says `friend class vPlanet;` and then uses vPlanet in its constructor
 // and in GetPlanet(), sixty lines before the elaborated `class vPlanet *vP;`
 // declares it. A friend declaration introduces the name into the enclosing
-// namespace but does NOT make it findable by ordinary lookup until a real
+// namespace but does not make it findable by ordinary lookup until a real
 // declaration appears ([namespace.memdef]/3). MSVC finds it anyway; GCC does
-// not. Same as TileMgr.h's TileBuffer.
+// not. TileMgr.h's TileBuffer needs the same line for the same reason.
 class vPlanet;
 
 

@@ -5,47 +5,14 @@
 // Copyright (C) 2014-2026 Jarmo Nikkanen
 // ==============================================================
 //
-// CONVERTED FROM OVP/D3D9Client/AtmoControls.cpp. What changed, and why:
-//
-//   1. THE CLIENT HEADER AND CLASS ARE RENAMED. "D3D9Client.h" becomes
-//      "VulkanClient.h" and the extern is VulkanClient *g_client. That is the
-//      only name change in the file and it follows the same rule the whole
-//      port does: the D3D9* files become Vulkan*, everything else keeps its
-//      name (this file is AtmoControls.cpp in both trees).
-//
-//   2. NOTHING ELSE IS DIRECT3D. Read end to end, this file touches no device,
-//      no surface, no texture and no shader. It is a Win32 dialog full of
-//      trackbars driving a struct of doubles. Orbiter's own Win32 layer in
-//      Src/Orbiter/Linux runs it -- TBM_SETPOS, CB_ADDSTRING, BM_GETCHECK,
-//      SetWindowTextA, SetTimer, sprintf_s and CreateWindowEx are all there,
-//      checked rather than assumed before this file was touched.
-//
-//   3. THE TOOLTIPS COMPILE AND DO NOT YET SHOW. The shim had no tooltip API
-//      at all, so the subset this file uses -- TOOLTIPS_CLASS, TOOLINFO,
-//      TTM_ADDTOOL, TTM_UPDATETIPTEXT, TTM_ACTIVATE, TTF_IDISHWND,
-//      TTF_SUBCLASS, TTS_ALWAYSTIP, TTS_BALLOON -- was added to
-//      Src/Orbiter/Linux/commctrl.h. Declarations only, and the note there
-//      spells out why that is safe rather than merely quiet: the TTM_* sends
-//      land on a window whose class is neither trackbar nor progress bar, so
-//      Win32Dlg.cpp's WM_USER dispatch hands them to that window's own
-//      procedure instead of misreading them as TBM_GETRANGEMIN, and the
-//      window carries no WS_VISIBLE so nothing draws a stray box for it.
-//      The tooltip TEXT is stored either way; only the hover display is
-//      missing, and supplying it is the shim's job.
-//
-//   4. <assert.h> AND <string.h> ARE INCLUDED. The file calls assert() and
-//      strcpy_s and got both transitively on Windows.
-//
-//   5. `using namespace std` IS ADDED beside `using namespace oapi`. The
-//      Windows build got std::string unqualified from one of the D3D9 headers
-//      it includes; this file names `string` in ConfigValue's signature and in
-//      WM_TIMER, and the header it matches now says std::string explicitly.
-//
-// A NOTE ON WHAT IS NOT YET CHECKABLE: this file cannot be syntax-checked on
-// its own until VulkanClient.h, VulkanConfig.h, vObject.h, vPlanet.h, Mesh.h
-// and Scene.h are converted -- it includes all six. That is the ordinary shape
-// of a file-by-file port and not a defect; the leaf files (VectorHelpers.h,
-// AABBUtil) compile now, and this one joins them when its dependencies land.
+// The tooltips compile but do not yet show. The shim had no tooltip API, so
+// the subset this file uses (TOOLTIPS_CLASS, TOOLINFO, TTM_ADDTOOL,
+// TTM_UPDATETIPTEXT, TTM_ACTIVATE, TTF_*, TTS_*) was declared in
+// Src/Orbiter/Linux/commctrl.h. The TTM_* sends land on a window whose class
+// is neither trackbar nor progress bar, so Win32Dlg.cpp's WM_USER dispatch
+// passes them to that window's own procedure rather than misreading them as
+// TBM_GETRANGEMIN, and the window has no WS_VISIBLE so nothing draws a stray
+// box. The tooltip text is stored; only the hover display is missing.
 // ==============================================================
 
 #include "VulkanClient.h"
@@ -54,9 +21,7 @@
 #include "AtmoControls.h"
 #include "Commctrl.h"
 // "vObject.h" / "vPlanet.h" in the Windows source. The files are VObject.h
-// and VPlanet.h; NTFS resolves either spelling, ext4 resolves only the real
-// one. See the include-case audit note in the conversion doc -- this class of
-// error is a hard failure here and invisible there.
+// and VPlanet.h; NTFS resolves either spelling, ext4 only the real one.
 #include "VObject.h"
 #include "VPlanet.h"
 #include "Mesh.h"
@@ -75,23 +40,12 @@ extern VulkanClient *g_client;
 
 // Defaut c'tor to init members
 //
-// REORDERED TO MATCH THE DECLARATION ORDER IN AtmoControls.h, and nothing
-// else is changed: every member gets the same value it got on Windows.
-//
-// A member initialiser list does not control the order the initialisers RUN.
-// C++ runs them in declaration order regardless of how they are written, and
-// the Windows list is written in a different order -- red/green/blue first,
-// then rpow, then mpow -- so the code as written says one thing and does
-// another. GCC reports all fourteen (-Wreorder); MSVC's C5038 is off by
-// default, which is why it survived.
-//
-// It is harmless HERE because every initialiser is a literal and none reads
-// another member. It stops being harmless the moment one does, and by then
-// the bug is a wrong default with nothing to point at. The comments marking
-// the author's own groupings are kept where they still apply.
+// Initialiser list reordered to declaration order (-Wreorder): C++ runs the
+// initialisers in declaration order whatever order they are written in, and
+// the Windows list is written in another. Every value here is a literal and
+// none reads another member, so nothing observable changes.
 ScatterParams::ScatterParams() :
-	// --- the union's struct, in slider-index order, which is also its
-	//     declaration order (see the ATTENTION note in AtmoControls.h) ---
+	// --- the union's struct, in declaration order ---
 	tw_dst	 ( 0.0 ),
 	green    ( 0.560 ),  // 0.400 ... 0.700
 	tw_bri   ( 0.0 ),
@@ -117,7 +71,7 @@ ScatterParams::ScatterParams() :
 	wspec	 ( 0.8 ),
 	wtrans	 ( 0.1 ),
 	wboost	 ( 0.0 ),
-	// --- the members outside the union, in declaration order ---
+	// --- the members outside the union ---
 	orbalt	 ( 250e3 ),
 	visalt	 ( 70e3 ),
 	red      ( 0.650 ),  // 0.400 ... 0.700
@@ -127,9 +81,8 @@ ScatterParams::ScatterParams() :
 	hcolor	 (1.0f, 0.7f, 0.0f),
 	acolor	 (0.9f, 0.9f, 1.0f)
 {
-	// wcolor, cfg_alt and cfg_halt are not in the initialiser list on
-	// Windows either and are left as they were: default-constructed for the
-	// FVECTOR3, indeterminate for the two doubles.
+	// wcolor, cfg_alt and cfg_halt are left out of the list, as on Windows:
+	// the FVECTOR3 is default-constructed, the two doubles indeterminate.
 }
 
 // ==============================================================
@@ -146,11 +99,8 @@ std::vector<sValue> Values;
 
 DWORD atmpage = 0;
 DWORD atmmode = 0;
-// Was `DWORD dwCmd = NULL`. dwCmd is the custom-command id
-// oapiRegisterCustomCmd returns -- an integer, not a pointer -- and NULL is a
-// null POINTER constant. It compiles because NULL is 0 in MSVC's headers, and
-// GCC reports it (-Wconversion-null) as the type confusion it is. 0 is the
-// same value with the right meaning.
+// Was `DWORD dwCmd = NULL`. dwCmd is the custom-command id, an integer, and
+// NULL is a null pointer constant; GCC reports it (-Wconversion-null).
 DWORD dwCmd = 0;
 HWND hDlg = NULL;
 vPlanet *vObj = NULL;
@@ -179,7 +129,7 @@ void InitToolTips()
 
 		if (s.val && s.val->tooltip.size() > 2)
 		{
-			TOOLINFO toolInfo = {};		// see OpenDlgClbk for why not { 0 }
+			TOOLINFO toolInfo = {};		// {} not { 0 }: -Wmissing-field-initializers
 			toolInfo.cbSize = sizeof(toolInfo);
 			toolInfo.hwnd = hDlg;
 			toolInfo.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
@@ -306,7 +256,7 @@ bool Visualize()
 void Release()
 {
 	if (dwCmd) oapiUnregisterCustomCmd(dwCmd);
-	dwCmd = 0;		// see the declaration: dwCmd is an id, not a pointer
+	dwCmd = 0;		// an id, not a pointer
 }
 
 // ==============================================================
@@ -340,16 +290,11 @@ void OpenDlgClbk(void *context)
 	for (auto& s : Slider)
 	{
 		s.hWnd = GetDlgItem(hDlg, s.res);
-		// CreateWindowEx's first argument is dwExStyle, a DWORD; the Windows
-		// source passes NULL, a null pointer constant, where 0 is meant.
-		// -Wconversion-null again -- see the note on dwCmd.
+		// dwExStyle is a DWORD; the Windows source passes NULL (-Wconversion-null).
 		s.hwndTip = CreateWindowEx(0, TOOLTIPS_CLASS, NULL, WS_POPUP | TTS_ALWAYSTIP | TTS_BALLOON, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, hDlg, NULL, g_hInst, NULL);
-		// `= { 0 }` initialises the FIRST member and leaves the other eight
-		// to be zeroed by the aggregate rules -- correct, and GCC still
-		// reports the eight as uninitialised (-Wmissing-field-initializers)
-		// because it cannot tell a deliberate `{0}` from a truncated list.
-		// `= {}` is value-initialisation: the same all-zero result, said in a
-		// way that means it.
+		// `= {}` rather than `= { 0 }`: same all-zero result, but GCC cannot
+		// tell a deliberate `{0}` from a truncated initialiser list and warns
+		// about the remaining members (-Wmissing-field-initializers).
 		TOOLINFO toolInfo = {};
 		toolInfo.cbSize = sizeof(toolInfo);
 		toolInfo.hwnd = hDlg;
@@ -552,11 +497,8 @@ void SetVisual(vObject *vo)
 
 INT_PTR CALLBACK WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
-	// `static bool bOrbOld = false;` stood here and is DEAD in the Windows
-	// source: it is declared, initialised, and never read or written again
-	// anywhere in the file. GCC reports it (-Wunused-variable); MSVC's C4189
-	// is off at the default warning level. Removed rather than silenced --
-	// there is no behaviour to preserve.
+	// `static bool bOrbOld = false;` stood here: never read or written again
+	// anywhere in the file (-Wunused-variable), so it is gone.
 
 	switch (uMsg) {
 

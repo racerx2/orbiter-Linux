@@ -1,21 +1,11 @@
 // A scripted driver for the Launchpad and its dialogs.
 //
-// ===========================================================================
-// WHY THIS EXISTS
-// ===========================================================================
+// Driving the UI from outside the process is not available: synthetic pointer
+// motion from xdotool never lands inside the GLFW window on a KDE Wayland
+// desktop -- windowmove and windowsize report success, the geometry really
+// does change, and the click still goes nowhere.
 //
-// Several of the shim's defects can only be confirmed by DOING something to
-// the UI -- opening a modal and pressing Tab, clicking a tab button, deleting
-// a row from a list. The five-scenario sweep cannot: it launches straight into
-// a scenario and never touches the Launchpad.
-//
-// The obvious tool does not work here. vkrun.sh's own header records why:
-// synthetic pointer motion from xdotool never lands inside the GLFW window on
-// a KDE Wayland desktop -- windowmove and windowsize report success, the
-// geometry really does change, and the click still goes nowhere. So driving
-// the UI from outside the process is not available.
-//
-// This drives it from INSIDE, through exactly the paths a real click and a
+// So this drives it from inside, through exactly the paths a real click and a
 // real keystroke take:
 //
 //   a key press  -> PostMessage(WM_KEYDOWN) to orbiter_ActiveDialog(), which
@@ -27,12 +17,8 @@
 // Nothing is simulated at a lower level and nothing bypasses the message
 // queue, so a test that passes here exercises the same code a user does.
 //
-// ===========================================================================
-// IT IS INERT UNLESS ASKED FOR
-// ===========================================================================
-//
-// The whole file does nothing at all unless ORBITER_UI_SCRIPT names a
-// readable file. One getenv at startup, then a null check per frame.
+// The file is inert unless ORBITER_UI_SCRIPT names a readable file: one getenv
+// at startup, then a null check per frame.
 //
 // Usage:
 //     ORBITER_UI_SCRIPT=/tmp/lp.txt ./Orbiter
@@ -45,7 +31,7 @@
 //     syskey <letter>      Alt+letter, the mnemonic an '&' declares
 //     click <ctrlid>       press the control with that id in the active dialog
 //                          (posts WM_COMMAND to its owner, as a push button does)
-//     press <ctrlid>       WM_LBUTTONDOWN + WM_LBUTTONUP ON the control -- the
+//     press <ctrlid>       WM_LBUTTONDOWN + WM_LBUTTONUP on the control -- the
 //                          only way to reach a control with its own wndproc
 //     childdump [ctrlid]   log the active dialog's children (or one control's),
 //                          with class, geometry, visibility and wndproc
@@ -57,7 +43,7 @@
 //     select <id> <index>  pick an entry in a combo or list box, then notify
 //     tree <id> <row> [expand|dbl]   click a visible row of a tree control
 //     treedump <id>        log every visible row of a tree, with its index
-//     mouse <x> <y>        move the pointer over the RENDER window
+//     mouse <x> <y>        move the pointer over the render window
 //     mousedown <l|r|m>    press a button and hold it
 //     mouseup <l|r|m>      release it
 //     wheel <notches>      one WM_MOUSEWHEEL, positive is away from the user
@@ -93,33 +79,29 @@ extern "C" int  orbiter_ModalDepth(void);
 // that UIHost::postMouseMessages reads; everything downstream of that -- the
 // press/release edges, the drag capture, the wParam packing, PostMessage, the
 // dispatch into RenderWndProc and Orbiter::MsgProc -- is the same code a hand
-// on a mouse goes through. See the note by g_injectMouse in UIHost.cpp.
+// on a mouse goes through.
 extern "C" void orbiter_InjectMouse(int x, int y, int buttons, float wheel);
 
 // The state-changing half of a real click.
 //
 // A `click` posts the WM_COMMAND a button sends and nothing else, which is
 // right for a push button -- pressing one changes no state of its own. It is
-// WRONG for a check box, a radio button or a combo: for those, UIHost's
-// renderer changes the control's state FIRST and notifies second, so a
-// handler that reads the control back (BM_GETCHECK, CB_GETCURSEL -- which is
-// what every one of them does) sees the new value.
-//
-// Driving those three through `click` alone therefore tests nothing: the
-// handler runs, reads the OLD state, and concludes nothing changed. These are
-// the same four entry points drawControl uses, so `check`, `radio` and
-// `select` below take the identical path a user's click does.
+// wrong for a check box, a radio button or a combo: for those, UIHost's
+// renderer changes the control's state first and notifies second, so a handler
+// that reads the control back (BM_GETCHECK, CB_GETCURSEL) sees the new value.
+// Driving those three through `click` alone therefore tests nothing -- the
+// handler reads the old state and concludes nothing changed. These are the
+// same four entry points drawControl uses.
 extern "C" void orbiter_NotifyCommand(HWND ctrl, unsigned short notifyCode);
 extern "C" int  orbiter_GetCheckState(HWND h);
 extern "C" void orbiter_SetCheckState(HWND h, int state);
 extern "C" void orbiter_CheckRadioButton(HWND h);
 extern "C" void orbiter_SetCurSel(HWND h, int sel);
 
-// Tree controls. The Extra tab is a tree and an Edit button, and the scenario
-// list is a tree too, so without these two neither page can be driven at all.
-// orbiter_TreeClickRow is the same entry point UIHost's renderer calls when a
-// row is clicked; the row index is into the VISIBLE rows, which is why the
-// count comes from orbiter_TreeVisibleCount rather than from the item tree.
+// Tree controls, for the Extra tab and the scenario list. orbiter_TreeClickRow
+// is the same entry point UIHost's renderer calls when a row is clicked; the
+// row index is into the visible rows, which is why the count comes from
+// orbiter_TreeVisibleCount rather than from the item tree.
 extern "C" int  orbiter_TreeVisibleCount(HWND h);
 extern "C" void orbiter_TreeClickRow(HWND h, int index, int onExpander,
                                      int doubleClick);
@@ -130,10 +112,10 @@ extern "C" int  orbiter_TreeGetRow(HWND h, int index, const char **text,
 
 // The Custom Functions dialog. Its entries are ImGui buttons drawn from
 // Orbiter's customcmd table, not controls in the HWND tree, so `click` cannot
-// reach one -- see the note above these three in DlgFunction.cpp. Running the
-// command from here enters it inside orbiter_PumpFrame, which is where a real
-// click enters it too.
-// Orbiter.cpp: the menu bar's registered buttons, for menudump / menucmd.
+// reach one. Running the command from here enters it inside
+// orbiter_PumpFrame, which is where a real click enters it too.
+//
+// The menu bar's registered buttons, for menudump / menucmd.
 extern "C" int         orbiter_MenuCmdCount(void);
 extern "C" const char *orbiter_MenuCmdLabel(int i);
 extern "C" int         orbiter_MenuCmdRun(int i);
@@ -143,9 +125,8 @@ extern "C" const char *orbiter_CustomCmdLabel(int i);
 extern "C" int         orbiter_CustomCmdRun(int i);
 
 // The control tree, for `childdump`, and the custom-class test that decides
-// which of drawControl's branches a control takes. Same three the UI host
-// itself uses to lay a dialog out, so a dump reports what the renderer sees
-// rather than a second opinion.
+// which of drawControl's branches a control takes. The same three the UI host
+// uses to lay a dialog out, so a dump reports what the renderer sees.
 extern "C" int  orbiter_EnumChildren(HWND h, HWND *out, int max);
 extern "C" void orbiter_GetControlInfo(HWND h, const char **cls, const char **txt,
                                        int *id, int *x, int *y, int *cx, int *cy,
@@ -245,19 +226,14 @@ void dumpState(const char *label)
 
 // Resolve a control id, optionally scoped to a parent: "1010" or "105/1010".
 //
-// WHY SCOPING EXISTS, and it is not a convenience. GetDlgItem here DESCENDS
-// into nested child dialogs -- that is deliberate, and it is what makes a
-// control on a Launchpad tab page reachable from the top-level handle. But
-// ScnEditor keeps all twelve of its tab pages alive as siblings and merely
-// HIDES eleven of them, and control ids repeat across those templates.
-//
-// So `click 1010`, meant for IDC_ELEMENTS on the Edit page, found a control
-// with that id on the earlier, hidden Vessel page instead. The notification
-// went to that page's procedure, which ran SwitchTab(11) -- and because
-// ScnEditorTab::SwitchTab hides ITS OWN page, the Edit page stayed visible
-// and the Date page was shown over it. The screenshot showed two dialogs
-// composited on top of each other and looked exactly like a renderer defect.
-// It was the test pointing at the wrong control.
+// Scoping is not a convenience. GetDlgItem here descends into nested child
+// dialogs, which is what makes a control on a Launchpad tab page reachable
+// from the top-level handle -- but ScnEditor keeps all twelve of its tab pages
+// alive as siblings and merely hides eleven of them, and control ids repeat
+// across those templates. An unscoped id therefore finds the control of that
+// id on a hidden page, and the notification goes to that page's procedure: the
+// resulting two dialogs composited on top of each other look exactly like a
+// renderer defect.
 //
 // "<parent>/<id>" resolves the parent first and searches only inside it.
 static HWND resolveCtrl(HWND dlg, const std::string &arg, int *idOut)
@@ -385,11 +361,11 @@ extern "C" void orbiter_UiDriverStep(void)
         if (!ctrl) { drvlog("UIDRV: control %s not in the active dialog",
                             s.arg.c_str()); return; }
 
-        // TO ITS PARENT, not to the active dialog. A control notification
-        // goes to the window that owns the control -- for a control on a tab
-        // page that is the PAGE's dialog procedure, not the Launchpad's, and
-        // posting to the wrong one delivers WM_COMMAND to a handler that has
-        // no case for that id. This is what Win32Dlg::notifyParent does.
+        // To its parent, not to the active dialog. A control notification goes
+        // to the window that owns the control -- for a control on a tab page
+        // that is the page's dialog procedure, not the Launchpad's, and posting
+        // to the wrong one delivers WM_COMMAND to a handler with no case for
+        // that id. This is what Win32Dlg::notifyParent does.
         HWND owner = GetParent(ctrl);
         if (!owner) owner = dlg;
         PostMessageA(owner, WM_COMMAND, MAKEWPARAM(id, BN_CLICKED), (LPARAM)ctrl);
@@ -400,10 +376,10 @@ extern "C" void orbiter_UiDriverStep(void)
     // check <id> <0|1>    -- set it
     //
     // Toggles the state and then notifies, in that order, exactly as
-    // drawControl's BS_AUTOCHECKBOX branch does. NOTE the notification is
-    // SENT, not posted: orbiter_NotifyCommand goes straight to the parent's
-    // dialog procedure the same way a real click's does, so the handler has
-    // run by the time the next script step is read.
+    // drawControl's BS_AUTOCHECKBOX branch does. The notification is sent, not
+    // posted: orbiter_NotifyCommand goes straight to the parent's dialog
+    // procedure the same way a real click's does, so the handler has run by
+    // the time the next script step is read.
     if (s.op == "check") {
         HWND dlg = orbiter_ActiveDialog();
         if (!dlg) { drvlog("UIDRV: no active dialog for check"); return; }
@@ -474,9 +450,8 @@ extern "C" void orbiter_UiDriverStep(void)
     // A tree row is not a control and has no id, so `click` cannot reach one.
     // These go through orbiter_TreeClickRow, which is what UIHost's renderer
     // calls for a real click, so selection notifications reach the dialog the
-    // same way. treedump exists because the row index is into the VISIBLE
-    // rows: it shifts as branches expand, and guessing it is how a test ends
-    // up asserting against the wrong item.
+    // same way. treedump exists because the row index is into the visible
+    // rows: it shifts as branches expand.
     if (s.op == "tree" || s.op == "treedump") {
         HWND dlg = orbiter_ActiveDialog();
         if (!dlg) { drvlog("UIDRV: no active dialog for %s", s.op.c_str()); return; }
@@ -534,12 +509,11 @@ extern "C" void orbiter_UiDriverStep(void)
     //                    has a window procedure of its own.
     //
     // The last column is the one that matters. drawControl branches on
-    // orbiter_HasWndProc: a control that HAS one is painted by sending it
+    // orbiter_HasWndProc: a control that has one is painted by sending it
     // WM_PAINT and replaying the GDI it recorded, and a control that does not
     // is drawn by the host imitating a standard Win32 class. A custom class
-    // that fails the test is drawn as a blank rectangle and is invisible for
-    // exactly that reason -- which is not something a screenshot can tell you
-    // apart from "the control drew nothing".
+    // that fails the test is drawn as a blank rectangle, which a screenshot
+    // cannot tell apart from "the control drew nothing".
     if (s.op == "childdump") {
         HWND dlg = orbiter_ActiveDialog();
         if (!dlg) { drvlog("UIDRV: no active dialog for childdump"); return; }
@@ -566,17 +540,17 @@ extern "C" void orbiter_UiDriverStep(void)
         return;
     }
 
-    // press <id>  -- a real press and release ON the control, not a WM_COMMAND
+    // press <id>  -- a real press and release on the control, not a WM_COMMAND
     //
-    // `click` posts WM_COMMAND(BN_CLICKED) to the control's OWNER, which is
+    // `click` posts WM_COMMAND(BN_CLICKED) to the control's owner, which is
     // what a standard push button sends. A control with a window procedure of
-    // its own never sends that: DX9ExtMFD's MFD_BtnProc handles WM_LBUTTONDOWN
-    // and WM_LBUTTONUP and calls ProcessButton itself, and its PWR button (
-    // index 12) is what powers the MFD on. `click` cannot press it at all.
+    // its own never sends that -- DX9ExtMFD's MFD_BtnProc handles
+    // WM_LBUTTONDOWN and WM_LBUTTONUP and calls ProcessButton itself -- so
+    // `click` cannot press one at all.
     //
     // Down and up are separate messages rather than one event because that is
-    // what the host delivers for these controls and what DlgCtrl's gauges and
-    // sliders need -- see the orbiter_HasWndProc branch in drawControl.
+    // what the host delivers for these controls, and what DlgCtrl's gauges and
+    // sliders need.
     if (s.op == "press") {
         HWND dlg = orbiter_ActiveDialog();
         if (!dlg) { drvlog("UIDRV: no active dialog for press"); return; }
@@ -593,10 +567,10 @@ extern "C" void orbiter_UiDriverStep(void)
     //
     // drawDialog posts WM_COMMAND(IDCANCEL) when the close box is clicked,
     // because that is what DefDlgProc synthesises from WM_CLOSE for a dialog.
-    // The box itself is an ImGui widget and an injected press does not
-    // activate one on this desk, so this posts the same message the box does
-    // and exercises the half that matters: the module's own IDCANCEL handler,
-    // its CloseDlg, and oapiCloseDialog.
+    // The box itself is an ImGui widget and an injected press does not activate
+    // one, so this posts the same message the box does and exercises the half
+    // that matters: the module's IDCANCEL handler, its CloseDlg, and
+    // oapiCloseDialog.
     if (s.op == "cancel") {
         HWND dlg = orbiter_ActiveDialog();
         if (!dlg) { drvlog("UIDRV: no active dialog to cancel"); return; }
@@ -615,12 +589,11 @@ extern "C" void orbiter_UiDriverStep(void)
     // nothing and lists the candidates: silently taking the first would make
     // a test assert against whichever module happened to load first.
     //
-    // '@' AND NOT '#' FOR THE INDEX. loadScript strips everything from the
-    // first '#' as a comment, so `customcmd #3` arrives here as `customcmd`
-    // with an empty argument -- which matches every label, is reported as
-    // ambiguous, and runs NOTHING. A sweep written that way reports a clean
-    // pass for thirteen entries none of which were ever entered. Measured:
-    // the first two runs of funcsweep.sh did exactly that.
+    // The index prefix is '@' and not '#'. loadScript strips everything from
+    // the first '#' as a comment, so `customcmd #3` arrives with an empty
+    // argument -- which matches every label, is reported as ambiguous, and runs
+    // nothing, while a sweep written that way reports a clean pass for entries
+    // none of which were ever entered.
     if (s.op == "customdump") {
         const int n = orbiter_CustomCmdCount();
         drvlog("UIDRV customdump: %d custom function(s)", n);
@@ -672,10 +645,8 @@ extern "C" void orbiter_UiDriverStep(void)
         }
 
         const char *lbl = orbiter_CustomCmdLabel(hit);
-        // Logged BEFORE the call and flushed by oapiWriteLog, so a command
-        // that hangs or faults still leaves its name in the log. That is how
-        // the TerrainToolKit freeze was pinned down, and a line written after
-        // the call would have said nothing.
+        // Logged before the call and flushed by oapiWriteLog, so a command that
+        // hangs or faults still leaves its name in the log.
         drvlog("UIDRV customcmd [%02d] '%s' -- entering", hit, lbl ? lbl : "");
         orbiter_CustomCmdRun(hit);
         drvlog("UIDRV customcmd [%02d] '%s' -- returned", hit, lbl ? lbl : "");
@@ -687,10 +658,8 @@ extern "C" void orbiter_UiDriverStep(void)
     //
     // The bar is how the core dialogs are opened -- Ship, Camera, Function,
     // Info, Options, Map, Record -- and it is an ImGui window, so an injected
-    // pointer reaches it as HOVER and never as a press (see the note in
-    // the porting notes, where this cost a quicksave test). That
-    // left Options and Custom functions unopenable by any test at all, which
-    // is why comparisons against the Windows build had to be done by hand.
+    // pointer reaches it as hover and never as a press. Without this, Options
+    // and Custom functions are unopenable by any test.
     //
     // This calls the registered callback, which is what MenuInfoBar's own
     // click handler does, from inside the frame pump.
@@ -741,7 +710,7 @@ extern "C" void orbiter_UiDriverStep(void)
         }
 
         const char *lbl = orbiter_MenuCmdLabel(hit);
-        // Logged BEFORE the call, so an item that hangs still names itself.
+        // Logged before the call, so an item that hangs still names itself.
         drvlog("UIDRV menucmd [%02d] '%s' -- entering", hit, lbl ? lbl : "");
         orbiter_MenuCmdRun(hit);
         drvlog("UIDRV menucmd [%02d] '%s' -- returned", hit, lbl ? lbl : "");

@@ -4,34 +4,10 @@
 // licensed under LGPL v2
 // ===================================================
 //
-// CONVERTED FROM OVP/D3D9Client/D3D9Pad3.cpp, read end to end (305 lines).
-//
-// THE SKETCHPAD3 ADDITIONS: the colour matrix, the gamma and noise render
-// parameters, the world-transform stack, GradientFillRect, ColorFill,
-// StretchRegion, Clear and SetClipDistance.
-//
-// Most of it is arithmetic on FMATRIX4 and FVECTOR4 members and does not
-// touch the graphics API at all -- SetColorMatrix, SetBrightness,
-// GetRenderParam, SetRenderParam, SetEnable, ClearEnable, PushWorldTransform
-// and PopWorldTransform convert line for line. What changes:
-//
-//   memcpy_s becomes memcpy. The _s form is a Microsoft bounds-checked
-//   variant (Annex K, which no other implementation ships); its destination
-//   size is the second argument. Same three-argument copy underneath.
-//
-//   D3DXMatrixScaling in SetWorldScaleTransform2D. D3DX is a Direct3D
-//   UTILITY library with no Vulkan counterpart, and a scaling matrix is four
-//   assignments, so it is written out here rather than given a VMAT_ name of
-//   its own -- the same treatment D3DXMatrixOrthoOffCenterLH gets in
-//   VulkanPad.cpp's BeginDrawing and again in SetClipDistance below.
-//
-//   Clear(). THE ONE CALL IN THIS FILE THAT REACHES THE DEVICE. On Windows
-//   it is pDev->Clear(0, NULL, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, ...),
-//   which a D3D9 device accepts at any point inside a scene. Vulkan has two
-//   different clears and the choice is not free: vkCmdClearColorImage works
-//   only OUTSIDE a render pass, and this is called from inside one, so the
-//   call is vkCmdClearAttachments -- the only Vulkan clear that is legal
-//   there, and the only one that takes a rectangle. See the function.
+// memcpy_s becomes memcpy throughout: the _s form is Microsoft's
+// bounds-checked variant (Annex K, which no other implementation ships), and
+// its destination size is the second argument. The D3DX matrix helpers have no
+// Vulkan counterpart and are written out as the assignments they perform.
 // ===================================================
 
 #include "VulkanPad.h"
@@ -69,19 +45,13 @@ void VulkanPad::SetColorMatrix(const FMATRIX4 *pMatrix)
 	Log("SetColorMatrix(0x%X)", DWORD(pMatrix));
 #endif
 	if (pMatrix) {
-		// memcpy_s(&ColorMatrix, sizeof(FMATRIX4), pMatrix, sizeof(FMATRIX4)).
-		// The bounds-checked _s forms are Microsoft's; the destination size
-		// they take is the second argument, and with both sizes equal the
-		// check can never fire. Plain memcpy is the same copy.
 		memcpy(&ColorMatrix, pMatrix, sizeof(FMATRIX4));
 		SetEnable(SKP3E_CMATR);
 	}
 	else {
-		// Was memset(&ColorMatrix, 0, sizeof(FMATRIX4)). FMATRIX4 has
-		// user-declared constructors, which makes it non-trivial and makes GCC
-		// warn about memset on it. Zero() is the type's OWN spelling of the
-		// same sixteen zeroes -- see DrawAPI.h -- so this uses it rather than
-		// casting the warning away.
+		// Was memset(&ColorMatrix, 0, sizeof(FMATRIX4)); FMATRIX4's
+		// user-declared constructors make that a -Wclass-memaccess warning.
+		// Zero() is the type's own spelling of the same sixteen zeroes.
 		ColorMatrix.Zero();
 		ColorMatrix.m11 = 1.0f;
 		ColorMatrix.m22 = 1.0f;
@@ -179,10 +149,6 @@ void VulkanPad::SetBlendState(BlendState dwState)
 //
 FMATRIX4 VulkanPad::GetWorldTransform() const
 {
-	// Was memcpy_s(&fm, sizeof(FMATRIX4), &mW, sizeof(D3DXMATRIX)) -- mW was a
-	// D3DXMATRIX and the two types are the same sixteen floats, which is why
-	// the source size was spelled with the other type's name. mW IS an
-	// FMATRIX4 now, so both sizes are the one size.
 	FMATRIX4 fm;
 	memcpy(&fm, &mW, sizeof(FMATRIX4));
 	return fm;
@@ -228,8 +194,6 @@ void VulkanPad::SetWorldScaleTransform2D(const FVECTOR2 *scl, const IVECTOR2 *tr
 
 	if (scl) sx = scl->x, sy = scl->y;
 
-	// Was D3DXVECTOR3. FVECTOR3 is the same three floats and is what
-	// VMAT_SetTranslation takes.
 	FVECTOR3 t;
 
 	t.x = 0;
@@ -238,11 +202,8 @@ void VulkanPad::SetWorldScaleTransform2D(const FVECTOR2 *scl, const IVECTOR2 *tr
 
 	if (trl) t.x = float(trl->x), t.y = float(trl->y);
 
-	// Was D3DXMatrixScaling(&mW, sx, sy, 1.0f) followed by
-	// D3DMAT_SetTranslation. D3DXMatrixScaling writes the identity and then
-	// the three diagonal terms; D3DX is a Direct3D utility library with no
-	// Vulkan counterpart, and four assignments do not need a name of their
-	// own. D3DMAT_ IS the client's own, and became VMAT_.
+	// Was D3DXMatrixScaling(&mW, sx, sy, 1.0f): the identity, then the three
+	// diagonal terms.
 	VMAT_Identity(&mW);
 	mW.m11 = sx;
 	mW.m22 = sy;
@@ -339,39 +300,21 @@ void VulkanPad::StretchRegion(const skpRegion *rgn, const SURFHANDLE hSrc, const
 }
 
 // ===============================================================================================
-// Was:
-//     DWORD flags = 0;
-//     if (bColor) flags |= D3DCLEAR_TARGET;
-//     if (bDepth) flags |= D3DCLEAR_ZBUFFER;
-//     pDev->Clear(0, NULL, flags, color, 1.0f, 0);
+// Was pDev->Clear(0, NULL, D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER, color, 1.0f, 0),
+// which a D3D9 device accepts anywhere inside a scene. Vulkan's two clears are
+// not interchangeable: vkCmdClearColorImage / vkCmdClearDepthStencilImage
+// clear a whole image and are legal only OUTSIDE a render pass, while
+// vkCmdClearAttachments clears the currently bound pass's attachments, takes a
+// rectangle, and is legal only INSIDE one. Every VulkanPad drawing call runs
+// inside the core's render pass, so this is the second -- which is also the
+// one that matches D3D9's "the current target, whatever it is".
 //
-// THE TWO CLEARS ARE NOT INTERCHANGEABLE IN VULKAN, and picking the wrong one
-// is a validation error rather than a wrong picture:
+// The NULL rectangle list meant "the whole target"; VkClearRect has no NULL,
+// so it is spelled out as tgt.
 //
-//   vkCmdClearColorImage / vkCmdClearDepthStencilImage clear a whole image
-//   (VkImageSubresourceRange -- mip levels and array layers, no rectangle)
-//   and are legal ONLY OUTSIDE a render pass.
-//
-//   vkCmdClearAttachments clears the attachments of the render pass that is
-//   currently bound, takes a VkClearRect, and is legal ONLY INSIDE one.
-//
-// Every VulkanPad drawing call runs inside the core's render pass -- Flush
-// binds a pipeline, which cannot happen outside one -- so this is the second,
-// and it is also the one that matches what the D3D9 call did: clear the
-// CURRENT render target and the CURRENT depth buffer, whatever they are, not
-// a named image. The attachment indices are the core's: colour is 0, and the
-// depth attachment carries no index at all (aspect bits identify it).
-//
-// The zero-order argument of pDev->Clear was the D3DRECT count and NULL the
-// rectangle list, meaning "the whole target"; VkClearRect has no NULL, so the
-// whole target is spelled out as tgt -- the rectangle BeginDrawing already
-// computed from the target's own dimensions.
-//
-// WORTH KNOWING, AND FAITHFULLY REPRODUCED: this does NOT Flush() first. Any
-// Sketchpad geometry still sitting in the vertex queue is drawn AFTER the
-// clear, so `DrawLine(); Clear();` leaves the line visible on Windows. That
-// is the Windows behaviour and callers may depend on it; changing it here
-// would be a silent behaviour change, not a conversion.
+// Faithfully reproduced: this does NOT Flush() first, so geometry still in the
+// vertex queue is drawn AFTER the clear. `DrawLine(); Clear();` leaves the line
+// visible on Windows too, and callers may depend on it.
 //
 void VulkanPad::Clear(DWORD color, bool bColor, bool bDepth)
 {
@@ -382,9 +325,8 @@ void VulkanPad::Clear(DWORD color, bool bColor, bool bDepth)
 	uint32_t nAtt = 0;
 
 	if (bColor) {
-		// The D3DCOLOR argument is 0xAARRGGBB, the same packing SkpColor's
-		// DWORD constructor unpacks. Written out here because a VkClearValue
-		// takes four floats and nothing else.
+		// The D3DCOLOR argument is 0xAARRGGBB; a VkClearValue takes four
+		// floats and nothing else.
 		att[nAtt].aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 		att[nAtt].colorAttachment = 0;
 		att[nAtt].clearValue.color.float32[0] = float((color >> 16) & 0xFF) / 255.0f;	// R
@@ -395,8 +337,7 @@ void VulkanPad::Clear(DWORD color, bool bColor, bool bDepth)
 	}
 
 	if (bDepth) {
-		// 1.0f and 0 were the Z and stencil arguments of pDev->Clear. The
-		// stencil bit goes in only when the format has one -- clearing an
+		// The stencil bit goes in only when the format has one; clearing an
 		// aspect the attachment does not have is invalid.
 		att[nAtt].aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
 		VkFormat dsFmt = pDev->SelectDepthFormat();
@@ -423,11 +364,9 @@ void VulkanPad::Clear(DWORD color, bool bColor, bool bDepth)
 //
 void VulkanPad::SetClipDistance(float nr, float fr)
 {
-	// Was D3DXMatrixOrthoOffCenterLH(&mO, 0, W, H, 0, nr, fr). Written out for
-	// the same reason as in VulkanPad.cpp's BeginDrawing, and identical to it
-	// except that the near and far planes are the caller's rather than 0 and
-	// zfar. D3D9 clip space is 0 <= z <= w and so is Vulkan's, so the
-	// left-handed orthographic matrix carries over unchanged.
+	// Was D3DXMatrixOrthoOffCenterLH(&mO, 0, W, H, 0, nr, fr), written out.
+	// D3D9 clip space is 0 <= z <= w and so is Vulkan's, so the left-handed
+	// orthographic matrix carries over unchanged.
 	{
 		const float l = 0.0f, r = float(tgt_desc.Width);
 		const float b = float(tgt_desc.Height), t = 0.0f;
@@ -443,8 +382,6 @@ void VulkanPad::SetClipDistance(float nr, float fr)
 		mO.m44 = 1.0f;
 	}
 
-	// mP._33 / mP._43 became mP.m33 / mP.m43 -- the same two elements,
-	// D3DXMATRIX's leading-underscore naming being the only difference.
 	mP.m33 = fr / (fr - nr);
 	mP.m43 = -nr * mP.m33;
 }

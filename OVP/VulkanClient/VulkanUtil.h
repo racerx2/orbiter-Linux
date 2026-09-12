@@ -5,78 +5,31 @@
 //				 2012-2016 Jarmo Nikkanen
 // ==============================================================
 //
-// CONVERTED FROM OVP/D3D9Client/D3D9Util.h, read end to end (776 lines).
-// What changed, and why:
+// The D3DX math types became the SDK's own: D3DXVECTOR2/3/4 -> FVECTOR2/3/4,
+// D3DXMATRIX -> FMATRIX4, D3DXCOLOR -> FVECTOR4 (same .r/.g/.b/.a and the
+// same DWORD packing), D3DCOLORVALUE -> COLOUR4, D3DMATERIAL9 -> MATERIAL --
+// the last two field for field, not approximations.
 //
-//  1. <d3d9.h> AND <d3dx9.h> BECAME "VulkanTypes.h". Those were system
-//     headers; their Linux counterpart is <vulkan/vulkan.h> plus the small
-//     set of names Vulkan does not bundle. VulkanTypes.h explains that split
-//     in full and defines nothing else.
+// The shader-facing structs keep their exact byte layout, which was checked
+// rather than assumed: they sit inside #pragma pack(push,4) as on Windows,
+// but FVECTOR4 and FMATRIX4 are alignas(16) where D3DXVECTOR4 was not, so the
+// packed layout could have changed silently -- a wrong material is a wrong
+// colour, not a crash. Measured: pack(4) does lower alignas(16) for members
+// and the offsets come out identical (0,16,32,44,56,68,80,92,100,104,120 /
+// 124 bytes), which the static_asserts below hold.
 //
-//  2. THE D3DX MATH TYPES BECAME THE SDK's OWN. D3DXVECTOR2/3/4 ->
-//     FVECTOR2/3/4, D3DXMATRIX/LPD3DXMATRIX -> FMATRIX4, D3DXCOLOR ->
-//     FVECTOR4 (which carries .r/.g/.b/.a and the same DWORD packing),
-//     D3DCOLORVALUE -> COLOUR4, D3DVECTOR -> FVECTOR3, D3DMATERIAL9 ->
-//     MATERIAL. The last three are not approximations: COLOUR4 is
-//     {float r,g,b,a} and MATERIAL is four COLOUR4 plus a float, which is
-//     D3DCOLORVALUE and D3DMATERIAL9 field for field.
+// The vertex declarations became Vulkan vertex input descriptions.
+// D3DVERTEXELEMENT9 binds a byte range to an HLSL semantic name; Vulkan
+// matches by an explicit location number, so location = the element's index
+// in the declaration, in the Windows order, with offsets unchanged. The
+// stride is new -- D3D9 took it from SetStreamSource at bind time -- so each
+// declaration names the struct it describes via sizeof(), which is why the
+// VertexDecl objects are defined in VulkanUtil.cpp.
 //
-//  3. THE SHADER-FACING STRUCTS KEEP THEIR EXACT BYTE LAYOUT, and this was
-//     checked rather than assumed. VulkanSun/VulkanMatExt/VulkanTune sit
-//     inside #pragma pack(push,4) as they did on Windows, but FVECTOR4 and
-//     FMATRIX4 are alignas(16) where D3DXVECTOR4 was not, so the packed
-//     layout could have silently changed -- a wrong material is not a
-//     crash, it is a wrong colour. Measured on this toolchain: #pragma
-//     pack(4) does lower alignas(16) for members, and the offsets come out
-//     identical (0,16,32,44,56,68,80,92,100,104,120 / 124 bytes). The
-//     static_asserts below make that a build error rather than a surprise
-//     anywhere it is not true.
-//
-//  4. THE VERTEX DECLARATIONS BECAME VULKAN VERTEX INPUT DESCRIPTIONS.
-//     D3DVERTEXELEMENT9 binds a byte range to an HLSL semantic name;
-//     Vulkan matches vertex inputs by an explicit location number, so the
-//     semantic had to become a number. The rule is mechanical: LOCATION =
-//     THE ELEMENT'S INDEX IN THE DECLARATION, in the order the Windows
-//     declaration listed them. Offsets are carried over unchanged.
-//
-//     The stride is new. D3D9 never put it in the declaration -- it came
-//     from SetStreamSource at bind time -- but a VkVertexInputBindingDescription
-//     needs it, so each declaration now names the struct it describes via
-//     sizeof(). That is why the VertexDecl objects are defined in
-//     VulkanUtil.cpp: the strides need the vertex structs, which the
-//     Windows file declares AFTER the declaration arrays.
-//
-//     They also moved file. On Windows the pXxxDecl globals lived in
-//     D3D9Frame.cpp and were built by pDevice->CreateVertexDeclaration(),
-//     because a D3D9 vertex declaration is a device object whose lifetime
-//     is the device's. A Vulkan vertex layout is not an object at all -- it
-//     is immutable data baked into a VkPipeline -- so there is nothing to
-//     create, nothing to release, and no device to tie it to. They are
-//     constants now, and they live with the data that describes them.
-//
-//  5. EVERY NAME CONTAINING D3D IS GONE. D3D9* client types became Vulkan*,
-//     the D3DMAT_ matrix helpers became VMAT_, and the handful of helpers
-//     named after D3DX entry points (D3DXVec3Angle, D3DXVEC, D3DXC2V,
-//     _D3DXCOLOR, D3DVAL...) took names that describe what they do. These
-//     are the client's own functions; only their names referred to
-//     something that no longer exists.
-//
-//  6. HR() NOW CHECKS A VkResult. It wrapped D3D9 calls returning HRESULT;
-//     after conversion those call sites are Vulkan calls returning
-//     VkResult, so the macro follows them. The Win32 HRESULT names the shim
-//     supplies (S_OK, E_INVALIDARG) are still used where the Windows file
-//     used them for its OWN return values rather than a device's --
-//     VMAT_MatrixInvert is the only such case.
-//
-//  7. TWO BUGS IN THE WINDOWS SOURCE ARE FIXED HERE, both recorded at the
-//     point of change in VulkanUtil.cpp: ShaderClass::SetPSConstants(HANDLE)
-//     wrote through the VERTEX shader constant table, and startsWith() had
-//     the body of contains(). Neither is a platform difference; both would
-//     have been carried forward silently.
-//
-// NOT CONVERTED, because none of it needed converting: the string helpers,
-// AutoFile, fgets2 and the scalar maths. They are plain C++ and portable as
-// written.
+// Two bugs in the Windows source are fixed here, each recorded at the point
+// of change in VulkanUtil.cpp: ShaderClass::SetPSConstants(HANDLE) wrote
+// through the vertex shader's constant table, and startsWith() had the body
+// of contains().
 // ==============================================================
 
 #ifndef __VULKANUTIL_H
@@ -87,9 +40,9 @@
 #include "DrawAPI.h"
 #include "VulkanTypes.h"
 #include <string>
-#include <map>      // the ShaderClass pipeline cache; D3D9 needed none
-#include <deque>    // the per-frame resource rotation; see ShaderClass::ResetFrame()
-#include <set>      // the ShaderClass instance registry; see ResetFrame()
+#include <map>
+#include <deque>
+#include <set>
 #include <math.h>
 #include "gcCore.h"
 
@@ -109,11 +62,10 @@
 #endif
 
 
-// Counterpart of the HRESULT form. The wrapped call sites are Vulkan calls
-// now, so the checked type is VkResult and the test is an equality against
-// VK_SUCCESS rather than FAILED(): Vulkan's positive results (VK_SUBOPTIMAL_KHR,
-// VK_TIMEOUT, VK_NOT_READY) are not failures but they are not "carry on
-// blindly" either, and FAILED() would have waved them through.
+// Counterpart of the HRESULT form. The checked type is VkResult and the test
+// is an equality against VK_SUCCESS rather than FAILED(): Vulkan's positive
+// results (VK_SUBOPTIMAL_KHR, VK_TIMEOUT, VK_NOT_READY) are not failures, but
+// they are not "carry on blindly" either, and FAILED() waves them through.
 
 #ifndef HR
 #define HR(x)                                      \
@@ -158,43 +110,22 @@ T* ptr(T&& x) { return &x; }
 // Vertex Declaration equal to NTVERTEX
 // ------------------------------------------------------------------------------------
 //
-// Each entry below was a D3DVERTEXELEMENT9:
-//     { Stream, Offset, Type, Method, Usage, UsageIndex }
-// and is now a VertexAttrib:
-//     { location, format, offset }
+// Each entry below was a D3DVERTEXELEMENT9 { Stream, Offset, Type, Method,
+// Usage, UsageIndex } and is now a VertexAttrib { location, format, offset }.
+// Stream and Method are dropped; Usage + UsageIndex became 'location', since
+// HLSL semantic names have no Vulkan counterpart and the location is the
+// element's index in the declaration. Two of the Type mappings produce a
+// picture rather than an error when got wrong:
 //
-//   Stream      -- dropped. Every declaration in this client used stream 0,
-//                  and the binding number now lives in VertexDecl::Binding().
-//   Method      -- dropped. D3DDECLMETHOD_DEFAULT was the only value used,
-//                  and it means "no tessellator", which is Vulkan's only
-//                  behaviour for a vertex input.
-//   Usage +
-//   UsageIndex  -- became 'location'. POSITION0/NORMAL0/TEXCOORD0... are HLSL
-//                  semantic names and Vulkan has none; the location is the
-//                  element's index in the declaration, counting from 0 in the
-//                  order the Windows declaration listed them.
-//   Type        -- became a VkFormat:
-//                    D3DDECLTYPE_FLOAT1    VK_FORMAT_R32_SFLOAT
-//                    D3DDECLTYPE_FLOAT2    VK_FORMAT_R32G32_SFLOAT
-//                    D3DDECLTYPE_FLOAT3    VK_FORMAT_R32G32B32_SFLOAT
-//                    D3DDECLTYPE_FLOAT4    VK_FORMAT_R32G32B32A32_SFLOAT
-//                    D3DDECLTYPE_D3DCOLOR  VK_FORMAT_B8G8R8A8_UNORM
-//                    D3DDECLTYPE_SHORT4    VK_FORMAT_R16G16B16A16_SINT
-//   Offset      -- carried over unchanged.
-//
-// Two of those type mappings are worth spelling out because getting them
-// wrong produces a picture rather than an error:
-//
-//   D3DCOLOR is a DWORD written 0xAARRGGBB. Read back byte by byte on a
-//   little-endian machine that is B,G,R,A, which is exactly
-//   VK_FORMAT_B8G8R8A8_UNORM -- not R8G8B8A8, which would swap red and blue.
+//   D3DCOLOR is a DWORD written 0xAARRGGBB. Byte by byte on a little-endian
+//   machine that is B,G,R,A, which is VK_FORMAT_B8G8R8A8_UNORM -- not
+//   R8G8B8A8, which would swap red and blue.
 //
 //   D3DDECLTYPE_SHORT4 delivers four signed shorts to the shader as floats
-//   WITHOUT normalising them. Vulkan's exact equivalent is
-//   VK_FORMAT_R16G16B16A16_SSCALED, but SSCALED vertex formats are optional
-//   and widely unsupported, so this uses _SINT and the GLSL translation
-//   declares the input as ivec4 and converts. The values are pixel
-//   coordinates (GPUBLITVTX), so the conversion is exact either way.
+//   without normalising them. Vulkan's exact equivalent,
+//   VK_FORMAT_R16G16B16A16_SSCALED, is optional and widely unsupported, so
+//   this uses _SINT and the GLSL declares the input as ivec4 and converts.
+//   The values are pixel coordinates, so the conversion is exact either way.
 // ------------------------------------------------------------------------------------
 
 const VertexAttrib BAVertexDecl[] = {
@@ -303,74 +234,38 @@ typedef struct {
 
 
 // ------------------------------------------------------------------------------------
-// THE SHADER-FACING STRUCTS AND WHY THEY ARE PACKED
+// The shader-facing structs, and why they are packed. LightStruct, VulkanSun,
+// VulkanMatExt and VulkanTune are copied raw into shader constant storage and
+// read back by a matching struct in the shader source. D3DX copied them field
+// by field from a tightly packed source, which is why the Windows LightStruct
+// is 76 bytes and not the 96 an HLSL constant-register layout would need. Two
+// things keep that true here:
 //
-// LightStruct, VulkanSun, VulkanMatExt and VulkanTune are not ordinary
-// structs: they are copied raw into shader constant storage and read back by
-// a matching struct in the shader source. Mesh.cpp does
+//   FVECTOR4 and FMATRIX4 are alignas(16) where D3DXVECTOR4 and D3DXMATRIX
+//   were not. Dropped into a struct unchanged, Diffuse would move from offset
+//   8 to 16 and LightStruct would grow to 96 bytes, unreported -- a
+//   misaligned light is a picture, not an error. The three structs Windows
+//   packed keep their #pragma pack(4) and LightStruct gains one.
 //
-//     FX->SetValue(eLights, Locals, sizeof(LightStruct) * MaxLights)
-//     FX->SetValue(eSun,   &sunLight, sizeof(D3D9Sun))
-//
-// against 'struct Light', 'struct Sun', 'struct Mtrl' and 'struct Tune' in
-// shaders/D3D9Client.fx. D3DX copies those field by field from a TIGHTLY
-// PACKED source, which is why the Windows LightStruct is 76 bytes and not
-// the 96 an HLSL constant-register layout would need.
-//
-// Two things had to be handled to keep that true on Linux:
-//
-//   FVECTOR4 AND FMATRIX4 ARE alignas(16); D3DXVECTOR4 AND D3DXMATRIX WERE
-//   NOT. Dropped into a struct unchanged, Diffuse would move from offset 8
-//   to 16 and LightStruct would grow from 76 to 96 bytes -- and nothing
-//   would report it, because a misaligned light is a picture, not an error.
-//   The three structs Windows already packed keep their #pragma pack(4);
-//   LightStruct, which Windows did not need to pack, gets one. This was
-//   measured on this toolchain rather than assumed: #pragma pack(4) does
-//   lower alignas(16) for members here. The static_asserts below turn any
-//   toolchain where it does not into a build error.
-//
-//   VULKAN'S DEFAULT UNIFORM LAYOUT IS NOT TIGHT PACKING. GLSL std140 would
-//   put vec4 diffuse at offset 16 and make Light 96 bytes, exactly the
-//   mismatch above. Rather than pad every struct here and every struct in
-//   the shaders to std140 -- which would change the data as well as its
-//   spelling -- the GLSL translations declare these blocks
-//   layout(scalar), from GL_EXT_scalar_block_layout / VkPhysicalDevice
-//   scalarBlockLayout, core since Vulkan 1.2. Scalar layout is C layout, so
-//   these structs stay byte for byte what the Windows client uploaded.
+//   Vulkan's default uniform layout is not tight packing: GLSL std140 would
+//   put vec4 diffuse at offset 16 and make Light 96 bytes, the same mismatch.
+//   Rather than pad every struct here and in the shaders, the GLSL declares
+//   these blocks layout(scalar) (GL_EXT_scalar_block_layout, core since
+//   Vulkan 1.2), which is C layout.
 // ------------------------------------------------------------------------------------
 
 // ------------------------------------------------------------------------------------
-// FVECTOR4P -- a 4-byte-aligned FVECTOR4, and why the packed structs must use
-// it instead of FVECTOR4 itself.
+// FVECTOR4P -- a 4-byte-aligned FVECTOR4, which the packed structs must use
+// instead of FVECTOR4 itself.
 //
-// THIS FIXED A CRASH, so the reasoning is worth keeping in full.
-//
-// An earlier version of this header put FVECTOR4 straight into the packed
-// structs and silenced -Wpacked-not-aligned, on the grounds that the pack
-// lowering alignas(16) is exactly what keeps the Windows layout and that the
-// static_asserts below hold that layout. The layout half of that is true. The
-// conclusion was wrong, and the warning was reporting a real defect:
-//
-//   THE static_asserts HOLD THE LAYOUT. NOTHING HELD THE ACCESS ALIGNMENT.
-//
-// #pragma pack(4) lowers the alignment of the MEMBER. It does not change the
-// TYPE: FVECTOR4 is still declared alignas(16), so the compiler is entitled to
-// assume any FVECTOR4 lvalue is 16-byte aligned. In VulkanMatExt, SpecialFX
-// sits at offset 104 (8 mod 16); in LightStruct, Diffuse at 8 and Param at 60.
-// GCC coalesces FVECTOR4's constructor -- `r = g = b = a = 0.0f` -- into a
-// single 16-byte aligned store, and at -O2 `new VulkanMatExt[1]` SEGFAULTS in
-// that constructor. Reproduced standalone: -O0 and -O1 survive, -O2 faults, on
-// a struct with exactly these offsets. It crashed vObject::GlobalInit's very
-// first mesh load, so the client could not open a scenario at all.
-//
-// D3DXVECTOR4 was a plain 4-float type with no over-alignment, which is why
-// Windows never had this. So the faithful counterpart of D3DXVECTOR4 inside a
-// packed struct is a 4-byte-aligned 4-float type -- this one -- not the SDK's
-// over-aligned FVECTOR4. The bytes are identical, so every static_assert
-// below still holds and the shader upload is unchanged.
-//
-// It converts implicitly both ways, so call sites keep reading and writing
-// FVECTOR4 exactly as they did.
+// #pragma pack(4) lowers the alignment of the member, not of the type, so the
+// compiler may still assume any FVECTOR4 lvalue is 16-byte aligned. In
+// VulkanMatExt SpecialFX sits at offset 104 (8 mod 16), and GCC coalesces
+// FVECTOR4's constructor into a single aligned store, so at -O2
+// `new VulkanMatExt[1]` segfaults in it -- crashing the first mesh load, so no
+// scenario would open. -O0 and -O1 survive. D3DXVECTOR4 was a plain 4-float
+// type with no over-alignment, which is why Windows never saw this. The bytes
+// are identical and it converts implicitly both ways, so nothing else changes.
 // ------------------------------------------------------------------------------------
 typedef union FVECTOR4P
 {
@@ -428,9 +323,9 @@ typedef union FMATRIX4P
 static_assert(sizeof(FMATRIX4P) == 64, "FMATRIX4P must be sixteen floats");
 static_assert(alignof(FMATRIX4P) == 4, "FMATRIX4P must NOT be over-aligned");
 
-// No -Wpacked-not-aligned suppression any more. With FVECTOR4P in place there
-// is nothing over-aligned left to lower, so the warning stays ON and will
-// report it if an over-aligned type is ever put back into one of these.
+// No -Wpacked-not-aligned suppression: with FVECTOR4P in place there is
+// nothing over-aligned left to lower, so the warning stays on and reports it
+// if an over-aligned type is ever put back into one of these.
 #pragma pack(push, 4)
 
 typedef struct _LightStruct  {
@@ -552,11 +447,9 @@ typedef struct {
  * \brief Material structure used in VulkanMesh. ModFlags is not loaded to shaders
  */
 typedef struct {
-	// Diffuse and Specular sit at 0 and 16, which look safely aligned -- and
-	// are not. The STRUCT's alignment is 4 (the pack), and sizeof is 124, so
-	// in `new VulkanMatExt[n]` element 1 begins at offset 124: Diffuse then
-	// lands at 12 mod 16 and Specular at 12 mod 16 again. An over-aligned type
-	// is unsafe ANYWHERE in a packed struct, not merely at an odd offset.
+	// Offsets 0 and 16 look safely aligned and are not: sizeof is 124, so in
+	// `new VulkanMatExt[n]` element 1 starts at 124 and Diffuse lands at
+	// 12 mod 16.
 	FVECTOR4P	  Diffuse;
 	FVECTOR4P     Specular;			///< Specular color, power in alpha
 	FVECTOR3	  Ambient;
@@ -621,19 +514,14 @@ typedef struct {
 
 
 // ------------------------------------------------------------------------------------
-// The vertex declarations themselves.
-//
-// On Windows these were IDirect3DVertexDeclaration9* globals, defined in
-// D3D9Frame.cpp and built there by pDevice->CreateVertexDeclaration() --
-// device objects, created with the device and released with it. A Vulkan
-// vertex layout is not an object: it is immutable data compiled into a
-// VkPipeline. There is nothing to create, nothing to release and no device
-// to tie it to, so these are constants defined once in VulkanUtil.cpp, next
-// to the tables and the strides that describe them, and the eleven
-// CreateVertexDeclaration calls in D3D9Frame.cpp have no counterpart.
-//
-// The names and the pointer spelling are kept so that the call sites that
-// bind them do not change shape.
+// The vertex declarations themselves. On Windows these were
+// IDirect3DVertexDeclaration9* globals built in D3D9Frame.cpp by
+// pDevice->CreateVertexDeclaration() -- device objects created and released
+// with the device. A Vulkan vertex layout is not an object but immutable data
+// compiled into a VkPipeline, so these are constants defined in
+// VulkanUtil.cpp beside the tables and strides that describe them, and the
+// eleven CreateVertexDeclaration calls have no counterpart. The names and the
+// pointer spelling are kept so the call sites do not change shape.
 // ------------------------------------------------------------------------------------
 
 extern const VertexDecl	*pMeshVertexDecl;
@@ -650,28 +538,13 @@ extern const VertexDecl *pLocalLightsDecl;
 
 
 // ------------------------------------------------------------------------------------
-// ShaderClass
-//
-// Same class, same job, same call sites. What changed underneath:
-//
-//   LPDIRECT3DPIXELSHADER9 / LPDIRECT3DVERTEXSHADER9 became VkShaderModule.
-//
-//   LPD3DXCONSTANTTABLE became ShaderReflection. D3DX built the constant
-//   table as a side product of compiling HLSL; the Vulkan counterpart is
-//   reflection over the SPIR-V module, which carries its own interface
-//   description. The type is per-stage exactly as the two D3DX tables were.
-//
-//   Setup() now builds or fetches a VkPipeline. In D3D9 it set the shader
-//   pair, the vertex declaration and eight render states as independent
-//   pieces of device state. Vulkan has no such state: the shaders, the
-//   vertex layout, the depth test and the blend equation are all baked into
-//   one immutable VkPipeline at creation time. Its arguments -- the
-//   declaration, the depth flag and the blend mode -- are therefore exactly
-//   the pipeline's key, which is why they can be cached on those three
-//   values and nothing else.
-//
-//   The viewport survives as a call rather than as pipeline state, because
-//   it is one of the few pieces Vulkan does keep dynamic.
+// ShaderClass -- same class, same job, same call sites. LPD3DXCONSTANTTABLE
+// became ShaderReflection, per-stage exactly as the two D3DX tables were, and
+// Setup() now builds or fetches a VkPipeline: in D3D9 it set the shader pair,
+// the vertex declaration and eight render states as independent pieces of
+// device state, all of which Vulkan bakes into one immutable pipeline, so
+// Setup()'s three arguments are exactly the pipeline's key. The viewport
+// survives as a call, being one of the few pieces Vulkan keeps dynamic.
 // ------------------------------------------------------------------------------------
 
 class ShaderClass
@@ -687,41 +560,24 @@ public:
 	void	Setup(const VertexDecl *pDecl, bool bZ, int blend);
 
 	/// \brief The primitive topology the next Setup() builds its pipeline
-	///        with. Defaults to TRIANGLE_LIST, which is what every caller
-	///        wanted until HazeManager2.
-	///
-	///        NEW, AND NOT AN ADDITION TO THE MODEL -- the same value existed
-	///        on Windows as DrawPrimitive's first argument, chosen per draw.
-	///        Vulkan bakes topology into the VkPipeline, so it has to be
-	///        known before Setup() binds one, and it joins the pipeline cache
-	///        key for the same reason the declaration and the blend mode do.
-	///        Exactly the reasoning behind VulkanEffectFile::SetTopology; see
-	///        that one for the longer version.
+	///        with; TRIANGLE_LIST by default. The value existed on Windows as
+	///        DrawPrimitive's first argument, chosen per draw. Vulkan bakes
+	///        topology into the VkPipeline, so it must be known before Setup()
+	///        binds one, and it joins the pipeline cache key.
 	void	SetTopology(VkPrimitiveTopology topo) { topology = topo; }
 
-	/// \brief The three values D3DRS_CULLMODE can take.
-	///
-	///        SAME THREE VALUES AS VulkanEffectFile::PassOverride::CullMode,
-	///        and deliberately the same numbering, but declared again here
-	///        rather than shared: VulkanEffect.h includes this header, so
-	///        naming its enum from here would be a cycle. The translation
-	///        table -- and the reason the two Vulkan fields are not
-	///        independent -- is written out once in VulkanEffect.cpp's
-	///        GetPipeline and once in this class's, beside each use.
+	/// \brief The three values D3DRS_CULLMODE can take. Same numbering as
+	///        VulkanEffectFile::PassOverride::CullMode, declared again rather
+	///        than shared because VulkanEffect.h includes this header.
 	enum CullMode { CULL_NONE = 0, CULL_CW = 1, CULL_CCW = 2 };
 
-	/// \brief The cull mode the next Setup() builds its pipeline with.
-	///        Defaults to CULL_NONE, which is what every pipeline this class
-	///        built had until Surfmgr2.
-	///
-	///        NEW, AND FOR EXACTLY THE REASON SetTopology IS. The value
-	///        existed on Windows as a SetRenderState(D3DRS_CULLMODE, ...)
-	///        issued AFTER Setup() and before the draw --
-	///        TileManager2<SurfTile>::Render does precisely that, asking for
-	///        D3DCULL_CCW so the far side of the planet is not drawn. Vulkan
-	///        bakes the cull into the VkPipeline, so it has to be known
-	///        before Setup() binds one, and it joins the pipeline cache key
-	///        for the same reason the declaration and the blend mode do.
+	/// \brief The cull mode the next Setup() builds its pipeline with;
+	///        CULL_NONE by default. On Windows this was a
+	///        SetRenderState(D3DRS_CULLMODE, ...) issued after Setup() and
+	///        before the draw -- TileManager2<SurfTile>::Render asks for
+	///        D3DCULL_CCW so the far side of the planet is not drawn -- and
+	///        Vulkan bakes the cull into the pipeline, so it has to arrive
+	///        before the bind and joins the cache key.
 	void	SetCullMode(int mode) { cullMode = mode; }
 
 	HANDLE	GetPSHandle(const char* name);
@@ -739,49 +595,30 @@ public:
 	VulkanDevice *GetDevice() { return pDev; }
 
 	/// \brief Counterpart of DrawPrimitiveUP / DrawIndexedPrimitiveUP for a
-	///        ShaderClass-bound draw -- "draw from this pointer in my memory".
-	///
-	///        THE SAME FUNCTION VulkanEffectFile ALREADY HAS, and it is here
-	///        because the second family of call sites reaches the device
-	///        directly rather than through an effect: Scene.cpp's
-	///        ComputeLocalLightsVisibility and RenderGlares both do
-	///        `pDevice->DrawPrimitiveUP(D3DPT_POINTLIST, ...)` immediately
-	///        after a ShaderClass::Setup. Vulkan has no such call and cannot:
-	///        a draw sources its vertices from a VkBuffer bound to the command
-	///        buffer, so the caller's array has to reach one. This copies it
-	///        into a scratch buffer and draws from that, which is what the
-	///        D3D9 runtime did behind DrawPrimitiveUP anyway.
-	///
-	///        pIdx may be NULL for the unindexed form, which is what both
-	///        current callers want. THE COUNT IS VERTICES, not primitives --
-	///        the same trap as VulkanEffectFile::DrawUP's.
+	///        ShaderClass-bound draw -- Scene.cpp's
+	///        ComputeLocalLightsVisibility and RenderGlares reach the device
+	///        directly rather than through an effect. Vulkan has no such call,
+	///        so this copies into a scratch buffer, which is what the D3D9
+	///        runtime did behind it anyway. pIdx may be NULL for the
+	///        unindexed form, and the count is vertices, not primitives.
 	void	DrawUP(const void *pVtx, UINT nVtx, UINT stride,
 				   const WORD *pIdx = NULL, UINT nIdx = 0);
 
 	/// \brief Release every instance's descriptor sets. Must be called once
-	///        per frame, from the client's frame boundary.
-	///
-	///        NEW, AND THE COUNTERPART OF NOTHING. A D3D9 SetTexture consumed
-	///        its argument immediately -- the device recorded the binding and
-	///        the call was over. A Vulkan draw only records a REFERENCE to a
-	///        descriptor set, so a set stays live until the frame that named
-	///        it has been submitted, and each draw needs its own. They are
-	///        allocated from a pool per instance and the pool is recycled
-	///        here, which is the same arrangement, for the same reason, as
-	///        VulkanEffectFile::ResetFrame.
-	///
-	///        Static and over a registry of instances because there are
-	///        several ShaderClass objects -- one per tile manager, two for
-	///        the haze, two in Scene -- with no single owner to walk them.
+	///        per frame, from the client's frame boundary. A D3D9 SetTexture
+	///        consumed its argument immediately; a Vulkan draw only records a
+	///        reference to a descriptor set, so each draw needs its own and it
+	///        stays live until the frame naming it has been submitted.
+	///        Static, over a registry, because the several ShaderClass objects
+	///        have no single owner to walk them.
 	static void	ResetFrame();
 
 private:
 
-	// pSampler is new. D3D9 set eight sampler states on a numbered device slot
-	// and the runtime kept them; Vulkan has no such slot -- a sampler is an
-	// object built from those same eight parameters, so the slot has to own
-	// one. bSamplerSet still means "the parameters have not changed since the
-	// last time", exactly as it did; it now guards a create instead of eight
+	// pSampler is new. D3D9 set eight sampler states on a numbered device slot;
+	// Vulkan has no such slot, only a sampler object built from those same
+	// eight parameters, so the slot has to own one. bSamplerSet still means
+	// "unchanged since last time"; it now guards a create rather than eight
 	// SetSamplerState calls.
 	struct TexParams
 	{
@@ -794,8 +631,6 @@ private:
 	} pTextures[20];
 
 	/// \brief Fetch or build the pipeline for this (declaration, depth, blend).
-	///        Those three are exactly what Setup() varies, so they are the
-	///        whole key -- see the note on Setup() above.
 	VkPipeline	GetPipeline(const VertexDecl *pDecl, bool bZ, int blend);
 
 	/// \brief Counterpart of ID3DXConstantTable::SetValue: put 'bytes' bytes
@@ -808,26 +643,24 @@ private:
 	VulkanDevice *pDev;
 	std::string fn, psn, vsn, sn;
 
-	// The pipeline cache, keyed on Setup()'s three arguments. D3D9 needed no
-	// such thing because it had no pipeline object: the equivalent state was
-	// set per draw and thrown away.
+	// The pipeline cache, keyed on Setup()'s three arguments. D3D9 needed none:
+	// it had no pipeline object, only state set per draw and thrown away.
 	struct PipeKey {
 		const VertexDecl *pDecl;
 		bool bZ;
 		int blend;
 		VkPrimitiveTopology topo;
 		int cull;
-		// THE RENDER PASS IS PART OF THE KEY, and it has to be. A VkPipeline
-		// may only be bound inside a render pass COMPATIBLE with the one it
-		// was created against, and compatibility requires the attachment
-		// formats to match -- so the same shader pair drawn into the
-		// swapchain and into an R32_SFLOAT shadow map are two pipelines.
-		// D3D9 needed nothing like this: SetRenderTarget was device state
-		// and a shader did not care what it pointed at. See
-		// VulkanDevice::GetRenderPass and BeginOffscreen.
+		// The render pass is part of the key: a VkPipeline may only be bound
+		// inside a render pass compatible with the one it was created
+		// against, and compatibility requires matching attachment formats, so
+		// the same shader pair drawn into the swapchain and into an
+		// R32_SFLOAT shadow map are two pipelines. D3D9 needed nothing like
+		// it: SetRenderTarget was device state and a shader did not care what
+		// it pointed at.
 		VkRenderPass pass;
-		// D3DRS_FILLMODE, for the same reason: it was global device state and
-		// is pipeline state here. See VulkanDevice::SetPolygonMode.
+		// D3DRS_FILLMODE, for the same reason: global device state there,
+		// pipeline state here.
 		int fill;
 		bool operator<(const PipeKey &o) const {
 			if (pDecl != o.pDecl) return pDecl < o.pDecl;
@@ -848,49 +681,30 @@ private:
 	VkPipelineLayout	pLayout;
 	VkDescriptorSetLayout pSetLayout;
 
-	// THE UNIFORM BLOCKS, AND WHY THEY ARE A PER-FRAME ARENA RATHER THAN TWO
-	// BUFFERS.
+	// The uniform blocks are a per-frame arena rather than one buffer per
+	// stage, because a Vulkan descriptor copies nothing: it points at memory
+	// the GPU reads when the frame is submitted. A frame draws ~2000 surface
+	// tiles through one ShaderClass, and with a single buffer the GPU reads
+	// whatever the last tile left, collapsing every tile onto one. D3D9
+	// needed none of this: ID3DXConstantTable::SetValue wrote the device's
+	// constant registers and the runtime snapshotted them per draw.
 	//
-	// This used to be `VulkanBuffer *pPSConst, *pVSConst;` -- one buffer per
-	// stage, written by WriteConstants at the constant's offset and bound at
-	// offset 0 by BindResources. That is correct for ONE draw and wrong for a
-	// frame, because a Vulkan descriptor does not COPY anything: it points at
-	// memory the GPU reads when the frame is submitted.
-	//
-	// A frame draws ~2000 surface tiles through one ShaderClass. Each tile
-	// wrote its own Prm.mWorld into that single buffer and issued its draw;
-	// the CPU wrote 2000 times and the GPU, executing every draw at submit,
-	// read whatever the LAST tile left behind. So every tile was transformed
-	// by one tile's world matrix, all of them collapsing onto one another --
-	// which is why the planet never appeared while every other measurement
-	// (draw issued, buffers valid, mWorld correct, block layout exact) came
-	// back right.
-	//
-	// D3D9 needed none of this: ID3DXConstantTable::SetValue wrote into the
-	// device's constant REGISTERS and the runtime snapshotted register state
-	// per draw call, so "set, draw, set, draw" is correct there by
-	// construction. It is the same defect DrawUP had with its scratch vertex
-	// buffer, and the same shape VulkanEffectFile already solved with a
-	// per-frame arena and dynamic offsets.
-	//
-	// So: the Set*Constants calls accumulate into a CPU-side block per stage,
-	// and BindResources copies that block into a fresh slice of a per-frame
-	// arena, binding the slice with a DYNAMIC offset. ResetFrame rewinds it.
+	// So Set*Constants accumulates into a CPU-side block per stage, and
+	// BindResources copies that block into a fresh slice of the per-frame
+	// arena, binding it with a dynamic offset. ResetFrame rewinds it.
 	std::vector<char>	vsBlock, psBlock;	///< CPU-side, accumulated per draw
 	VulkanBuffer *		pArena;				///< one per frame, sliced per draw
 	VkDeviceSize		arenaSize, arenaUsed;
 	uint32_t			vsSlice, psSlice;	///< this draw's dynamic offsets
-	/// Whether the SET LAYOUT declares each block. Fixed at CreateResources
-	/// time and NOT per draw: vkCmdBindDescriptorSets wants exactly one
-	/// dynamic offset per dynamic descriptor the layout declares, whether or
-	/// not this particular draw wrote anything into it.
+	/// Whether the set layout declares each block. Fixed at CreateResources
+	/// time, not per draw: vkCmdBindDescriptorSets wants exactly one dynamic
+	/// offset per dynamic descriptor the layout declares, whether or not this
+	/// draw wrote anything into it.
 	bool				bVSBlock, bPSBlock;
-	/// Arenas a mid-frame grow replaced. Freed at the point the GPU is
-	/// certainly done with them, never at the point of growth -- and never at
-	/// the NEXT ResetFrame either, which is what this used to do and what the
-	/// validation layer reported as VUID-vkDestroyBuffer-buffer-00922: the
-	/// frame that recorded the binding is still in flight one frame later.
-	/// Each carries the frame number that retired it.
+	/// Arenas a mid-frame grow replaced, each carrying the frame number that
+	/// retired it. Freed once the GPU is certainly done -- not at the point of
+	/// growth, and not at the next ResetFrame either, since the frame that
+	/// recorded the binding is still in flight one frame later.
 	std::deque<std::pair<VulkanBuffer *, unsigned long long> > retiredArena;
 	bool	EnsureArena(VkDeviceSize bytes);
 
@@ -901,23 +715,14 @@ private:
 	bool	EnsureScratch(VkDeviceSize vbytes, VkDeviceSize ibytes);
 
 	// ------------------------------------------------------------------
-	// THE ROTATION. Counterpart of nothing in D3D9, which owned the constant
-	// registers and the sampler slots and recycled them itself.
-	//
-	// ResetFrame used to call vkResetDescriptorPool on vkPool at the top of
-	// every frame. That is only correct with ONE frame in flight; the core
-	// keeps orbiter_GetFramesInFlight() of them, and its vkWaitForFences
-	// covers only the slot it is about to record into. The layer said so --
-	//
-	//     VUID-vkResetDescriptorPool-descriptorPool-00313
-	//     ... currently in use by VkCommandBuffer ...
-	//
-	// -- and the driver answered with intermittent VK_ERROR_DEVICE_LOST.
-	//
-	// So the pool, the arena and the two scratch buffers are ROTATED: what a
-	// frame used is retired with that frame's number and taken back only once
-	// the lag has passed. Every use site keeps naming vkPool / pArena /
-	// pScratchVB; only what they point at changes, once per frame.
+	// The rotation, counterpart of nothing in D3D9, which owned the constant
+	// registers and sampler slots and recycled them itself. Resetting the
+	// descriptor pool at the top of every frame is correct only with one frame
+	// in flight; the core keeps orbiter_GetFramesInFlight() of them and its
+	// vkWaitForFences covers only the slot it is about to record into, so the
+	// driver answers with intermittent VK_ERROR_DEVICE_LOST. So what a frame
+	// used is retired with that frame's number and taken back once the lag has
+	// passed; only what vkPool / pArena / pScratchVB point at changes.
 	struct FrameSet {
 		VkDescriptorPool	pool;
 		VulkanBuffer *		arena;
@@ -933,7 +738,7 @@ private:
 	};
 	std::deque<FrameSet>	retired;	///< oldest first
 	/// Samplers UpdateTextures replaced mid-frame, on the same lag. A sampler
-	/// is an OBJECT in Vulkan and a device state word in D3D9, so this list
+	/// is an object in Vulkan and a device state word in D3D9, so this list
 	/// has no counterpart to convert.
 	std::deque<std::pair<VkSampler, unsigned long long> > retiredSampler;
 	unsigned long long		frameNo;
@@ -948,23 +753,15 @@ private:
 	void	RotateFrame();
 
 	// ------------------------------------------------------------------
-	// THE DESCRIPTOR MACHINERY. None of it has a D3D9 counterpart, because
-	// D3D9 had no descriptors: a constant went into a numbered register file
-	// and a texture onto a numbered sampler slot, both of them device state
-	// the runtime kept. Here both reach a shader only through a descriptor
-	// set, which has to be described (a layout), allocated (from a pool) and
-	// written before the draw that names it.
-	//
-	// WITHOUT THIS THE CLASS BOUND NOTHING. pSetLayout was declared and never
-	// created, so GetPipeline built every pipeline with setLayoutCount 0 --
-	// a layout that cannot see a uniform block or a texture at all. Every
-	// ShaderClass draw in the client (both tile engines, both haze rings, the
-	// celestial sphere, the glares) would have run with no inputs.
-	//
-	// The binding convention matches IProcess's, which is the other place two
-	// stages share one set: the VERTEX stage's uniform block at binding 0,
-	// the PIXEL stage's at binding 1, and the samplers at whatever bindings
-	// the GLSL declares -- read back from reflection rather than assumed.
+	// The descriptor machinery, none of which has a D3D9 counterpart: there a
+	// constant went into a numbered register file and a texture onto a
+	// numbered sampler slot, both device state the runtime kept. Here both
+	// reach a shader only through a descriptor set, which has to be described
+	// (a layout), allocated (from a pool) and written before the draw that
+	// names it; without it every pipeline is built with setLayoutCount 0 and
+	// can see neither a uniform block nor a texture. Binding convention, as
+	// in IProcess: the vertex stage's block at 0, the pixel stage's at 1, and
+	// the samplers wherever the GLSL declares them, read back by reflection.
 	// ------------------------------------------------------------------
 
 	/// \brief Build the set layout, the pipeline layout and the pool, once,
@@ -983,11 +780,8 @@ private:
 	uint32_t				psBinding;	///< where the PS block is declared
 	bool					bResources;	///< CreateResources has run
 	VulkanTexture		   *pWhite;		///< an unwritten binding samples this
-	/// \brief The same, for a samplerCube binding.
-	///
-	/// A cube sampler must be given a CUBE view; the 2D pWhite above faults
-	/// the GPU. Built only when a shader in this class declares one. See
-	/// Var::bCube and CreateResources.
+	/// \brief The same, for a samplerCube binding. A cube sampler must be
+	/// given a cube view; the 2D pWhite above faults the GPU.
 	VulkanTexture		   *pWhiteCube;
 
 	/// \brief Every live instance, so the static ResetFrame can walk them.
@@ -1022,11 +816,10 @@ inline void LogSunLight(VulkanSun& s)
 // -----------------------------------------------------------------------------------
 // Conversion functions
 //
-// Several of these convert between two types that are now the SAME type --
+// Several of these now convert between two types that are the same type --
 // _FV took a D3DXVECTOR3 and returned an FVECTOR3, C2V took a D3DXCOLOR and
-// returned a D3DXVECTOR4. They are kept as pass-throughs rather than deleted
-// because they are spelled as functions at their call sites, and a
-// pass-through is a smaller change than rewriting every one of them.
+// returned a D3DXVECTOR4 -- and are kept as pass-throughs so their call sites
+// need not be rewritten.
 // ------------------------------------------------------------------------------------
 
 // long(l) on Windows, LONG(l) here. RECT's fields are LONG, which is 32 bits
@@ -1135,14 +928,10 @@ inline FVECTOR4 _FCOLOR(const VECTOR3 &v, float a = 1.0f)
 
 /// \brief `D3DXCOLOR(DWORD)`, which unpacks 0xAARRGGBB into four floats.
 ///
-///        THIS EXISTS BECAUSE OF A TRAP, not because the arithmetic is hard.
-///        FVECTOR4 already has a DWORD constructor and it reads the DWORD as
-///        **0xAABBGGRR -- ABGR, not ARGB** (DrawAPI.h:424). A D3DCOLOR is
-///        ARGB. So every `D3DXCOLOR(c)` in the Windows source that is
-///        "converted" to `FVECTOR4(c)` compiles, looks right, and exchanges
-///        red and blue -- a wrong ambient colour, which is exactly the kind
-///        of thing that is noticed as "the planet looks a bit off" three
-///        months later. Call sites that mean ARGB call this.
+///        FVECTOR4 already has a DWORD constructor, but it reads the DWORD as
+///        0xAABBGGRR -- ABGR, not ARGB -- while a D3DCOLOR is ARGB. So a
+///        `D3DXCOLOR(c)` converted to `FVECTOR4(c)` compiles, looks right and
+///        exchanges red and blue. Call sites that mean ARGB call this.
 inline FVECTOR4 FCOLOR_ARGB(DWORD c)
 {
 	const float q = 1.0f / 255.0f;
@@ -1230,79 +1019,55 @@ void VMAT_SetTranslation(FMATRIX4 *mat, const FVECTOR3 *trans);
 bool VMAT_VectorMatrixMultiply (FVECTOR3 *res, const FVECTOR3 *v, const FMATRIX4 *mat);
 
 // ------------------------------------------------------------------------------------
-// The two D3DX matrix functions the client used and that have to be written
-// out, because D3DX was a Direct3D UTILITY library and Vulkan ships no
-// counterpart at all -- there is no vkMatrixMultiply and there never will be.
+// The D3DX matrix functions the client used, written out because D3DX was a
+// utility library and Vulkan ships no counterpart. They live here rather than
+// in whichever file needed one first: a 4x4 multiply written once per file is
+// how two of them end up disagreeing about row or column order.
 //
-// They live here, with the other VMAT_ functions, rather than in whichever
-// file needed one first: D3DXMatrixMultiply has call sites across the pad,
-// the scene and the vessel visual, and writing a 4x4 multiply once per file
-// is how two of them end up disagreeing about row or column order.
-//
-// ROW-VECTOR CONVENTION, which is D3DX's and is what the whole client and
-// every one of its shaders assumes: a point is a row and is multiplied on the
-// LEFT, v' = v * M, so out = a * b applies a FIRST and then b.
-// Orbitersdk/include/DrawAPI.h's own mul(FVECTOR4, FMATRIX4) at line 708
-// already does it that way, which is what makes FMATRIX4 a drop-in for
-// D3DXMATRIX rather than a transpose of one.
+// Row-vector convention, which is D3DX's and what the whole client and every
+// one of its shaders assumes: a point is a row multiplied on the left,
+// v' = v * M, so out = a * b applies a first and then b. The SDK's own
+// mul(FVECTOR4, FMATRIX4) already does it that way, which is what makes
+// FMATRIX4 a drop-in for D3DXMATRIX rather than a transpose of one.
 // ------------------------------------------------------------------------------------
 
 /// \brief out = a * b. Counterpart of D3DXMatrixMultiply.
 ///        Safe to alias: out may be either operand.
 void VMAT_MatrixMultiply (FMATRIX4 *out, const FMATRIX4 *a, const FMATRIX4 *b);
 
-/// \brief Counterpart of D3DXMatrixTransformation2D.
-///
-///        Builds, in D3DX's own order,
+/// \brief Counterpart of D3DXMatrixTransformation2D. Builds, in D3DX's order,
 ///            M = T(-Csc) * Rsc^-1 * S * Rsc * T(Csc) * T(-Crot) * R * T(Crot) * T(t)
-///        where Csc is the scaling centre, Rsc the scaling rotation, S the
-///        scale, Crot the rotation centre, R the rotation and t the
-///        translation. Every pointer may be NULL, meaning the identity for
-///        that term -- again as D3DX defines it.
+///        Every pointer may be NULL, meaning the identity for that term, as
+///        D3DX defines it.
 void VMAT_Transformation2D (FMATRIX4 *out,
 							const FVECTOR2 *pScalingCenter, float scalingRotation,
 							const FVECTOR2 *pScaling,
 							const FVECTOR2 *pRotationCenter, float rotation,
 							const FVECTOR2 *pTranslation);
 
-// Returns S_OK / E_INVALIDARG. These are the Win32 HRESULT values the Linux
-// shim still supplies, and they are this function's OWN return value rather
-// than a device's, so they are not VkResult and HR() does not apply.
+// Returns S_OK / E_INVALIDARG: Win32 HRESULT values the Linux shim still
+// supplies, and this function's own return value rather than a device's, so
+// they are not VkResult and HR() does not apply.
 HRESULT VMAT_MatrixInvert (FMATRIX4 *res, FMATRIX4 *a);
 
-/// \brief Counterpart of D3DXMatrixOrthoOffCenterLH, written out for the same
-///        reason the two above are: D3DX supplied it and Vulkan ships nothing.
-///
-///        THE FORMULA IS D3DX'S, UNCHANGED, and the depth half of it happens
-///        to be exactly right: a left-handed D3D ortho maps z into [0,1],
-///        which is Vulkan's depth range too (OpenGL's [-1,1] is what would
-///        have needed correcting).
-///
-///        THE Y HALF IS NOT, AND IS LEFT ALONE DELIBERATELY. Vulkan's NDC has
-///        +Y pointing DOWN where D3D's points up, so a matrix built by this
-///        draws vertically mirrored against what the Windows client showed,
-///        unless the caller's own top/bottom arguments already account for it
-///        -- which Scene::ComputeLocalLightsVisibility's (0, w, h, 0) do.
-///        Flipping it here would silently disagree with every other matrix in
-///        the client, all of which come from Orbiter's own camera code; the
-///        handedness question belongs in one place and this is not it.
+/// \brief Counterpart of D3DXMatrixOrthoOffCenterLH. The formula is D3DX's
+///        unchanged: its depth half is already right, since a left-handed D3D
+///        ortho maps z into [0,1], which is Vulkan's range too. The Y half is
+///        deliberately left alone -- Vulkan's NDC has +Y down where D3D's
+///        points up, so a matrix built here draws mirrored unless the caller's
+///        top/bottom arguments account for it, which
+///        Scene::ComputeLocalLightsVisibility's (0, w, h, 0) do.
 void VMAT_OrthoOffCenterLH (FMATRIX4 *out, float l, float r, float b, float t,
 							float zn, float zf);
 
-/// \brief Counterpart of D3DXMatrixOrthoOffCenterRH. Identical to the LH form
-///        except for the sign of m33 -- which is the whole of what "handed"
-///        means for an orthographic projection. Scene::RenderShadowMap builds
-///        its light projection with it.
+/// \brief Counterpart of D3DXMatrixOrthoOffCenterRH: the LH form with m33
+///        negated, which is the whole of what "handed" means for an
+///        orthographic projection.
 void VMAT_OrthoOffCenterRH (FMATRIX4 *out, float l, float r, float b, float t,
 							float zn, float zf);
 
 /// \brief Counterpart of D3DXMatrixLookAtRH, transcribed from the D3DX
-///        documentation's own construction rather than rederived:
-///            zaxis = normal(Eye - At)
-///            xaxis = normal(cross(Up, zaxis))
-///            yaxis = cross(zaxis, xaxis)
-///        and the translation row is the three negated dot products.
-///        Scene::RenderShadowMap builds its light view with it.
+///        documentation's construction rather than rederived.
 void VMAT_LookAtRH (FMATRIX4 *out, const FVECTOR3 *pEye, const FVECTOR3 *pAt,
 					const FVECTOR3 *pUp);
 
@@ -1387,18 +1152,10 @@ std::string::size_type replace_all (std::string &subj, const std::string &s, con
 // Resource handling
 // ------------------------------------------------------------------------------------
 //
-// AutoHandle DID NOT CONVERT, and this is the one thing in the file with no
-// Linux counterpart at all. Its whole body is Win32 kernel-handle
-// management: a HANDLE, INVALID_HANDLE_VALUE and CloseHandle. Linux has no
-// such object, the shim defines no INVALID_HANDLE_VALUE, and the client's
-// only use of raw kernel handles was the CreateFile/ReadFile shader cache in
-// D3D9Util.cpp, which is ordinary stdio here.
-//
-// It is dropped rather than emulated because it has ZERO call sites: the
-// whole D3D9Client tree names AutoHandle only in D3D9Util.h itself, where it
-// is defined. AutoFile below is the one that is actually used --
-// MaterialMgr.cpp three times and WindowMgr.cpp once -- and it is plain C
-// stdio, so it crosses unchanged.
+// AutoHandle is gone: its whole body is Win32 kernel-handle management --
+// HANDLE, INVALID_HANDLE_VALUE, CloseHandle -- and Linux has no such object.
+// It is dropped rather than emulated because it has no call sites; the whole
+// D3D9Client tree names it only where it is defined.
 
 /**
  * \brief Kind of auto_file.
@@ -1442,11 +1199,9 @@ struct AutoFile
 // Miscellaneous helper functions
 // ------------------------------------------------------------------------------------
 //
-// SAFE_RELEASE is gone with the COM reference counting it drove: Vulkan
-// objects are not reference counted and are destroyed with an explicit
-// vkDestroy* against the device that made them, so a release macro that took
-// only the object could not do the job. The client's own resource wrappers
-// are deleted, which is what SAFE_DELETE already does.
+// SAFE_RELEASE is gone with the COM reference counting it drove: a Vulkan
+// object is destroyed with an explicit vkDestroy* against the device that
+// made it, so a release macro taking only the object could not do the job.
 
 #define DELETE_SURFACE(p) { if (p) { delete ((SurfNative*)p); p = NULL; } }
 #define SAFE_DELETE(p)  { if(p) { delete (p);     (p)=NULL; } }

@@ -5,38 +5,17 @@
 // Copyright (C) 2011-2026 Jarmo Nikkanen
 // ===========================================================================================
 //
-// CONVERTED FROM OVP/D3D9Client/D3D9Surface.cpp, read end to end (1321 lines).
+// Five D3DX entry points carried the whole image pipeline here --
+// D3DXGetImageInfoFromFileA, D3DXCreateTextureFromFileExA,
+// D3DXCreateTextureFromFileInMemoryEx, D3DXLoadSurfaceFromFile/Surface and
+// D3DXSaveTextureToFileA/SurfaceToFileA -- and none exists here, so the client
+// reads and writes images itself: DDS parsed below, PNG/JPG/BMP through
+// stb_image, which is what Src/Orbiter/Linux/WinCodec.cpp already uses for the
+// core's WIC replacement.
 //
-// This is the file where D3DX did the most work for the client, so it is the
-// file with the most genuinely new code. Five D3DX entry points carried the
-// whole image pipeline:
-//
-//   D3DXGetImageInfoFromFileA          read size/format/mips without decoding
-//   D3DXCreateTextureFromFileExA       decode + upload + optional mip build
-//   D3DXCreateTextureFromFileInMemoryEx  the same from a memory blob
-//   D3DXLoadSurfaceFromFile/Surface    decode or rescale into a surface
-//   D3DXSaveTextureToFileA/SurfaceToFileA  encode
-//
-// None exists here, so the client reads and writes images itself:
-//
-//   DDS   -- parsed below. It is the format Orbiter ships planet and vessel
-//            textures in, and the one D3DX was doing the least for: a DDS
-//            file is a header plus already-compressed blocks, so "decoding"
-//            is reading the header and handing the blocks to the GPU.
-//   PNG /
-//   JPG /
-//   BMP   -- stb_image, which is exactly what Src/Orbiter/Linux/WinCodec.cpp
-//            already uses for the core's WIC replacement. ImGui vendors it,
-//            so this introduces no new dependency; see the note on
-//            STB_IMAGE_IMPLEMENTATION below.
-//
-// THE OTHER STRUCTURAL CHANGE is the one VulkanSurface.h describes: D3D9 had
-// two resource types and this file branched on D3DRESOURCETYPE in seven
-// places (NatSaveSurface, NatCompressSurface, the constructor, GetTexture,
-// GetSurface, GenerateMipMaps, GetSizeInBytes, NatDumpResource). Vulkan has
-// one image type, so every one of those branches collapses.
-//
-// pTexSurf, pDX7, CreateDX7() and DX7Sync() are gone -- see VulkanSurface.h.
+// D3D9 had two resource types and this file branched on D3DRESOURCETYPE in
+// seven places. Vulkan has one image type, so every one of those collapses,
+// and pTexSurf, pDX7, CreateDX7() and DX7Sync() go with them.
 // ===========================================================================================
 
 #define STRICT
@@ -52,10 +31,8 @@
 #include <vector>
 #include <algorithm>
 
-// stb_image, as Src/Orbiter/Linux/WinCodec.cpp uses it for the core. The
-// implementation is defined in exactly one translation unit per module, and
-// this is the client's -- the core has its own copy in its own module, which
-// is correct: they are separate shared objects.
+// The implementation is defined in exactly one translation unit per module,
+// and this is the client's; the core has its own copy in its own module.
 #define STB_IMAGE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #define STBI_ONLY_PNG
@@ -64,13 +41,9 @@
 #include "stb_image.h"
 #include "stb_image_write.h"    // NatSaveSurface; replaces D3DXSaveTextureToFileA
 
-// stb_dxt, from the same collection the CMakeLists already links as stb::stb.
-// It is here for one reason, spelled out at NatBuildMipChain below:
-// D3DXCreateTextureFromFileInMemoryEx(..., MipLevels = 0, ..., D3DX_FILTER_BOX,
-// ...) built the whole mip chain of a BLOCK-COMPRESSED texture, decompressing,
-// filtering and recompressing behind that one argument. No Vulkan call can
-// write BC blocks -- vkCmdBlitImage refuses a compressed destination -- so the
-// recompression is the one part of that argument that has to be done here.
+// stb_dxt, here for one reason spelled out at NatBuildMipChain below: no
+// Vulkan call can write BC blocks, so the recompression D3DX did behind
+// MipLevels = 0 has to be done on the CPU.
 #define STB_DXT_IMPLEMENTATION
 #include "stb_dxt.h"
 
@@ -82,11 +55,10 @@ extern VulkanClient* g_client;
 // ===========================================================================================
 // FORMAT CONVERSION
 //
-// See VulkanSurface.h for why the VK -> OAPI direction cannot be exact.
-// The trap in this table is the byte order: a D3DFMT_A8R8G8B8 pixel is the
-// DWORD 0xAARRGGBB, whose bytes little-endian run B,G,R,A -- so it is
-// VK_FORMAT_B8G8R8A8_UNORM, not R8G8B8A8. Getting it backwards swaps red and
-// blue in every surface in the client, which looks like an art bug.
+// The trap in this table is byte order: a D3DFMT_A8R8G8B8 pixel is the DWORD
+// 0xAARRGGBB, whose bytes little-endian run B,G,R,A -- so it is
+// VK_FORMAT_B8G8R8A8_UNORM, not R8G8B8A8. Backwards, it swaps red and blue in
+// every surface in the client, which looks like an art bug.
 // ===========================================================================================
 
 VkFormat NatConvertFormat_OAPI_to_VK(DWORD Format)
@@ -134,7 +106,7 @@ DWORD NatConvertFormat_VK_to_OAPI(VkFormat Format)
 	if (Format == VK_FORMAT_R16G16B16A16_SFLOAT) return Out | OAPISURFACE_PF_F16RGBA;
 	// X8R8G8B8 and A8R8G8B8 are the same Vulkan format; this reports the
 	// alpha-bearing one, and the caller's OAPISURFACE_NOALPHA flag says
-	// whether that alpha means anything. See VulkanSurface.h.
+	// whether that alpha means anything.
 	if (Format == VK_FORMAT_B8G8R8A8_UNORM) return Out | OAPISURFACE_PF_ARGB;
 	if (Format == VK_FORMAT_BC2_UNORM_BLOCK) return Out | OAPISURFACE_PF_DXT3;
 	if (Format == VK_FORMAT_BC3_UNORM_BLOCK) return Out | OAPISURFACE_PF_DXT5;
@@ -145,15 +117,10 @@ DWORD NatConvertFormat_VK_to_OAPI(VkFormat Format)
 // ===========================================================================================
 // DDS
 //
-// The reference never parsed DDS itself except in LoadPlanetTextures, where it
-// had to walk a file of several images and therefore had to know how long each
-// one was -- and it declared its own DDSURFACEDESC2_x64 for exactly that,
-// because the SDK struct changes size between 32- and 64-bit builds.
-//
-// This describes the DDS FILE FORMAT instead, whose field offsets are fixed by
-// the format and not by any SDK. The fields below are the ones the reference
-// reads: dwFlags, dwHeight, dwWidth, dwPitchOrLinearSize, dwMipMapCount, and
-// out of the pixel format the FourCC and dwRGBBitCount.
+// The reference parsed DDS only in LoadPlanetTextures, where it had to walk a
+// file of several images, and declared its own DDSURFACEDESC2_x64 because the
+// SDK struct changes size between 32- and 64-bit builds. This describes the DDS
+// FILE FORMAT instead, whose field offsets are fixed by the format.
 // ===========================================================================================
 
 #define DDSD_PITCH			0x00000008
@@ -176,13 +143,10 @@ typedef struct {
 static_assert(sizeof(NatDDSHeader) == 124, "DDS header is 124 bytes by the file format");
 
 
-// Is this header D3DFMT_A4R4G4B4 or D3DFMT_X4R4G4B4? Declared here because
-// NatDDSFormat asks the question and the loader asks it again -- the bytes on
-// disk are two per texel where the format NatDDSFormat reports declares four,
-// so every length and every copy has to know, exactly as for 24-bit.
-//
-// X4R4G4B4 is the same layout with no alpha mask; the reference sends it to
-// X8R8G8B8, so the widening loop writes 255 when dwABitMask is 0.
+// Is this header D3DFMT_A4R4G4B4 or D3DFMT_X4R4G4B4? The bytes on disk are two
+// per texel where the format NatDDSFormat reports declares four, so every
+// length and every copy has to know. X4R4G4B4 is the same layout with no alpha
+// mask, so the widening loop writes 255 when dwABitMask is 0.
 static bool NatDDSIs4444(const NatDDSHeader *h)
 {
 	return !(h->ddspf.dwFlags & DDPF_FOURCC)
@@ -203,61 +167,35 @@ static VkFormat NatDDSFormat(const NatDDSHeader *h)
 		return VK_FORMAT_UNDEFINED;
 	}
 	if (h->ddspf.dwRGBBitCount == 32) return VK_FORMAT_B8G8R8A8_UNORM;
-	// 24-BIT UNCOMPRESSED, WHICH ORBITER SHIPS AND THIS DID NOT DECODE.
-	//
-	// D3DFMT_R8G8B8 is a valid DDS pixel format and four of the textures in
-	// the stock scenarios use it (512x512 and 1024x1024, flags=DDPF_RGB,
-	// bits=24, Rmask=00FF0000 Gmask=0000FF00 Bmask=000000FF). D3DX loaded
-	// them by EXPANDING to X8R8G8B8 -- Direct3D 9 could not sample a 24-bit
-	// surface either -- and returning that.
-	//
-	// Vulkan is in the same position: VK_FORMAT_B8G8R8_UNORM exists but is
-	// not required to be sampleable and is unsupported on this driver, so the
-	// answer is the same one D3DX gave. The format reported here is the
-	// 32-bit one and the loader below widens each row, three bytes to four,
-	// alpha 255. Reported as "unsupported" it silently became the white
-	// fallback instead.
+	// 24-bit uncompressed, which Orbiter ships. D3DFMT_R8G8B8 is a valid DDS
+	// pixel format and four stock textures use it; D3DX loaded them by
+	// expanding to X8R8G8B8, Direct3D 9 not being able to sample a 24-bit
+	// surface either. VK_FORMAT_B8G8R8_UNORM exists but is not required to be
+	// sampleable and is unsupported on this driver, so the answer is D3DX's:
+	// report the 32-bit format and let the loader widen each row, three bytes
+	// to four, alpha 255. Reported as "unsupported" it became the white
+	// fallback instead, silently.
 	if (h->ddspf.dwRGBBitCount == 24) return VK_FORMAT_B8G8R8A8_UNORM;
 
-	// 16-BIT UNCOMPRESSED IS NOT ONE FORMAT, AND THIS TREATED IT AS R5G6B5.
-	//
-	// The line here used to be
-	//
-	//     if (h->ddspf.dwRGBBitCount == 16) return VK_FORMAT_R5G6B5_UNORM_PACK16;
-	//
-	// with no look at the channel masks. Every 16-bit DDS this installation
-	// ships is D3DFMT_A4R4G4B4 (Rmask=00000F00 Gmask=000000F0 Bmask=0000000F
-	// Amask=0000F000) -- fourteen files, counted, and not one R5G6B5 among
-	// them: Cockpit\hud*.dds, Cockpit\Glasspit*.dds, Common\adiball_*.dds,
-	// font1tex.dds, main_menu*.dds, ShuttleA\panel_el.dds. Handing those
-	// bytes to the sampler as R5G6B5 reinterprets the texel: the alpha nibble
-	// lands in the top five bits and becomes RED, and the alpha channel is
-	// gone. Measured on Cockpit\hud.dds, whose every texel is R=5 G=E B=5
-	// with the shape carried entirely in alpha, so the word is 0x?5E5:
+	// 16-bit uncompressed is not one format, and this file's first attempt
+	// treated it as R5G6B5 with no look at the channel masks. Every 16-bit DDS
+	// this installation ships is D3DFMT_A4R4G4B4 -- fourteen files, counted,
+	// not one R5G6B5 among them. Read as R5G6B5 the alpha nibble lands in the
+	// top five bits and becomes RED, and the alpha channel is gone. Measured on
+	// Cockpit\hud.dds, whose texels are 0x?5E5:
 	//
 	//     alpha nibble 0 -> 0x05E5 -> R5G6B5 (0,190,41)   <- transparent
 	//     alpha nibble F -> 0xF5E5 -> R5G6B5 (247,190,41) <- opaque
 	//
-	// and those are exactly the two colours the 2D-panel and glass-cockpit
-	// HUD came out as -- a solid green bar with an orange edge where the
-	// reference draws a thin line, because nothing was ever transparent.
+	// which are exactly the two colours the 2D-panel and glass-cockpit HUD came
+	// out as, a solid green bar with an orange edge, because nothing was ever
+	// transparent. The reference widens A4R4G4B4 to A8R8G8B8 and X4R4G4B4 to
+	// X8R8G8B8 under "File Formats Not Supported", so that is what this does.
 	//
-	// D3D9Surface.cpp:165 does this under the heading "File Formats Not
-	// Supported":
-	//
-	//     if (info.Format == D3DFMT_A4R4G4B4) Format = D3DFMT_A8R8G8B8;
-	//     if (info.Format == D3DFMT_X4R4G4B4) Format = D3DFMT_X8R8G8B8;
-	//
-	// -- Direct3D 9 could sample A4R4G4B4 and the client asked D3DX to widen
-	// it anyway. So the answer is the reference's answer: report the 32-bit
-	// format and widen each level on the way in, the same shape as the
-	// 24-bit case above. NatDDSIs4444 below is what tells the loader to.
-	//
-	// A genuine R5G6B5 file still maps to R5G6B5. 1-5-5-5 is deliberately NOT
-	// mapped: no file here uses it, the reference left it to Direct3D rather
-	// than converting it, and an untested mapping that silently mis-renders
-	// is the failure being fixed. It falls through to UNDEFINED, which logs
-	// its masks and says so.
+	// 1-5-5-5 is deliberately NOT mapped: no file here uses it, the reference
+	// left it to Direct3D, and an untested mapping that silently mis-renders is
+	// the failure being fixed. It falls through to UNDEFINED, which logs its
+	// masks and says so.
 	if (h->ddspf.dwRGBBitCount == 16) {
 		if (NatDDSIs4444(h)) return VK_FORMAT_B8G8R8A8_UNORM;
 		if (h->ddspf.dwRBitMask == 0xF800 && h->ddspf.dwGBitMask == 0x07E0 &&
@@ -298,18 +236,13 @@ static size_t NatLevelBytes(VkFormat fmt, uint32_t w, uint32_t h)
 
 
 // ===========================================================================================
-// How long is the DDS image that starts here?
-//
-// This is the walk LoadPlanetTextures performs, lifted out so it is written
-// once. The reference's correction is preserved exactly: a header that
-// declares NEITHER DDSD_LINEARSIZE NOR DDSD_PITCH gets a linear size computed
-// from its dimensions, with DXT1 at half a byte per pixel and DXT3/DXT5 at
-// one. That correction exists because such headers are in the wild and the
-// walk cannot proceed without a length.
-//
-// The reference then adds sizeof(Magic) + sizeof(DDSURFACEDESC2_x64) and does
-// NOT add the mip levels -- Orbiter's tile archives store one level per
-// image. That is kept: adding a mip chain here would step past the next image.
+// How long is the DDS image that starts here? The walk LoadPlanetTextures
+// performs, lifted out so it is written once. The reference's correction is
+// preserved exactly: a header declaring neither DDSD_LINEARSIZE nor DDSD_PITCH
+// gets a linear size computed from its dimensions, DXT1 at half a byte per
+// pixel and DXT3/DXT5 at one. It does NOT add the mip levels -- Orbiter's tile
+// archives store one level per image, and adding a chain here would step past
+// the next image.
 // ===========================================================================================
 long NatDDSImageBytes(const void* data, long bytesAvailable)
 {
@@ -343,38 +276,20 @@ long NatDDSImageBytes(const void* data, long bytesAvailable)
 // ===========================================================================================
 // BUILD THE MIP CHAIN THAT D3DX BUILT
 //
-// Tilemgr2.cpp's LoadTextureFile and LoadTextureFromMemory asked D3DX for
+// Tilemgr2.cpp asked D3DXCreateTextureFromFileInMemoryEx for MipLevels = 0 with
+// D3DX_FILTER_BOX, which means "the complete chain, generated where the file
+// does not carry it". Orbiter's tile files never carry it -- every tile is a
+// single-level DXT1 or DXT5 image -- while the tile pool's textures are created
+// with six levels, so with a one-level source five of the six are never written
+// and the sampler reads whatever the pool's last tenant left there. That shows
+// as tile-shaped patches going dark or wrong as the camera moves and the
+// hardware picks a different mip; measured on the Earth cloud layer, where the
+// selected level read as zero alpha over whole tiles and forcing
+// textureLod(..., 0) in CloudPS made the patch vanish.
 //
-//     D3DXCreateTextureFromFileInMemoryEx(..., MipLevels, ..., Filter, ...)
-//     DWORD Mips = 1, Filter = D3DX_FILTER_NONE;
-//     if (bMipmaps) Filter = D3DX_FILTER_BOX, Mips = 0;
-//
-// and Mips = 0 means "the complete chain", GENERATED with a box filter where
-// the file does not carry it. Orbiter's tile files never carry it: every tile
-// in Textures/<planet>/Surf, /Mask and /Cloud, and every image inside the .tree
-// archives, is a single-level DXT1 or DXT5 image -- which is why NatDDSImageBytes
-// above walks from one image to the next without adding a chain.
-//
-// The destination those levels are copied into is not this texture but the tile
-// pool's, and VulkanCatalog.h's Texmgr::Alloc creates that with
-//
-//     UINT Mips = (Config->TileMipmaps == 1) ? 6 : 1;
-//
-// -- six levels, the reference's number. So with a one-level source, five of
-// the six levels of every tile texture in the cache are never written, and what
-// the sampler reads from them is whatever the pool's last tenant left there or
-// nothing at all. That is visible as tile-shaped patches that go dark or wrong
-// as the camera moves and the hardware picks a different mip: measured on the
-// Earth cloud layer, where the selected level read as zero alpha over whole
-// tiles and forcing textureLod(..., 0) in CloudPS made the patch vanish.
-//
-// vkCmdBlitImage, which VulkanDevice::GenerateMipmaps uses, CANNOT write a
-// block-compressed image -- no Vulkan call can -- so the chain for a BC texture
-// has to be built on the CPU: decompress, box-filter, recompress. That is the
-// one thing D3DX did here that has no counterpart, and it is what these three
-// helpers are. The recompressor is stb_dxt, from the stb collection this module
-// already links; the decompressor is the BC block layout, which is a format
-// definition rather than a choice.
+// vkCmdBlitImage cannot write a block-compressed image -- no Vulkan call can --
+// so a BC chain has to be built on the CPU: decompress, box-filter, recompress.
+// That is what these three helpers are.
 // ===========================================================================================
 
 static bool NatIsBC(VkFormat f)
@@ -496,31 +411,24 @@ static void NatBCDecodeLevel(VkFormat fmt, const unsigned char *src, uint32_t w,
 }
 
 
-// BC1's ONE-BIT ALPHA, which stb_dxt cannot write and the water mask is made
+// BC1's one-bit alpha, which stb_dxt cannot write and the water mask is made
 // entirely of.
 //
-// A BC1 block has two 5-6-5 endpoints and picks its meaning from their order:
-// c0 > c1 is four opaque colours, c0 <= c1 is three colours plus TRANSPARENT
-// at index 3. stb_compress_dxt_block(..., alpha = 0, ...) always emits the
-// first form -- it orders the endpoints max-then-min on purpose -- so a chain
-// built with it alone comes out fully opaque.
+// A BC1 block picks its meaning from the order of its two 5-6-5 endpoints:
+// c0 > c1 is four opaque colours, c0 <= c1 is three colours plus TRANSPARENT at
+// index 3. stb_compress_dxt_block always emits the first form -- it orders the
+// endpoints max-then-min on purpose -- so a chain built with it alone comes out
+// fully opaque.
 //
-// That is not a corner case here. Textures/Earth/Mask/**.dds is DXT1 and
-// MEASURED 100% punch-through blocks, every one, with 43% of the texels
-// transparent: the water/land mask IS the one-bit alpha. NewPlanet.glsl reads
-// it as
+// Textures/Earth/Mask/**.dds is DXT1 and measured 100% punch-through blocks,
+// every one, with 43% of the texels transparent: the water/land mask IS the
+// one-bit alpha, and NewPlanet.glsl reads alpha 0 as water. Flatten the mips to
+// opaque and every tile not drawn at level 0 reports its ocean as land, which
+// switches the moment the tile crosses a LOD boundary.
 //
-//     float fMask = (1.0f - cMsk.a);      // Specular Mask
-//
-// so alpha 0 is water and alpha 1 is land. Flatten the mips to opaque and
-// every tile that is not being drawn at level 0 reports its ocean as land:
-// no specular, no fresnel, no blue water brightening, and the land branch of
-// the diffuse term. It switches the moment the tile crosses a LOD boundary,
-// which is what "the coast just turns on like a light switch" is.
-//
-// So the punch-through form is written here. The endpoints come from the
-// OPAQUE texels only -- a transparent texel's colour is not part of the image
-// and letting it drag an endpoint would bleed it into its neighbours.
+// The endpoints come from the OPAQUE texels only -- a transparent texel's
+// colour is not part of the image, and letting it drag an endpoint would bleed
+// it into its neighbours.
 static unsigned NatPack565(int r, int g, int b)
 {
 	return ((unsigned(r) >> 3) << 11) | ((unsigned(g) >> 2) << 5) | (unsigned(b) >> 3);
@@ -759,11 +667,9 @@ VulkanTexture *NatCreateTextureFromDDSInMemory(const void* data, size_t bytes, b
 	const NatDDSHeader *h = (const NatDDSHeader*)(p + 4);
 	VkFormat fmt = NatDDSFormat(h);
 	if (fmt == VK_FORMAT_UNDEFINED) {
-		// SAY WHICH FORMAT, or this is unactionable. D3DX decoded every DDS
-		// variant Orbiter ships and never had to report one; here an
-		// unsupported pixel format means a texture silently becomes the white
-		// fallback, and a glow or mask texture that turns into opaque white
-		// changes what the frame looks like.
+		// Name the format, or this is unactionable: an unsupported pixel format
+		// means a texture silently becomes the white fallback, and a glow or
+		// mask texture that turns opaque white changes the frame.
 		const DWORD fourcc = h->ddspf.dwFourCC;
 		char cc[5] = { char(fourcc & 0xFF), char((fourcc >> 8) & 0xFF),
 					   char((fourcc >> 16) & 0xFF), char((fourcc >> 24) & 0xFF), 0 };
@@ -796,23 +702,17 @@ VulkanTexture *NatCreateTextureFromDDSInMemory(const void* data, size_t bytes, b
 	const char *src = p + 4 + sizeof(NatDDSHeader);
 	size_t left = bytes - (4 + sizeof(NatDDSHeader));
 
-	// A 24-bit file carries three bytes per texel where the format declares
-	// four, so each level is widened into this before upload. D3DX did the
-	// same expansion behind D3DXCreateTextureFromFileInMemoryEx; see
-	// NatDDSFormat.
+	// A 24-bit file carries three bytes per texel, and a 4-4-4-4 file two,
+	// where the format declares four; each level is widened into `wide` before
+	// upload. D3DX did the same expansion behind
+	// D3DXCreateTextureFromFileInMemoryEx. See NatDDSFormat.
 	const bool b24 = NatDDSIs24Bit(h);
-
-	// A 4-4-4-4 file carries two bytes per texel where the format declares
-	// four, and is widened here for the same reason -- see NatDDSFormat.
-	// D3DX did it behind D3DXCreateTextureFromFileInMemoryEx once
-	// D3D9Surface.cpp:165 named A8R8G8B8 as the format to create.
 	const bool b4444 = NatDDSIs4444(h);
 	const bool b4444HasAlpha = b4444 && h->ddspf.dwABitMask == 0xF000;
 	std::vector<unsigned char> wide;
 
-	// The bytes of level 0 as the texture holds them, kept for the chain
-	// builder below. For a widened file that is `wide`, which the next
-	// iteration overwrites, so it is copied; otherwise it is the file itself.
+	// Level 0 as the texture holds it, kept for the chain builder. A widened
+	// file's `wide` is overwritten by the next iteration, so it is copied.
 	const char *level0 = src;
 	std::vector<unsigned char> level0wide;
 	bool bLevel0 = false;
@@ -828,13 +728,10 @@ VulkanTexture *NatCreateTextureFromDDSInMemory(const void* data, size_t bytes, b
 			const unsigned char *s = (const unsigned char *)src;
 			unsigned char *d = wide.data();
 			for (size_t i = 0; i < texels; i++) {
-				// Little-endian on disk, as every other field of this header
-				// is read.
 				const unsigned v = unsigned(s[0]) | (unsigned(s[1]) << 8);
-				// Nibble expansion is (n*255 + 7)/15, NEVER n<<4: a shift
+				// Nibble expansion is (n*255 + 7)/15, never n<<4: a shift
 				// leaves fully opaque at 240, which composites the HUD as a
-				// grey veil instead of leaving it alone. Same rule as the
-				// A4R4G4B4 decode in VulkanImageIO.cpp and BC2's 4-bit alpha.
+				// grey veil instead of leaving it alone.
 				const unsigned b = (v      ) & 0xF;
 				const unsigned g = (v >>  4) & 0xF;
 				const unsigned r = (v >>  8) & 0xF;
@@ -917,11 +814,9 @@ VulkanTexture *NatCreateTextureFromDDSInMemory(const void* data, size_t bytes, b
 // Decode PNG / JPG / BMP into a texture, through stb_image.
 //
 // D3DX chose the surface format from the file: JPG and BMP became X8R8G8B8 and
-// PNG A8R8G8B8, which NatLoadSurface below spells out. stb_image always hands
-// back RGBA8, so the format is B8G8R8A8_UNORM in every case and the channel
-// order is fixed during the copy -- the same swap Src/Orbiter/Linux/WinCodec.cpp
-// makes, and for the same reason: getting it backwards produces a plausible
-// image with red and blue exchanged.
+// PNG A8R8G8B8. stb_image always hands back RGBA8, so the format is
+// B8G8R8A8_UNORM in every case and the channel order is fixed during the copy;
+// backwards, it produces a plausible image with red and blue exchanged.
 // ===========================================================================================
 static VulkanTexture *NatCreateTextureFromImageFile(const char *path, uint32_t *pW = NULL, uint32_t *pH = NULL)
 {
@@ -950,14 +845,9 @@ static VulkanTexture *NatCreateTextureFromImageFile(const char *path, uint32_t *
 
 
 // ===========================================================================================
-// The same decode, from a block of memory instead of a file.
-//
-// Counterpart of D3DXLoadSurfaceFromFileInMemory, which VulkanClient.cpp's
-// SplashScreen() uses to decode the splash image out of the executable's
-// resources -- there is no file to open, the bytes come from
-// FindResource/LoadResource/LockResource. stb_image has the same pair of entry
-// points that D3DX did, so this is NatCreateTextureFromImageFile with
-// stbi_load_from_memory in place of stbi_load and nothing else changed.
+// The same decode, from a block of memory instead of a file. Counterpart of
+// D3DXLoadSurfaceFromFileInMemory, which SplashScreen() uses to decode the
+// splash image out of the executable's resources.
 // ===========================================================================================
 VulkanTexture *NatCreateTextureFromMemory(const void *data, size_t bytes, uint32_t *pW, uint32_t *pH)
 {
@@ -988,8 +878,7 @@ VulkanTexture *NatCreateTextureFromMemory(const void *data, size_t bytes, uint32
 
 
 // Counterpart of D3DXGetImageInfoFromFileA: size and format without decoding
-// the pixels. stb_image_info does it for PNG/JPG/BMP; DDS is read from its
-// header, which is what D3DX did too.
+// the pixels.
 static bool NatImageInfo(const char *path, uint32_t *w, uint32_t *h, VkFormat *fmt, uint32_t *mips)
 {
 	FILE *f = NULL;
@@ -1081,14 +970,10 @@ void NatCheckFlags(DWORD &flags)
 
 
 // ===========================================================================================
-// Was D3DXCreateTextureFromFileExA with D3DFMT_FROM_FILE and Config->TextureMips
-// deciding whether to auto-generate a mip chain.
-//
-// "Autogen" has no counterpart: D3DUSAGE_AUTOGENMIPMAP asked the driver to
-// build the chain, and Vulkan has no such request -- the client blits down the
-// chain itself. So the config decision moves from a creation flag to a call to
-// NatGenerateMipmaps after loading, which is the same two outcomes reached the
-// only way Vulkan offers.
+// Was D3DXCreateTextureFromFileExA with D3DFMT_FROM_FILE. D3DUSAGE_AUTOGENMIPMAP
+// asked the driver to build the chain and Vulkan has no such request, so the
+// Config->TextureMips decision moves from a creation flag to an explicit
+// NatGenerateMipmaps after loading.
 //
 VulkanTexture *NatLoadSpecialTexture(const char* fname, const char* ext)
 {
@@ -1187,10 +1072,9 @@ SURFHANDLE NatLoadSurface(const char* file, DWORD flags, bool bPath)
 
 		VkFormat Format = srcFmt;
 
-		// The reference forces X8R8G8B8/A8R8G8B8 for JPG/PNG/BMP and rejects
-		// A4R4G4B4/X4R4G4B4. Both collapse: stb_image hands back RGBA8
-		// whatever went in, so anything that is not a DDS is already
-		// B8G8R8A8_UNORM by the time it gets here.
+		// The reference's format forcing for JPG/PNG/BMP collapses: stb_image
+		// hands back RGBA8 whatever went in, so anything that is not a DDS is
+		// already B8G8R8A8_UNORM by the time it gets here.
 
 		if (flags & OAPISURFACE_UNCOMPRESS)
 		{
@@ -1203,11 +1087,10 @@ SURFHANDLE NatLoadSurface(const char* file, DWORD flags, bool bPath)
 		VkFormat Fmt = NatConvertFormat_OAPI_to_VK(flags);
 		if (Fmt != VK_FORMAT_UNDEFINED) Format = Fmt;
 
-		// A caller that names OAPISURFACE_PF_XRGB is asking for the format
-		// with NO ALPHA CHANNEL, which Vulkan cannot spell -- see
-		// VulkanTexture::SetAlphaOne and NatCreateSurface. Unlike the created
-		// surfaces, a LOADED one gets its format from the file unless asked
-		// otherwise, so only the explicit request counts here.
+		// OAPISURFACE_PF_XRGB asks for the format with no alpha channel, which
+		// Vulkan cannot spell; see VulkanTexture::SetAlphaOne. A loaded surface
+		// gets its format from the file unless asked otherwise, so only the
+		// explicit request counts here.
 		const bool bNoAlphaChannel =
 			((flags & OAPISURFACE_PF_MASK) == OAPISURFACE_PF_XRGB);
 
@@ -1218,39 +1101,24 @@ SURFHANDLE NatLoadSurface(const char* file, DWORD flags, bool bPath)
 
 		if (flags & OAPISURFACE_TEXTURE)
 		{
-			// THE REFERENCE PASSES Usage INTO THE TEXTURE CREATION, AND THIS
-			// BRANCH WAS DROPPING IT.
+			// The reference hands D3DUSAGE_RENDERTARGET to
+			// D3DXCreateTextureFromFileExA in THIS branch, so a surface asked
+			// for as both a texture and a render target gets a texture that can
+			// be rendered into, and the OAPISURFACE_RENDERTARGET branch below
+			// is reached only by a surface that is not a texture. An earlier
+			// version of this port used the file loader's fixed usage and
+			// ignored the flag.
 			//
-			// D3D9Surface.cpp computes
-			//
-			//     if (flags & OAPISURFACE_RENDERTARGET) Usage = D3DUSAGE_RENDERTARGET;
-			//
-			// and then hands Usage to D3DXCreateTextureFromFileExA in THIS
-			// branch -- so a surface asked for as both a texture and a render
-			// target gets a texture that can be rendered into, and the
-			// OAPISURFACE_RENDERTARGET branch below is only reached by a
-			// surface that is not a texture. The port took the file loader's
-			// fixed usage (SAMPLED|TRANSFER_SRC|TRANSFER_DST) and ignored the
-			// flag entirely.
-			//
-			// Cockpit\hud.dds is exactly that surface -- OAPISURFACE_TEXTURE |
-			// OAPISURFACE_RENDERTARGET | OAPISURFACE_UNCOMPRESS -- and the
-			// consequence was not a missing feature but a hang. HUD::
-			// TexBltString blits each glyph from one part of the HUD texture
-			// onto another part of the SAME surface, clbkScaleBlt's
-			// render-target branch is guarded on
-			//
-			//     td->Usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
-			//
-			// which was false, so every path fell through to
-			// "oapiBlt() Failed (End)" -> BltError -> RuntimeError ->
-			// MessageBoxA, raised from inside the scene callback where it can
-			// never be drawn or dismissed. The client spun there forever with
-			// no window on screen.
+			// Cockpit\hud.dds is exactly that surface, and the consequence was
+			// a hang rather than a missing feature: HUD::TexBltString blits
+			// each glyph from one part of the HUD texture onto another part of
+			// the same surface, clbkScaleBlt's render-target branch is guarded
+			// on VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, and with that false every
+			// path fell through to a MessageBoxA raised from inside the scene
+			// callback, where it can never be drawn or dismissed.
 			//
 			// The decode already happened, so the render-target usage is asked
-			// for here and the decoded image copied in -- the same shape the
-			// OAPISURFACE_RENDERTARGET branch below already uses.
+			// for here and the decoded image copied in.
 			VulkanTexture *pFinal = pSrc;
 
 			if (flags & OAPISURFACE_RENDERTARGET)
@@ -1285,11 +1153,9 @@ SURFHANDLE NatLoadSurface(const char* file, DWORD flags, bool bPath)
 
 		if (flags & OAPISURFACE_RENDERTARGET)
 		{
-			// Was CreateRenderTarget + D3DXLoadSurfaceFromFile: make an empty
-			// render target, then decode the file into it. Here the decode
+			// Was CreateRenderTarget + D3DXLoadSurfaceFromFile. The decode
 			// already happened, so the render-target usage is asked for at
-			// creation and the decoded image is copied in -- which is what
-			// D3DXLoadSurfaceFromFile was doing underneath.
+			// creation and the decoded image copied in.
 			VulkanDevice *pDev = g_client->GetDevice();
 			VulkanTexture *pRT = pDev->CreateTexture(w, h, 1, Format,
 				VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
@@ -1315,20 +1181,15 @@ SURFHANDLE NatLoadSurface(const char* file, DWORD flags, bool bPath)
 
 
 // ===============================================================================================
-// Was three branches on GetType() plus a render-target special case that
-// copied every mip into a D3DPOOL_SYSTEMMEM texture with GetRenderTargetData
-// before saving, because a default-pool resource cannot be read back.
+// Was three branches on GetType() plus a render-target special case that copied
+// every mip into a D3DPOOL_SYSTEMMEM texture before saving, a default-pool
+// resource not being readable back. Vulkan has the same restriction and
+// VulkanDevice::ReadTexture answers it, so what is left here is: get the
+// pixels, encode them.
 //
-// Vulkan has the same restriction and answers it the same way, except that the
-// readback destination is a host-visible BUFFER rather than a second texture,
-// and the copy is vkCmdCopyImageToBuffer. VulkanDevice::ReadTexture hides that,
-// so what is left here is: get the pixels, encode them.
-//
-// D3DXSaveTextureToFileA/D3DXSaveSurfaceToFileA supported DDS, BMP, JPG and
-// PNG. stb_image_write covers BMP, JPG and PNG; DDS OUTPUT IS NOT SUPPORTED and
-// says so rather than writing a file that is not a DDS. Nothing in the client
-// asks for it -- clbkSaveSurfaceToImage is screenshots and gcCore surface
-// dumps -- but the reference accepted ".dds" so the refusal is explicit.
+// D3DXSaveTextureToFileA supported DDS, BMP, JPG and PNG. stb_image_write
+// covers the last three; DDS output is refused explicitly rather than writing a
+// file that is not a DDS.
 //
 bool NatSaveSurface(const char* file, VulkanTexture *pResource)
 {
@@ -1369,10 +1230,9 @@ bool NatSaveSurface(const char* file, VulkanTexture *pResource)
 
 
 // ===============================================================================================
-// Was two creation paths -- D3DXCreateTexture for textures/sysmem/GDI, and
-// CreateRenderTarget for render targets -- because those were different
-// interfaces. One VkImage does both; the difference is the usage flags, so the
-// paths merge and the flag decoding is what is left.
+// Was two creation paths -- D3DXCreateTexture and CreateRenderTarget -- because
+// those were different interfaces. One VkImage does both, so they merge and the
+// flag decoding is what is left.
 //
 SURFHANDLE NatCreateSurface(int width, int height, DWORD flags)
 {
@@ -1408,29 +1268,21 @@ SURFHANDLE NatCreateSurface(int width, int height, DWORD flags)
 		else if (ok & VK_SAMPLE_COUNT_2_BIT) samples = VK_SAMPLE_COUNT_2_BIT;
 	}
 
-	// THE FORMAT CHOICE, AND THE ONE PIECE OF IT VULKAN CANNOT SPELL.
+	// The reference picks A8R8G8B8 when OAPISURFACE_ALPHA is set and X8R8G8B8
+	// otherwise, and X8R8G8B8 is not "A8R8G8B8 with the alpha ignored by
+	// convention" -- it is a format with NO ALPHA CHANNEL, four bytes wide but
+	// read as alpha = 1.0 whatever the fourth byte holds.
 	//
-	// The reference is D3D9Surface.cpp:322 --
+	// Vulkan has no X8 format at all: VK_FORMAT_B8G8R8A8_UNORM is the only
+	// 32-bit BGRA and it means what it says. So the format carries over and the
+	// missing channel is expressed where Vulkan puts that question, a component
+	// swizzle on the view; see VulkanTexture::SetAlphaOne for what leaving it
+	// out cost (the whole virtual-cockpit HUD).
 	//
-	//     if (flags & OAPISURFACE_ALPHA) Format = D3DFMT_A8R8G8B8;
-	//     else                           Format = D3DFMT_X8R8G8B8;
-	//
-	// -- and X8R8G8B8 is not "A8R8G8B8 with the alpha ignored by convention".
-	// It is a format with NO ALPHA CHANNEL: four bytes wide, but a sampler
-	// reading it gets alpha = 1.0 whatever is in the fourth byte.
-	//
-	// VULKAN HAS NO X8 FORMAT AT ALL. VK_FORMAT_B8G8R8A8_UNORM is the only
-	// 32-bit BGRA and it means what it says. So the format carries over and
-	// the MISSING CHANNEL is expressed where Vulkan puts that question -- a
-	// component swizzle on the view. See VulkanTexture::SetAlphaOne for what
-	// leaving it out cost (the whole virtual-cockpit HUD) and why the swizzle
-	// is the exact equivalent rather than an approximation.
-	//
-	// The condition is the reference's, unchanged: an explicit PF_ format
-	// wins, then OAPISURFACE_ALPHA, and otherwise it is X8R8G8B8. BOTH ways
-	// of arriving at X8R8G8B8 count -- OAPISURFACE_PF_XRGB names it outright
-	// (NatConvertFormat_OAPI_to_VK has to answer B8G8R8A8 for it, for the same
-	// reason), and the default takes it when no alpha was asked for.
+	// The condition is the reference's, unchanged: an explicit PF_ format wins,
+	// then OAPISURFACE_ALPHA, otherwise X8R8G8B8. Both ways of arriving at
+	// X8R8G8B8 count -- PF_XRGB names it outright and the default takes it when
+	// no alpha was asked for.
 	VkFormat Format = NatConvertFormat_OAPI_to_VK(flags);
 	const bool bNoAlphaChannel =
 		((flags & OAPISURFACE_PF_MASK) == OAPISURFACE_PF_XRGB) ||
@@ -1465,14 +1317,10 @@ SURFHANDLE NatCreateSurface(int width, int height, DWORD flags)
 
 
 // ===============================================================================================
-// Was GetSurfaceLevel(level) -- a view of one mip of a texture, wrapped as a
-// separate render-target surface.
-//
-// Vulkan expresses that as an image VIEW with baseMipLevel set, so the
-// sublevel shares the parent's image rather than being a distinct object. The
-// SurfNative it returns therefore does NOT own its image, which is what the
-// OAPISURFACE_BACKBUFFER path in the destructor already handles: a surface
-// that did not create its resource does not destroy it.
+// Was GetSurfaceLevel(level). Vulkan expresses one mip of a texture as an image
+// VIEW with baseMipLevel set, so the sublevel shares the parent's image and the
+// SurfNative does NOT own it -- which is what the OAPISURFACE_BACKBUFFER path
+// in the destructor already handles.
 //
 SURFHANDLE NatGetMipSublevel(SURFHANDLE hSrf, int level)
 {
@@ -1496,19 +1344,11 @@ SURFHANDLE NatGetMipSublevel(SURFHANDLE hSrf, int level)
 
 
 // ===============================================================================================
-// Was two branches on GetType(), each creating a DXT texture and filling every
-// mip with D3DXLoadSurfaceFromSurface -- which decoded, rescaled and
-// block-compressed in one call.
-//
-// THERE IS NO COUNTERPART TO THE COMPRESSION. vkCmdBlitImage rescales and
-// converts between uncompressed formats, but no Vulkan call produces BC blocks;
-// block compression is an offline step or a shader. So this reports the
-// request and returns the surface uncompressed rather than returning a texture
-// whose format lies about its contents.
-//
-// Nothing in the client calls it: NatCompressSurface is reachable only through
-// gcCore's CompressSurface, which no shipped module uses. It is converted
-// rather than dropped because it is part of the public gcCore surface.
+// D3DXLoadSurfaceFromSurface decoded, rescaled and block-compressed in one
+// call. The compression has no counterpart -- no Vulkan call produces BC blocks
+// -- so this reports the request and returns the surface uncompressed rather
+// than a texture whose format lies about its contents. Nothing in the client
+// calls it; it is reachable only through gcCore's CompressSurface.
 //
 SURFHANDLE NatCompressSurface(SURFHANDLE hSurface, DWORD flags)
 {
@@ -1521,9 +1361,8 @@ SURFHANDLE NatCompressSurface(SURFHANDLE hSurface, DWORD flags)
 
 // ===============================================================================================
 // Was GetSurfaceLevel(0) then StretchRect down the chain with D3DTEXF_LINEAR.
-// vkCmdBlitImage with VK_FILTER_LINEAR is the same operation; the difference is
-// that each level has to be transitioned to TRANSFER_SRC/TRANSFER_DST around
-// the blit, which VulkanDevice::GenerateMipmaps does.
+// vkCmdBlitImage with VK_FILTER_LINEAR is the same operation, except that each
+// level has to be transitioned around the blit.
 //
 bool NatGenerateMipmaps(SURFHANDLE hSrf)
 {
@@ -1536,11 +1375,9 @@ bool NatGenerateMipmaps(SURFHANDLE hSrf)
 
 // -----------------------------------------------------------------------------------------------
 // Was: read D3DRESOURCETYPE, then GetDesc() for a surface or GetLevelDesc(0) +
-// GetLevelCount() for a texture, and assert on anything else.
-//
-// A VkImage answers none of those questions -- it remembers nothing you can
-// query -- so the description is copied from the texture, which recorded what
-// it was created with. The type branch has nothing to branch on and is gone.
+// GetLevelCount() for a texture. A VkImage answers none of those questions, so
+// the description is copied from the texture, which recorded what it was
+// created with, and the type branch has nothing left to branch on.
 //
 SurfNative::SurfNative(VulkanTexture *pRes, DWORD flags, VulkanTexture *_pDepth) :
 	hOrigin(this),
@@ -1558,9 +1395,8 @@ SurfNative::SurfNative(VulkanTexture *pRes, DWORD flags, VulkanTexture *_pDepth)
 {
 	assert(pRes != NULL);
 	// Compares a pseudo-handle against itself and so never fails, here as on
-	// Windows -- NOT a real thread-identity test. Writing it with thread IDs
-	// would make it fire for every surface the tile loader builds. See the
-	// note at VulkanClient::GetMainThread().
+	// Windows -- not a real thread-identity test. Written with thread IDs it
+	// would fire for every surface the tile loader builds.
 	assert(GetCurrentThread() == g_client->GetMainThread());
 
 	SurfaceCatalog.insert(this);
@@ -1701,12 +1537,11 @@ bool SurfNative::IsPowerOfTwo() const
 
 
 // -----------------------------------------------------------------------------------------------
-// The trailing loop rewrites '/' as '\'. It is kept: the name is used as a
-// TEXTURE PATH by Reload(), Decompress() and DeClone(), all of which hand it to
+// The trailing loop rewrites '/' as '\', and is kept: the name is used as a
+// texture path by Reload(), Decompress() and DeClone(), all of which hand it to
 // g_client->TexturePath(), and the core's Config::ConfigPath translates
-// separators on the way through (the porting notes). Changing the
-// convention here would leave those three lookups asking for a name the core
-// has not seen.
+// separators on the way through. Changing the convention here would leave those
+// three lookups asking for a name the core has not seen.
 //
 void SurfNative::SetName(const char* n)
 {
@@ -1744,9 +1579,8 @@ bool SurfNative::GetSpecs(gcCore::SurfaceSpecs* sp, int size)
 
 
 // -----------------------------------------------------------------------------------------------
-// The D3DUSAGE_AUTOGENMIPMAP branch is gone -- Vulkan has no driver-side mip
-// generation -- so what remains is the explicit chain the else-branch already
-// did, with vkCmdBlitImage in place of StretchRect.
+// The D3DUSAGE_AUTOGENMIPMAP branch is gone; what remains is the explicit
+// chain the else-branch already did.
 //
 bool SurfNative::GenerateMipMaps()
 {
@@ -1758,10 +1592,8 @@ bool SurfNative::GenerateMipMaps()
 
 // -----------------------------------------------------------------------------------------------
 // Was ColorFill on a render target, or a GDI FillRect on a lockable surface.
-//
-// vkCmdClearColorImage is the ColorFill counterpart and takes a rectangle list,
-// so it covers both cases -- including the host-visible one, which no longer
-// needs a GDI round trip to fill a rectangle with a colour.
+// vkCmdClearColorImage takes a rectangle list and so covers both, including the
+// host-visible case, which no longer needs a GDI round trip.
 //
 bool SurfNative::Fill(LPRECT rect, DWORD c)
 {
@@ -1781,21 +1613,16 @@ bool SurfNative::Fill(LPRECT rect, DWORD c)
 // -----------------------------------------------------------------------------------------------
 // GetDC / ReleaseDC
 //
-// IDirect3DSurface9::GetDC HAS NO COUNTERPART, and neither does the problem it
-// created. On Windows it worked only on a lockable surface, which is why the
+// IDirect3DSurface9::GetDC has no counterpart, and neither does the problem it
+// created: on Windows it worked only on a lockable surface, which is why the
 // reference kept a second X8R8G8B8 copy (pDX7) purely so a render target could
 // be given a DC, blitting up before and down after.
 //
-// Src/Orbiter/Linux/Gdi.cpp is a display-list RECORDER: CreateCompatibleDC
-// hands back a DC that accumulates draw commands, and orbiter_ReplayDC turns
-// them into ImGui draw data. It is not attached to an image at all, so it works
-// the same for every surface and there is nothing to blit up or down. The three
-// branches of the Windows GetDC -- capture, GDI surface, render target --
+// Src/Orbiter/Linux/Gdi.cpp is a display-list recorder: CreateCompatibleDC
+// hands back a DC that accumulates draw commands for orbiter_ReplayDC. It is
+// not attached to an image at all, so it works the same for every surface and
+// there is nothing to blit up or down; the three branches of the Windows GetDC
 // collapse into one, and CreateDX7/DX7Sync go with them.
-//
-// What a caller gets is therefore a real DC that records; what reaches the
-// screen is whatever replays it. For the client's main render surface that is
-// the frame pump, via orbiter_SetSceneDC.
 //
 HDC	SurfNative::GetDC()
 {
@@ -1827,9 +1654,8 @@ void SurfNative::ReleaseDC(HDC _hDC)
 
 	assert(_hDC == DC.hDC);
 
-	// Was ReleaseDC on the surface, then DX7Sync(false) to blit the GDI copy
-	// back. Nothing was drawn into an image here, so there is nothing to blit
-	// back; the display list stays on the DC for whoever replays it.
+	// Was ReleaseDC, then DX7Sync(false) to blit the GDI copy back. Nothing was
+	// drawn into an image here, so there is nothing to blit back.
 	DeleteDC(DC.hDC);
 
 	DC.pSrf = NULL;
@@ -1840,13 +1666,10 @@ void SurfNative::ReleaseDC(HDC _hDC)
 // -----------------------------------------------------------------------------------------------
 // Decompress / DeClone / Reload
 //
-// All three do the same thing on Windows: re-read the file from disk into a
-// new texture, in an uncompressed format, and swap it in. They are converted
-// together because the D3DX call at the heart of each -- one
-// D3DXCreateTextureFromFileExA with a forced format -- is now
-// NatCreateTextureFromFile plus, where the file is compressed, a blit through
-// an uncompressed image. VulkanDevice::BlitTexture does the format conversion,
-// which is what D3DX's format override was doing.
+// All three re-read the file from disk into a new uncompressed texture and swap
+// it in. The D3DXCreateTextureFromFileExA with a forced format at the heart of
+// each becomes NatCreateTextureFromFile plus a blit through an uncompressed
+// image, BlitTexture doing the format conversion.
 //
 static VkFormat NatDecompressedFormat(VkFormat f)
 {
@@ -1924,9 +1747,8 @@ bool SurfNative::DeClone()
 	pDevice->BlitTexture(pTex, pSrc);
 	pDevice->DestroyTexture(pSrc);
 
-	// The clone never owned pResource, so it is not destroyed here -- it
-	// belongs to hOrigin. This is the point at which this surface starts
-	// owning one.
+	// The clone never owned pResource -- it belongs to hOrigin -- so it is not
+	// destroyed here. This is where this surface starts owning one.
 	pResource = pTex;
 	hOrigin = this;
 	desc = pTex->Desc();
@@ -2034,16 +1856,13 @@ DWORD SurfNative::StaticFormatSizeInBytes(VkFormat Format, DWORD pixels)
 	if (Format == VK_FORMAT_R8_UNORM) return pixels;					// L8 / A8
 	if (Format == VK_FORMAT_R32G32B32A32_SFLOAT) return pixels * 16;
 	if (Format == VK_FORMAT_R16G16B16A16_SFLOAT) return pixels * 8;
-	// D3DFMT_A4R4G4B4 was in the Windows list at 2 bytes. It has no place in
-	// this client -- NatConvertFormat_OAPI_to_VK never produces it and the
-	// loader rejected it on Windows too -- so it is not carried over.
+	// D3DFMT_A4R4G4B4 was in the Windows list at 2 bytes and is not carried
+	// over: NatConvertFormat_OAPI_to_VK never produces it.
 	return pixels;
 }
 
 
 // -----------------------------------------------------------------------------------------------
-// Was two branches on GetType(): a surface measured its one level, a texture
-// measured its chain plus every additional map. One image type, one path.
 //
 DWORD SurfNative::GetSizeInBytes()
 {
@@ -2092,10 +1911,8 @@ bool NatCreateName(char* out, int mlen, const char* fname, const char* id)
 
 
 // -----------------------------------------------------------------------------------------------
-// Was NatUsage(DWORD) decoding D3DUSAGE_AUTOGENMIPMAP / RENDERTARGET / DYNAMIC.
-// AUTOGENMIPMAP and DYNAMIC have no counterpart -- the first because Vulkan
-// generates no mipmaps, the second because host visibility is a property of
-// the memory, reported by NatMemory below.
+// Was NatUsage(DWORD). D3DUSAGE_AUTOGENMIPMAP and DYNAMIC have no counterpart
+// -- host visibility is a property of the memory, reported by NatMemory below.
 //
 const char* NatUsage(VkImageUsageFlags Usage)
 {
@@ -2113,11 +1930,10 @@ const char* NatUsage(VkImageUsageFlags Usage)
 
 
 // -----------------------------------------------------------------------------------------------
-// Was NatPool(D3DPOOL). D3DPOOL_DEFAULT / SYSTEMMEM / MANAGED described where
-// a resource lived and who could touch it. Vulkan has memory property flags
-// instead, and the only distinction this client makes is whether the CPU can
-// reach it -- MANAGED, the pool that kept a shadow copy and uploaded for you,
-// has no counterpart at all.
+// Was NatPool(D3DPOOL). Vulkan has memory property flags instead, and the only
+// distinction this client makes is whether the CPU can reach the memory.
+// D3DPOOL_MANAGED, which kept a shadow copy and uploaded for you, has no
+// counterpart at all.
 //
 const char* NatMemory(bool bHostVisible)
 {
@@ -2177,8 +1993,6 @@ const char* NatOAPIFormat(DWORD PF)
 
 
 // -----------------------------------------------------------------------------------------------
-// The sType[] table and the GetType() branch are gone: there is one image type
-// and it does not report itself, so the dump prints what the client recorded.
 //
 void NatDumpResource(VulkanTexture *pResource)
 {

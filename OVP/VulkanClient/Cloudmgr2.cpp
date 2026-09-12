@@ -10,47 +10,14 @@
 // LOD (level-of-detail) algorithm for cloud patch resolution.
 // ==============================================================
 //
-// CONVERTED FROM OVP/D3D9Client/Cloudmgr2.cpp, read end to end (301 lines).
+// Quadtree walking, LOD arithmetic and shader parameter marshalling, which
+// converts line for line. The draw is the one place a number changes:
+// DrawIndexedPrimitive's last argument is a PRIMITIVE count (mesh->nf) and
+// vkCmdDrawIndexed's first is an INDEX count, so it becomes mesh->nf*3.
 //
-// Eight functions: three CloudTile members and five explicit specialisations
-// of TileManager2<CloudTile>. Almost all of it is quadtree walking, LOD
-// arithmetic and shader parameter marshalling, and converts line for line.
-//
-// THREE THINGS CHANGE.
-//
-//  1. THE DRAW. SetStreamSource + SetIndices + DrawIndexedPrimitive become
-//     vkCmdBindVertexBuffers + vkCmdBindIndexBuffer + vkCmdDrawIndexed. The
-//     one number that is NOT carried over unchanged is the count:
-//     DrawIndexedPrimitive's last argument is a PRIMITIVE count (mesh->nf,
-//     faces) and vkCmdDrawIndexed's first is an INDEX count, so it is
-//     mesh->nf*3. The stride moves into the vertex declaration, where a
-//     VkVertexInputBindingDescription keeps it, and VK_INDEX_TYPE_UINT16 is
-//     given at the bind rather than being a property of the buffer as
-//     D3DFMT_INDEX16 was.
-//
-//     The topology is NOT set here even though the Windows call names
-//     D3DPT_TRIANGLELIST: ShaderClass builds TRIANGLE_LIST pipelines unless
-//     a caller says otherwise, and the pipeline was already bound by
-//     TileManager2<CloudTile>::Render's Setup() before any tile is drawn.
-//
-//  2. THE TWO TILE PATHS. Both are literal Windows paths -- "%s\\Cloud\\..."
-//     -- built for an fopen. A backslash is a legal filename character on
-//     Linux, so these do not fail as bad paths: they ask for one file
-//     literally named `Earth\Cloud\05\000012\000034.dds`, miss, and report
-//     the same "no tile" a body with no cloud data gives. The symptom would
-//     be a planet whose clouds never sharpen past the base texture. Fifth
-//     and sixth instances of the class recorded in the porting notes
-//     (finding 24).
-//
-//  3. TWO DEAD LOCALS HAD TO GO. `int cfg` in CloudTile::Render and `char
-//     dummy[MAX_PATH]` in InitHasIndividualFiles are written and never read.
-//     MSVC's C4189 is off by default; GCC's -Wunused-variable is inside
-//     -Wall. Both are commented out rather than deleted, so the reference's
-//     shape is still visible at the point where it differed.
-//
-// The types are the usual list: LPDIRECT3DDEVICE9 -> VulkanDevice*,
-// LPDIRECT3DTEXTURE9 -> VulkanTexture*, and SAFE_RELEASE of the preloaded
-// texture becomes VulkanDevice::DestroyTexture -- see the note at that line.
+// The topology is not set here despite the D3DPT_TRIANGLELIST in the Windows
+// call -- ShaderClass builds TRIANGLE_LIST pipelines by default, and the
+// pipeline is bound by TileManager2<CloudTile>::Render before any tile draws.
 // ==============================================================
 
 #include "Cloudmgr2.h"
@@ -92,9 +59,8 @@ void CloudTile::PreLoad()
 
 	if (cmgr->DoLoadIndividualFiles(0)) { // try loading from individual tile file
 		char path[MAX_PATH];
-		// "%s\\Cloud\\%02d\\%06d\\%06d.dds" on Windows. See point 2 in the
-		// file header: this is a filesystem path, not a surface name, and
-		// the separator is '/'.
+		// Was "%s\\Cloud\\...". The backslash spelling opens nothing here and
+		// misses silently; clouds would never sharpen past the base texture.
 		sprintf_s (path, MAX_PATH, "%s/Cloud/%02d/%06d/%06d.dds", mgr->DataRootDir().c_str(), lvl+4, ilat, ilng);
 		LoadTextureFile(path, &pSysSrf);
 	}
@@ -118,10 +84,8 @@ void CloudTile::PreLoad()
 	}
 
 	// Was SAFE_RELEASE(pSysSrf), dropping the last COM reference to the
-	// D3DPOOL_SYSTEMMEM staging copy that CreateTexture has just uploaded
-	// from. The staging texture is a VulkanTexture here and holds a VkImage
-	// and a VkDeviceMemory, neither of which is reference counted -- so the
-	// release is an explicit destroy against the device that made it.
+	// staging copy. A VulkanTexture holds a VkImage and a VkDeviceMemory,
+	// neither reference counted, so the release is an explicit destroy.
 	if (pSysSrf) pDev->DestroyTexture(pSysSrf);
 }
 
@@ -157,9 +121,7 @@ void CloudTile::Render()
 	PlanetShader* pShader = mgr->GetShader();
 	ShaderParams* sp = vPlanet->GetTerrainParams();
 
-	// `int cfg = vPlanet->GetShaderID();` stood here and nothing in this
-	// function reads it. See point 3 in the file header.
-	//int cfg = vPlanet->GetShaderID();
+	//int cfg = vPlanet->GetShaderID();   -- set and never read
 
 	// ---------------------------------------------------------------------
 	// Feed tile specific data to shaders
@@ -186,10 +148,7 @@ void CloudTile::Render()
 
 		pShader->UpdateTextures();
 
-		// SetStreamSource(0, mesh->pVB, 0, sizeof(VERTEX_2TEX)) +
-		// SetIndices(mesh->pIB) + DrawIndexedPrimitive(TRIANGLELIST, 0, 0,
-		// mesh->nv, 0, mesh->nf). See point 1 in the file header: the last
-		// argument is a face count and vkCmdDrawIndexed wants indices.
+		// mesh->nf is a FACE count; vkCmdDrawIndexed wants indices.
 		if (pDev->IsRecording() && mesh && mesh->pVB && mesh->pIB) {
 			VkCommandBuffer cmd = pDev->GetCommandBuffer();
 			VkBuffer vb = mesh->pVB->Buffer();
@@ -254,12 +213,10 @@ void TileManager2<CloudTile>::Render (MATRIX4 &dwmat, bool use_zbuf, const vPlan
 	// Select cloud layer shader
 	pShader = (cfg == PLT_GIANT ? vp->GetShader(PLT_G_CLOUDS) : vp->GetShader(PLT_CLOUDS));
 
-	// SetRenderState(D3DRS_CULLMODE, ...) was issued by
-	// vPlanet::RenderCloudLayer before this call -- D3DCULL_NONE for the
-	// layer seen from below, D3DCULL_CCW for the layer seen from above.
-	// The cull is pipeline state here, so the value travels on the
-	// manager and is applied where the pipeline is built. See
-	// TileManager2Base::cullMode and ShaderClass::SetCullMode.
+	// vPlanet::RenderCloudLayer issued SetRenderState(D3DRS_CULLMODE) before
+	// this call -- NONE from below, CCW from above. Cull is pipeline state
+	// here, so the value travels on the manager to where the pipeline is
+	// built. See TileManager2Base::cullMode.
 	pShader->SetCullMode(cullMode);
 	pShader->Setup(pPatchVertexDecl, false, 1);
 	pShader->ClearTextures();
@@ -305,10 +262,8 @@ void TileManager2<CloudTile>::Render (MATRIX4 &dwmat, bool use_zbuf, const vPlan
 	// Pop previous frustum configuration, must initialize mVP
 	if (!use_zbuf)	vp->GetScatterConst()->mVP = scene->PopCameraFrustumLimits();
 
-	// `sp` is fetched above and, on Windows as here, never read in this
-	// function -- CloudTile::Render fetches it again for each tile. Kept,
-	// and referenced here so that -Wunused-variable does not fire on a
-	// declaration the reference makes.
+	// sp is fetched above and never read here, on Windows as well --
+	// CloudTile::Render fetches its own. Kept, and silenced.
 	(void)sp;
 }
 
@@ -350,11 +305,7 @@ void TileManager2<CloudTile>::InitHasIndividualFiles()
 {
 	hasIndividualFiles = new bool[ntreeMgr]();
 	if (cprm.tileLoadFlags & 0x0001) {
-		// `char dummy[MAX_PATH]` stood beside path and nothing writes or
-		// reads it. See point 3 in the file header.
-		char path[MAX_PATH];
-		// "%s\\Cloud" on Windows -- a directory handed to FileExists. See
-		// point 2 in the file header.
+		char path[MAX_PATH];   // `char dummy[MAX_PATH]` stood beside it, unused
 		sprintf_s(path, MAX_PATH, "%s/Cloud", m_dataRootDir.c_str());
 		hasIndividualFiles[0] = FileExists(path);
 	}

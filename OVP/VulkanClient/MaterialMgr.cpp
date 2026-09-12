@@ -4,45 +4,10 @@
 // Copyright (C) 2013-2026 Jarmo Nikkanen
 // ===========================================================================================
 //
-// CONVERTED FROM OVP/D3D9Client/MaterialMgr.cpp, read end to end (513 lines).
-//
-// A TEXT FILE READER AND WRITER. Not one graphics call in it on either
-// platform: it parses `<config>/GC/<class>.cfg`, fills VulkanMatExt records
-// and hands them to VulkanMesh. The conversion is types and one path:
-//
-//   D3D9Mesh -> VulkanMesh, D3D9MatExt -> VulkanMatExt,
-//   D3D9MATEX_* -> VULKANMATEX_*, D3D9Client -> VulkanClient,
-//   D3DXVECTOR2/3/4 -> FVECTOR2/3/4.
-//
-//   `"%sGC\\%s.cfg"` -> `"%sGC/%s.cfg"`, in all three places it appears.
-//   THIS IS THE FIFTH INSTANCE OF THE DEFECT CLASS in
-//   the porting notes, and the symptom is the usual one: a
-//   backslash is a legal filename character on Linux, so the open does not
-//   fail as a bad path -- it asks for one file named `GC\DeltaGlider.cfg`,
-//   misses, and returns the same "no custom configuration for this vessel"
-//   that a vessel without one gives. Every material override would silently
-//   stop being applied, and SaveConfiguration would write the file to a
-//   name nothing ever reads back.
-//
-// TWO MORE THINGS CHANGE, AND BOTH ARE WORTH READING:
-//
-//   `vessel->GetClassNameA()` becomes `GetClassName()`. There is no
-//   GetClassNameA in VesselAPI.h and there never was: `GetClassName` is a
-//   WIN32 MACRO (windows.h defines it as GetClassNameA under !UNICODE), so
-//   the preprocessor rewrote the CALL SITE before the compiler ever saw the
-//   member name. The shim does not, and should not, define that macro -- so
-//   the call is spelled as the SDK declares it.
-//
-//   `sscanf_s(cbuf, "MESH %s", meshname, 64)` becomes
-//   `sscanf_s(cbuf, "MESH %63s", meshname)`. The shim maps sscanf_s to
-//   sscanf, which HAS NO SUCH ARGUMENT: the 64 would be read as the next
-//   conversion's target, and there is no next conversion, so it is silently
-//   dropped (GCC reports it as -Wformat-extra-args). The width that
-//   protected the 64-byte buffer on Windows therefore protected nothing
-//   here. Moving it into the format string restores exactly that protection
-//   in a form plain sscanf honours -- 63 characters plus the terminator.
-//   This is the same defect as finding 8 with a benign argument instead of
-//   a pointer; there it was a wild store, here it was an unbounded %s.
+// `vessel->GetClassNameA()` becomes `GetClassName()` throughout. There is no
+// GetClassNameA in VesselAPI.h: GetClassName is a windows.h macro expanding to
+// GetClassNameA under !UNICODE, so the preprocessor rewrote the call site
+// before the compiler saw the member name. The shim does not define that macro.
 // ===========================================================================================
 
 
@@ -149,10 +114,9 @@ void MatMgr::ApplyConfiguration(VulkanMesh *pMesh)
 
 		for (auto x : MeshConfig[name].material) 
 		{
-			// `auto rec = x.second;` stood here and was never read -- four
-			// lines below, `auto RecMat = x.second;` makes the same copy and
-			// is the one used. Dropped rather than silenced: it is a copy of
-			// a 124-byte struct that nothing looks at.
+			// `auto rec = x.second;` stood here and was never read; four lines
+			// below, `auto RecMat = x.second;` makes the same copy and is the
+			// one used. Dropped rather than silenced.
 
 			if (x.first >= int(pMesh->GetMaterialCount())) {
 				LogErr("MatMgr::ApplyConfiguration: Matrial Idx out of range [%s.msh]", name);
@@ -225,9 +189,11 @@ bool MatMgr::LoadConfiguration(bool bAppend)
 	AutoFile file;
 
 	if (file.IsInvalid()) {
-		// Was "%sGC\\%s.cfg". See the file header: a backslash here does not
-		// fail as a bad path on Linux, it silently names a file that does not
-		// exist, and every material override stops being applied.
+		// Was "%sGC\\%s.cfg", here and in two more places below. A backslash
+		// is a legal filename character on Linux, so this does not fail as a
+		// bad path -- it asks for a file literally named `GC\DeltaGlider.cfg`
+		// and gets the same "no custom configuration" a vessel without one
+		// gives. Every material override silently stops being applied.
 		sprintf_s(path, 256, "%sGC/%s.cfg", cfgdir, classname);
 		fopen_s(&file.pFile, path, "r");	
 	}
@@ -246,6 +212,11 @@ bool MatMgr::LoadConfiguration(bool bAppend)
 		// --------------------------------------------------------------------------------------------
 		if (!strncmp(cbuf, "MESH", 4)) {
 			mat_idx = -1;
+			// Width moved into the format string: the Windows form was
+			// sscanf_s(..., "MESH %s", meshname, 64), and the shim maps
+			// sscanf_s to plain sscanf, which has no such argument -- the 64
+			// is silently dropped and the %s is unbounded. Same as the SHADER
+			// line below.
 			if (sscanf_s(cbuf, "MESH %63s", meshname)!=1) LogErr("Invalid Line in (%s): %s", path, cbuf);
 			if (strncmp(meshname, "???", 3) == 0) meshname[0] = 0;
 			if (HasMesh(meshname) && bAppend) meshname[0] = 0; // Mesh is loaded already skip all entries related to it.
@@ -330,8 +301,8 @@ bool MatMgr::LoadConfiguration(bool bAppend)
 		if (!strncmp(cbuf, "FRESNEL", 7)) {
 			if (sscanf_s(cbuf, "FRESNEL %f %f %f", &a, &b, &c) != 3) LogErr("Invalid Line in (%s): %s", path, cbuf);
 			if (b < 10.0f) b = 1024.0f;
-			// The b and c are exchanged deliberately, and SaveConfiguration
-			// writes them back the same way round. Carried over verbatim.
+			// b and c exchanged deliberately; SaveConfiguration writes them
+			// back the same way round.
 			Mat.Fresnel = FVECTOR3(a, c, b);
 			Mat.ModFlags |= VULKANMATEX_FRESNEL;
 			continue;

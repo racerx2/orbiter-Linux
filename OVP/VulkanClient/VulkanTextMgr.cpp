@@ -16,9 +16,8 @@
 // IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 // =================================================================================================================================
 //
-// CONVERTED FROM OVP/D3D9Client/D3D9TextMgr.cpp, read end to end (619 lines).
-// See VulkanTextMgr.h for why Init() is the one function here that could not
-// be converted line for line.
+// GDI was the glyph rasteriser on Windows and there is none here, so Init()
+// is the one function that could not be converted line for line.
 // =================================================================================================================================
 
 #include <windows.h>
@@ -36,34 +35,24 @@
 #include <string>
 #include <vector>
 
-// The rasteriser. ImGui's own vendored copy of stb_truetype, already in the
-// tree at build/_deps/stb-src -- the same rasteriser the UI host uses for the
-// Launchpad's text, which is why the two agree about what a face looks like.
-//
-// It replaces nothing that Vulkan provides and nothing that D3D9 provided:
-// GDI was the rasteriser on Windows and there is no GDI here. See the header.
+// The rasteriser: ImGui's vendored stb_truetype, the same one the UI host uses
+// for the Launchpad's text, which is why the two agree about what a face looks
+// like.
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb_truetype.h"
 
-// fontconfig answers "which FILE is 'Courier New'", which is a question Win32
-// never had to ask -- a LOGFONT face name IS the font on Windows. It is the
-// standard Linux answer and every toolkit uses it.
+// fontconfig answers "which FILE is 'Courier New'", a question Win32 never had
+// to ask -- a LOGFONT face name IS the font on Windows.
 #include <fontconfig/fontconfig.h>
-
-// The #if for Visual Studio 2012's missing round() stood here. glibc has had
-// round() since C99.
 
 
 // ---------------------------------------------------------------------------
 // CP1252 -> Unicode for the 32 code points where they differ.
 //
-// The Windows loop walks raw bytes 0..255 and hands each to TextOutA, which
-// interprets them in the ANSI code page -- CP1252 for ANSI_CHARSET. A
-// rasteriser wants Unicode code points, and CP1252 is identity everywhere
-// except 0x80-0x9F, where Latin-1 has unused control codes and CP1252 has the
-// smart quotes, dashes and the euro sign. Those 32 entries are the whole
-// difference and they are written out rather than pulled from iconv, which
-// would be a dependency for one table.
+// The Windows loop hands raw bytes 0..255 to TextOutA, which interprets them
+// in the ANSI code page (CP1252 for ANSI_CHARSET). stb_truetype wants Unicode,
+// and CP1252 is identity everywhere except 0x80-0x9F. Written out rather than
+// pulled from iconv, which would be a dependency for one table.
 // ---------------------------------------------------------------------------
 static const unsigned short kCp1252High[32] = {
 	0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
@@ -80,21 +69,15 @@ static int AnsiToUnicode(int c)
 
 
 // ---------------------------------------------------------------------------
-// Find the file for a LOGFONT.
+// Find the file for a LOGFONT. No Windows counterpart: CreateFont takes a face
+// name and GDI owns the font database behind it.
 //
-// NO WINDOWS COUNTERPART, because Win32 has none to have: CreateFont takes a
-// face name and GDI owns the font database behind it. Here the client has to
-// name a file before it can read a glyph out of it.
-//
-// fontconfig first, because it is the system's own answer and it knows two
-// things a hard-coded list cannot: the user's installed fonts, and the
-// METRIC-COMPATIBLE substitutions -- Liberation Mono for Courier New,
-// Liberation Sans for Arial, Liberation Serif for Times New Roman -- which
-// matter here beyond looks. Orbiter's MFDs lay themselves out from
-// GetTextWidth, so a substitute of the wrong width moves every column.
-//
-// The generic names D3D9PadFont documents ('fixed', 'sans', 'serif') are
-// passed through unchanged: fontconfig understands them as aliases already.
+// fontconfig first, because it knows two things a hard-coded list cannot: the
+// user's installed fonts, and the metric-compatible substitutions (Liberation
+// Mono for Courier New, and so on), which matter beyond looks -- Orbiter's MFDs
+// lay themselves out from GetTextWidth, so a substitute of the wrong width
+// moves every column. The generic names VulkanPadFont documents ('fixed',
+// 'sans', 'serif') pass through unchanged; fontconfig knows them as aliases.
 // ---------------------------------------------------------------------------
 static bool ResolveFontFile(const LOGFONT &lf, char *out, size_t outLen)
 {
@@ -107,9 +90,7 @@ static bool ResolveFontFile(const LOGFONT &lf, char *out, size_t outLen)
 		FcPattern *pat = FcNameParse((const FcChar8 *)face);
 		if (pat) {
 			// FC_WEIGHT is fontconfig's own scale, not GDI's 0..1000 one.
-			// FW_BOLD is 700 and everything at or above it is bold; below it
-			// is regular. Mapping the whole range would claim a precision
-			// neither side has.
+			// Mapping the whole range would claim a precision neither side has.
 			FcPatternAddInteger(pat, FC_WEIGHT,
 								(lf.lfWeight >= FW_BOLD) ? FC_WEIGHT_BOLD : FC_WEIGHT_REGULAR);
 			FcPatternAddInteger(pat, FC_SLANT,
@@ -134,9 +115,9 @@ static bool ResolveFontFile(const LOGFONT &lf, char *out, size_t outLen)
 
 	if (out[0]) return true;
 
-	// The fallback, using the same files UIHost.cpp:3119 already falls back
-	// to, so a machine without a fontconfig database still gets text rather
-	// than an empty atlas.
+	// The fallback, using the same files the UI host falls back to, so a
+	// machine without a fontconfig database still gets text rather than an
+	// empty atlas.
 	static const char *const kFallback[] = {
 		"/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
 		"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
@@ -179,7 +160,6 @@ VulkanText::VulkanText(VulkanDevice *pDevice) :
 	pTex       (NULL),
 	FontData   (NULL)
 {
-	// wfont(NULL) stood in this list. See the header.
 	memset(&tm, 0, sizeof(TEXTMETRIC));
 	memset(&lf, 0, sizeof(LOGFONT));
 	facePath[0] = 0;
@@ -254,15 +234,12 @@ int VulkanText::GetLineSpace()
 // ----------------------------------------------------------------------------------------
 // Init -- build the glyph atlas.
 //
-// THE STRUCTURE IS THE WINDOWS FUNCTION'S, LINE FOR LINE: the same 2048-wide
-// atlas, the same starting height of 32 doubled on overflow, the same `goto
-// restart`, the same x = 5 / y = 5 + h origin, the same x += cx + 4 advance
-// and the same wrap and grow tests. Those numbers decide where every glyph
-// lands and therefore what every UV in FontData is, so changing any of them
-// would change how text looks for no reason.
+// The layout is the Windows function's: the same 2048-wide atlas, starting
+// height of 32 doubled on overflow, the same `goto restart`, x = 5 / y = 5 + h
+// origin, x += cx + 4 advance, and the same wrap and grow tests. Those numbers
+// decide where every glyph lands and so what every UV in FontData is.
 //
-// WHAT IS DIFFERENT IS THE FOUR LINES IN THE MIDDLE. Where the Windows file
-// had
+// What differs is the middle. Where Windows had
 //
 //     pSurf->GetDC(&hDC); SelectObject(hDC, hFont);
 //     TextOutA(hDC, x, y, text, 1);
@@ -270,12 +247,12 @@ int VulkanText::GetLineSpace()
 //
 // -- borrowing GDI as a rasteriser and reading the pixels back out of the
 // surface -- this rasterises the glyph itself and asks the face for the
-// advance. See the header for why: Gdi.cpp is a display-list recorder and
-// there are no pixels in it to read.
+// advance. Gdi.cpp here is a display-list recorder; there are no pixels in it
+// to read.
 //
-// The atlas is built in a plain CPU buffer and uploaded once at the end,
-// which is what CreateTexture(D3DPOOL_SYSTEMMEM) + UpdateTexture did. It has
-// to be: a device-local VkImage cannot be written by the CPU at all.
+// The atlas is built in a CPU buffer and uploaded once at the end, which is
+// what CreateTexture(D3DPOOL_SYSTEMMEM) + UpdateTexture did. It has to be: a
+// device-local VkImage cannot be written by the CPU at all.
 // ----------------------------------------------------------------------------------------
 bool VulkanText::Init(HFONT hFont)
 {
@@ -299,10 +276,8 @@ bool VulkanText::Init(HFONT hFont)
 
 	LogAlw("[NEW FONT] (%31s), Size=%d, Weight=%d Pitch&Family=%x", lf.lfFaceName, lf.lfHeight, lf.lfWeight, lf.lfPitchAndFamily);
 
-	// ---------------------------------------------------------------------
 	// Find and open the face. No Windows counterpart: GDI owned the font
-	// database and CreateFont's face name WAS the font.
-	// ---------------------------------------------------------------------
+	// database and CreateFont's face name was the font.
 	if (!ResolveFontFile(lf, facePath, sizeof(facePath))) {
 		LogErr("No font file found for face \"%s\"", lf.lfFaceName);
 		return false;
@@ -331,25 +306,22 @@ bool VulkanText::Init(HFONT hFont)
 
 	LogAlw("Face file .............. : %s", facePath);
 
-	// THE TWO MEANINGS OF lfHeight, which GDI documents and which have to be
-	// kept apart here because stb_truetype offers a separate call for each:
-	//   height > 0  is the CELL height -- ascent + descent, the line box.
+	// The two meanings of lfHeight, which stb_truetype has a separate call for:
+	//   height > 0  is the cell height (ascent + descent, the line box).
 	//               stbtt_ScaleForPixelHeight scales to exactly that.
-	//   height < 0  is the CHARACTER height -- the em square.
+	//   height < 0  is the character height (the em square).
 	//               stbtt_ScaleForMappingEmToPixels scales to that.
 	// Getting this backwards is a systematic size error of the face's
-	// line-box-to-em ratio, which for Tahoma is 20% -- the same trap
-	// UIHost.cpp's kLineBoxEm note measures from the other direction.
+	// line-box-to-em ratio, 20% for Tahoma.
 	const float scale = (lf.lfHeight < 0)
 		? stbtt_ScaleForMappingEmToPixels(&info, float(-lf.lfHeight))
 		: stbtt_ScaleForPixelHeight(&info, float(lf.lfHeight ? lf.lfHeight : 12));
 
 	// Get Text Metrics information
 	//
-	// Was GetTextMetrics(hDC, &tm) once, guarded by bFirst so the restart
-	// loop did not repeat it. Here the metrics come from the face and not
-	// from a DC, so they are computed once before the loop and the bFirst
-	// flag has nothing left to guard.
+	// Was GetTextMetrics(hDC, &tm), guarded by bFirst so the restart loop did
+	// not repeat it. These come from the face, before the loop, so bFirst has
+	// nothing left to guard.
 	memset((void *)&tm, 0, sizeof(TEXTMETRIC));
 	{
 		int fa = 0, fd = 0, fg = 0;
@@ -362,18 +334,13 @@ bool VulkanText::Init(HFONT hFont)
 		tm.tmExternalLeading = (LONG)ceilf(float(fg) * scale);
 		tm.tmWeight  = lf.lfWeight ? lf.lfWeight : FW_NORMAL;
 
-		// tmItalic, tmCharSet, tmFirstChar and tmLastChar would be set here
-		// on Windows, and are not, because Src/Orbiter/Linux/windows.h's
-		// TEXTMETRIC does not declare them: it carries the fields the tree
-		// reads -- height, ascent, descent, leading, weight and the two
-		// widths -- and nothing in the client has ever read the other four.
-		// Adding them to the shim to write them here and never read them
-		// would be inventing API surface, so they are left out rather than
-		// faked.
+		// tmItalic, tmCharSet, tmFirstChar and tmLastChar are set here on
+		// Windows. The shim's TEXTMETRIC does not declare them and nothing in
+		// the client reads them, so they are left out rather than faked.
 
-		// tmAveCharWidth and tmMaxCharWidth measured over the printable
-		// range, which is what GDI reports and what SetTextShare and the
-		// atlas's wrap test below both use.
+		// tmAveCharWidth and tmMaxCharWidth measured over the printable range,
+		// which is what GDI reports and what SetTextShare and the atlas's wrap
+		// test below both use.
 		long total = 0, count = 0, widest = 0;
 		for (int ch = 32; ch < 127; ch++) {
 			int adv = 0, lsb = 0;
@@ -386,9 +353,8 @@ bool VulkanText::Init(HFONT hFont)
 		tm.tmMaxCharWidth = (LONG)widest;
 	}
 
-	// The CPU-side atlas. One byte per pixel: a coverage value, which is what
-	// the shader wants and all it ever wanted. See the header for why this is
-	// R8 where Windows used R5G6B5.
+	// The CPU-side atlas. One byte per pixel -- a coverage value, which is all
+	// the shader ever wanted -- where Windows used R5G6B5.
 	std::vector<unsigned char> atlas;
 
 	// Draw Charters
@@ -414,15 +380,14 @@ restart:
 		return false;
 	}
 
-	// Was CreateTexture(SYSMEM) + GetSurfaceLevel + GetDC. One allocation,
-	// cleared: a glyph is composited onto black, exactly as SetBkColor(0) and
+	// Was CreateTexture(SYSMEM) + GetSurfaceLevel + GetDC. Cleared, so a glyph
+	// is composited onto black exactly as SetBkColor(0) and
 	// SetBkMode(TRANSPARENT) arranged on Windows.
 	atlas.assign((size_t)tex_w * tex_h, 0);
 
 	// SetTextAlign(TA_BASELINE | TA_LEFT) and SetTextColor(0xFFFFFF) stood
-	// here. Both are properties of the rasterisation below rather than of a
-	// DC: y IS the baseline, and stb_truetype produces coverage, which is
-	// white text by construction.
+	// here; both are properties of the rasterisation below rather than of a DC.
+	// y is the baseline, and stb_truetype produces coverage.
 
 	x = 5;
 	y = 5 + h;
@@ -442,8 +407,6 @@ restart:
 			fnts.cx = (LONG)ceilf(float(adv) * scale);
 			fnts.cy = tm.tmHeight;
 
-			// Rasterise the glyph at the pen position, with y as the
-			// baseline -- which is what TA_BASELINE | TA_LEFT meant.
 			int gx0 = 0, gy0 = 0, gx1 = 0, gy1 = 0;
 			stbtt_GetCodepointBitmapBox(&info, cp, scale, scale, &gx0, &gy0, &gx1, &gy1);
 
@@ -454,10 +417,9 @@ restart:
 				const int px = x + gx0;
 				const int py = y + gy0;		// gy0 is negative above the baseline
 
-				// Clipped rather than assumed to fit: a face with an
-				// overhanging glyph -- an italic 'f', a script capital --
-				// legitimately draws outside its advance, and GDI clipped it
-				// to the surface too.
+				// Clipped rather than assumed to fit: an overhanging glyph --
+				// an italic 'f', a script capital -- legitimately draws
+				// outside its advance, and GDI clipped it to the surface too.
 				if (px >= 0 && py >= 0 && px + gw <= tex_w && py + gh <= tex_h) {
 					stbtt_MakeCodepointBitmap(&info,
 											  &atlas[(size_t)py * tex_w + px],
@@ -490,25 +452,19 @@ restart:
 			}
 
 			if ((y+h) >= tex_h) {
-				// Was ReleaseDC + two Release calls before the retry. There
-				// is one buffer here and assign() below reallocates it.
 				tex_h *= 2;
 				goto restart;
 			}
 		}
 	}
 
-	// DeleteObject(hFont) stood here -- the Windows file consumed the caller's
-	// font handle. That is kept: VulkanPadFont's destructor does not delete
-	// hFont either, for exactly this reason.
+	// This consumes the caller's font handle, as on Windows -- VulkanPadFont's
+	// destructor does not delete hFont for that reason.
 	DeleteObject(hFont);
 
-	// Was CreateTexture(D3DUSAGE_AUTOGENMIPMAP, D3DFMT_R5G6B5, D3DPOOL_DEFAULT)
-	// followed by UpdateTexture and GenerateMipSubLevels.
-	//
-	// The mip chain is asked for by level count rather than by a usage flag,
-	// because Vulkan generates nothing -- GenerateMipmaps below blits down the
-	// chain, which is what GenerateMipSubLevels did.
+	// Was D3DUSAGE_AUTOGENMIPMAP. The mip chain is asked for by level count
+	// rather than by a usage flag, because Vulkan generates nothing --
+	// GenerateMipmaps below blits down the chain by hand.
 	uint32_t mips = 1;
 	{
 		uint32_t dim = (uint32_t)((tex_w > tex_h) ? tex_w : tex_h);
@@ -542,9 +498,8 @@ restart:
 	}
 #endif
 
-	// The D3DXCreateFont block stood here, building the second, WCHAR-only
-	// text system. See the header: the wide path goes through this same atlas
-	// now, so there is nothing to create.
+	// The D3DXCreateFont block stood here, building a second, WCHAR-only text
+	// system. The wide path goes through this same atlas now.
 
 	SetLineSpace(0);
 	SetTextShare(0);
@@ -578,13 +533,10 @@ void VulkanText::SetColor(DWORD c)
 
 // ----------------------------------------------------------------------------------------
 //
-// The Windows definition gave `a` a default argument here, in the .cpp, where
-// the header already declares the parameter without one. MSVC accepts a
-// default added at the definition; the standard permits it only if no earlier
-// declaration in the same scope gave one, and GCC applies that strictly to a
-// member function -- the default must be on the declaration. It is dropped
-// here rather than moved, because nothing in the tree calls the three-argument
-// form: both call sites pass all four.
+// The Windows definition gave `a` a default argument here although the header
+// declares it without one. MSVC allows that; GCC does not for a member
+// function. Dropped rather than moved to the declaration, because both call
+// sites pass all four arguments.
 void VulkanText::SetColor(float r, float g, float b, float a)
 {
 	red=r; green=g; blue=b; alpha=a;
@@ -652,14 +604,10 @@ float VulkanText::Length2(const char *_str, int l)
 	const BYTE *str = (const BYTE *)_str; // Negative index may occur without this
 
 	while ((i<l || l<=0) && str[i]) {
-		// Was `if (str[i] <= 255)`. The cast on the line above is what
-		// actually made this loop safe -- with a plain `const char*` a byte
-		// above 0x7F is NEGATIVE and Data() would index before the array --
-		// and once str is a BYTE* the test can no longer fail for any input.
-		// GCC says so (-Wtype-limits: "comparison is always true due to
-		// limited range of data type"). Dropping a branch that provably never
-		// takes changes no behaviour; keeping it and silencing the warning
-		// would only hide the next one.
+		// Was `if (str[i] <= 255)`, which -Wtype-limits reports as always true
+		// once str is a BYTE*. The cast above is what makes the loop safe --
+		// through a plain const char*, a byte above 0x7F is negative and
+		// Data() would index before the array.
 		len += (Data(str[i])->sp + spacing);
 		i++;
 	}
@@ -678,11 +626,6 @@ float VulkanText::Length(BYTE c)
 }
 
 // ----------------------------------------------------------------------------------------
-//
-// Unchanged apart from the matrix type and the two D3DX calls it made.
-// Everything this function does is feed four vertices and six indices per
-// character straight into the pad's queue, which is arithmetic on the client's
-// own arrays -- there is no device call in it at all, on either platform.
 //
 float VulkanText::PrintSkp(VulkanPad *pSkp, float xpos, float ypos, const char *_str, int len, bool bBox)
 {
@@ -724,9 +667,8 @@ float VulkanText::PrintSkp(VulkanPad *pSkp, float xpos, float ypos, const char *
 		FVECTOR2 scale = FVECTOR2(scaling, scaling);
 		center.x = ceil(center.x);
 		center.y = ceil(center.y);
-		// Was D3DXMatrixTransformation2D. See VulkanUtil.cpp: D3DX was a
-		// Direct3D utility library and Vulkan ships no counterpart, so the
-		// term order is written out there once for the whole client.
+		// Was D3DXMatrixTransformation2D; D3DX has no Vulkan counterpart, so
+		// the term order is written out once in VulkanUtil.cpp.
 		VMAT_Transformation2D(&rot, &center, 0.0f, &scale, &center, -rotation*0.01745329f, NULL);
 
 		memcpy(&mBak, pSkp->WorldMatrix(), sizeof(FMATRIX4));
@@ -801,29 +743,19 @@ float VulkanText::PrintSkp(VulkanPad *pSkp, float xpos, float ypos, const char *
 
 // ----------------------------------------------------------------------------------------
 //
-// THE WIDE-STRING PATH, and it is the one function in this file that is not a
-// transcription of its Windows counterpart.
+// The wide-string path, and the one function here that is not a transcription
+// of its Windows counterpart. That was thirty lines of ID3DXFont -- DrawTextW
+// with DT_CALCRECT to measure, alignment applied to the returned rectangle, a
+// colour channel swap, DrawTextW again to draw, and a pSkp->Flush() before each
+// call because ID3DXFont drew through the device behind the pad's back. With
+// that second text system gone, the wide characters are folded to the atlas's
+// code page and handed to PrintSkp(const char*): same face, same queue, same
+// alignment and colour, and no flush.
 //
-// The Windows version is thirty lines of ID3DXFont: DrawTextW with DT_CALCRECT
-// to measure, the h/v alignment applied to the returned rectangle, a colour
-// channel swap because "pSkp->textcolor.dclr is in the wrong format", and
-// DrawTextW again to draw -- with a pSkp->Flush() before each call, because
-// ID3DXFont draws through the device behind the pad's back and the queue must
-// be empty first.
-//
-// ALL OF IT IS THE COST OF THE SECOND TEXT SYSTEM, and none of it survives the
-// system going away. What is left is what the caller actually asked for: draw
-// this string. So the wide characters are folded to the atlas's code page and
-// handed to PrintSkp(const char*), which is the same rasterised face, the same
-// queue, the same alignment and the same colour -- and no flush, because
-// nothing is drawing behind the pad any more.
-//
-// WHAT IS LOST, said plainly: a code point with no CP1252 spelling. It is
-// drawn as '?' rather than in the face's own glyph, where ID3DXFont would have
-// drawn it. Widening the atlas beyond 256 entries is the fix and is a change
-// to Init's FontData array, not to this function -- the whole class is built
-// on a 256-entry table indexed by byte, including Data(), Length() and
-// GetIndex().
+// What is lost: a code point with no CP1252 spelling draws as '?' rather than
+// in the face's own glyph. The fix is widening the atlas past 256 entries,
+// which is a change to Init's FontData array and to Data()/Length()/GetIndex(),
+// not to this function.
 //
 float VulkanText::PrintSkp (VulkanPad *pSkp, float xpos, float ypos, LPCWSTR str, int len, bool bBox)
 {
@@ -847,7 +779,7 @@ float VulkanText::PrintSkp (VulkanPad *pSkp, float xpos, float ypos, LPCWSTR str
 		}
 		else {
 			// The 32 code points where they differ, searched rather than
-			// tabled backwards: it is 32 entries and this is not a hot path.
+			// reverse-tabled: 32 entries, and not a hot path.
 			for (int k = 0; k < 32; k++) {
 				if (kCp1252High[k] == u) { out = (char)(0x80 + k); break; }
 			}

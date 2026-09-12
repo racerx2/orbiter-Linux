@@ -3,58 +3,24 @@
 // Copyright (C) 2021-2026 Jarmo Nikkanen
 // licensed under LGPL v2
 //
-// LINUX/VULKAN CONVERSION OF OVP/D3D9Client/IProcess.cpp
+// Four things about this file, in the order they appear:
 //
-// The class note is in IProcess.h. What follows is the list of things this
-// FILE does differently, in the order they appear, so a reader comparing the
-// two side by side knows where to look.
-//
-//   1. THE VIEWPORT IS NO LONGER PUSHED. SetupViewPort() still measures the
-//      first render target and builds the same orthographic matrix from it,
-//      because that matrix is what the vertex shader uses. What it does not
-//      do is SetViewport(): VulkanDevice::BeginOffscreen sets the viewport
-//      and the scissor from the extent of the attachments it is given, which
-//      is the same number reached from the same place.
-//
-//   2. EVERY SetRenderState IN Execute() IS PIPELINE STATE. Fill mode, cull
+//   1. Every SetRenderState in Execute() is pipeline state. Fill mode, cull
 //      mode, blending, alpha test, stencil and the four colour write masks
-//      were eleven independent pieces of device state in D3D9 and are fields
-//      of one immutable VkPipeline here. So Execute() does not set them -- it
-//      asks GetPipeline() for the pipeline that HAS them, and the cache key
-//      is exactly the set of them that Execute() varies. The save/restore of
-//      D3DRS_FILLMODE around the call disappears with them: this class's
-//      pipelines are built with VK_POLYGON_MODE_FILL and nothing global
-//      changed, so there is nothing to put back.
+//      were eleven pieces of device state in D3D9 and are fields of one
+//      immutable VkPipeline here, so Execute() asks GetPipeline() for the
+//      pipeline that has them and the cache key is the set it varies.
 //
-//   3. SetRenderTarget BECOMES BeginOffscreen/EndOffscreen. Which also means
-//      the four GetRenderTarget calls and the depth-surface save vanish --
-//      see the note on pRtgBak in the header.
+//   2. SetRenderTarget becomes BeginOffscreen/EndOffscreen, which also takes
+//      the four GetRenderTarget calls and the depth-surface save with it.
 //
-//   4. THE SAMPLER STATES BECOME SAMPLER OBJECTS. The eight SetSamplerState
-//      calls per slot are the fields of one VkSamplerCreateInfo, and the
-//      resulting VkSampler is cached on the slot and rebuilt only when the
-//      IPF_ flags change. The decoding of those flags is carried over line
-//      for line, including the order of the filter tests.
+//   3. The eight SetSamplerState calls per slot are the fields of one
+//      VkSamplerCreateInfo; the resulting VkSampler is cached on the slot and
+//      rebuilt only when the IPF_ flags change.
 //
-//   5. THE TWO DrawUP CALLS COPY THROUGH A SCRATCH BUFFER. There is no
-//      "draw from this pointer in my memory" in Vulkan: a draw sources its
-//      vertices from a VkBuffer bound to the command buffer. That is what the
-//      D3D9 runtime did behind DrawPrimitiveUP anyway.
-//
-//   6. D3DPT_TRIANGLEFAN HAS NO COUNTERPART IN THE CONVERTED PIPELINE. It is
-//      in core Vulkan as VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN, but it is
-//      OPTIONAL -- portability-subset implementations (MoltenVK) and some
-//      drivers refuse it -- and the octagon template is the client's only
-//      user. The ten fan vertices are therefore expanded into eight triangles
-//      by an index list built once in the constructor, which draws exactly
-//      the same eight triangles from exactly the same ten vertices. See
-//      cOcta below.
-//
-//   7. bInScene HAS NO COUNTERPART. It guarded BeginScene/EndScene, which
-//      existed because a D3D9 draw outside a scene was an error. BeginOffscreen
-//      records into a command buffer of its own and EndOffscreen submits and
-//      waits, whether or not the caller is inside the core's render pass, so
-//      the flag has nothing to guard. It stays in the signature because
+//   4. bInScene has nothing left to guard -- BeginOffscreen records into a
+//      command buffer of its own and EndOffscreen submits and waits, inside
+//      the core's render pass or not. It stays in the signature because
 //      gcIPInterface's public API passes it.
 // ===================================================
 
@@ -64,19 +30,16 @@
 #include "VulkanSurface.h"
 #include "VulkanConfig.h"
 #include <sstream>
-// <fstream> was reached through D3D9Util.h on Windows, which included it for
-// its own shader cache. VulkanUtil.h includes it too, but the dependency is
-// named here because this file uses std::ifstream directly.
 #include <fstream>
 
 
 // ================================================================================================
 // The index list that turns the octagon template's ten-vertex TRIANGLEFAN into
-// a TRIANGLELIST. See note 6 in the file header.
-//
-// A fan of N+1 vertices is N-1 triangles (0,1,2), (0,2,3) ... (0,N-1,N). Ten
-// vertices is eight triangles, which is what DrawPrimitiveUP(D3DPT_TRIANGLEFAN,
-// 8, ...) asked for -- its count was PRIMITIVES.
+// a TRIANGLELIST. VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN is in core Vulkan but is
+// OPTIONAL -- portability-subset implementations (MoltenVK) and some drivers
+// refuse it -- and this template is its only user here. A fan of N+1 vertices
+// is N-1 triangles: ten vertices is the same eight triangles
+// DrawPrimitiveUP(D3DPT_TRIANGLEFAN, 8, ...) asked for.
 // ================================================================================================
 static const WORD cOcta[24] = {
 	0, 1, 2,	0, 2, 3,	0, 3, 4,	0, 4, 5,
@@ -87,11 +50,7 @@ static const WORD cOcta[24] = {
 // ================================================================================================
 //
 ImageProcessing::ImageProcessing(VulkanDevice *pDev, const char *_file, const char *_psentry, const char *_ppf, const char *_vsentry)
-	// THE ORDER OF THIS LIST IS THE ORDER OF THE DECLARATIONS, which the
-	// Windows one was free to ignore -- MSVC does not warn, GCC does
-	// (-Wreorder), and a member initialised out of order is initialised in
-	// declaration order anyway, so a list that reads differently from what
-	// runs is a trap. Same members, same values; only the sequence moves.
+	// Reordered to declaration order (-Wreorder). Same members, same values.
 	: mesh_cull(gcIPInterface::ipicull::None)
 	, pMesh(NULL)
 	, pDevice(pDev)
@@ -104,10 +63,9 @@ ImageProcessing::ImageProcessing(VulkanDevice *pDev, const char *_file, const ch
 	, hPos(NULL)
 	, hSiz(NULL)
 	, mesh_tex_idx(-1)
-	// pDepthBak is gone; see the header. Everything from here down is new and
-	// is zeroed for the same reason ShaderClass's had to be: GetPipeline and
-	// CreateResources test these handles, and an indeterminate value there is
-	// a wild handle handed to Vulkan.
+	// Everything below is zeroed because GetPipeline and CreateResources test
+	// these handles, and an indeterminate value is a wild handle handed to
+	// Vulkan.
 	, vkSetLayout(VK_NULL_HANDLE)
 	, vkPipeLayout(VK_NULL_HANDLE)
 	, vkPool(VK_NULL_HANDLE)
@@ -130,12 +88,8 @@ ImageProcessing::ImageProcessing(VulkanDevice *pDev, const char *_file, const ch
 		pTextures[i].smpFlags = 0xFFFFFFFF;		// "no sampler built yet"
 		pTextures[i].binding = 0;
 	}
-	// Was: for (i<4) pRtg[i] = pRtgBak[i] = NULL. There is no pRtgBak.
 	for (int i=0;i<4;i++) pRtg[i] = NULL;
 
-	// "Modules/D3D9Client/IPI.hlsl" becomes "Modules/VulkanClient/IPI.glsl".
-	// The entry point names are unchanged: glslang takes an entry point by
-	// name exactly as D3DXCompileShaderFromFile did.
 	if (_vsentry) {
 		pVertex = CompileVertexShader(pDevice, _file, _vsentry, "IPIVS", NULL, &pVSConst);
 		strcpy_s(vsentry, 32, _vsentry);
@@ -151,9 +105,8 @@ ImageProcessing::ImageProcessing(VulkanDevice *pDev, const char *_file, const ch
 	Shaders[string(_psentry)].pPixel = pPixel;
 	Shaders[string(_psentry)].pPSConst = pPSConst;
 
-	// GetConstantByName drops D3DX's first argument. It was the parent
-	// constant to search inside; NULL meant the top level, which is the only
-	// value the client ever passed.
+	// GetConstantByName drops D3DX's first argument, the parent constant to
+	// search inside; NULL meant the top level, the only value ever passed.
 	if (pVSConst) {
 		hVP = pVSConst->GetConstantByName("mVP");
 		hPos = pVSConst->GetConstantByName("vPos");
@@ -202,9 +155,8 @@ ImageProcessing::ImageProcessing(VulkanDevice *pDev, const char *_file, const ch
 //
 ImageProcessing::~ImageProcessing()
 {
-	// Was SAFE_RELEASE(pVSConst) / SAFE_RELEASE(pVertex). A constant table was
-	// a COM object; a ShaderReflection is a plain heap object. A VkShaderModule
-	// is destroyed against the device that made it.
+	// Was SAFE_RELEASE(pVSConst) / SAFE_RELEASE(pVertex). Nothing here is
+	// reference counted: a VkShaderModule is destroyed against its device.
 	SAFE_DELETE(pVSConst);
 	if (pDevice && pVertex) vkDestroyShaderModule(pDevice->GetDevice(), pVertex, NULL);
 	pVertex = VK_NULL_HANDLE;
@@ -220,10 +172,6 @@ ImageProcessing::~ImageProcessing()
 	pPSConst = NULL;
 	pPixel = VK_NULL_HANDLE;
 
-	// Everything below has no counterpart in the Windows destructor because
-	// none of it existed: D3D9 had no pipeline object, no descriptor set, no
-	// sampler object and no uniform buffer, and DrawPrimitiveUP staged its
-	// vertices where the caller could not see them.
 	if (pDevice) {
 		VkDevice dev = pDevice->GetDevice();
 		for (auto &x : Pipelines) if (x.second) vkDestroyPipeline(dev, x.second, NULL);
@@ -295,30 +243,22 @@ int ImageProcessing::FindDefine(const char *_key)
 
 
 // ================================================================================================
-// ================================================================================================
-// THE SIX FUNCTIONS BELOW ARE NEW. Nothing in the Windows file corresponds to
-// them, because every one of them replaces a piece of D3D9 DEVICE STATE with
-// an object that has to be created, and D3D9 created none of these.
-// ================================================================================================
+// The six functions below are new: each replaces a piece of D3D9 device state
+// with an object that has to be created.
 // ================================================================================================
 
 
 // ================================================================================================
 // The descriptor set layout, the pipeline layout, the two uniform blocks and
-// the descriptor pool. Built once, on the first Execute(), because it needs
-// the reflection of the shaders and the pixel shader may still be swapped by
-// Activate() before then -- but the LAYOUT does not depend on which pixel
-// shader is active, only on how many sampler bindings the widest of them
-// declares, so once is enough.
+// the descriptor pool. Built once, on the first Execute(): the layout does not
+// depend on which pixel shader Activate() has selected, only on how many
+// sampler bindings the widest of them declares.
 //
-// THE BINDING CONVENTION. Two uniform blocks, one per stage, at the bindings
-// the GLSL declares them at; the samplers at the bindings the GLSL declares
-// THEM at. D3D9 needed no convention because the two constant tables wrote
-// into separate register files that could not collide, and a sampler lived in
-// a third. In one Vulkan descriptor set they share a number space, so the
-// numbers are read out of the reflection rather than assumed -- which is also
-// what makes a shader that declares its own layout work without changing this
-// file.
+// D3D9 needed no binding convention -- the two constant tables wrote into
+// separate register files that could not collide, and a sampler lived in a
+// third. In one Vulkan descriptor set they share a number space, so the numbers
+// are read out of the reflection rather than assumed, which also lets a shader
+// declare its own layout without changing this file.
 // ================================================================================================
 bool ImageProcessing::CreateResources()
 {
@@ -327,9 +267,8 @@ bool ImageProcessing::CreateResources()
 
 	VkDevice dev = pDevice->GetDevice();
 
-	// Which binding does each stage's uniform block sit at, and how many
-	// sampler bindings are there in total? A non-sampler Var carries the
-	// binding of the block it belongs to; a sampler Var carries its own.
+	// A non-sampler Var carries the binding of the block it belongs to; a
+	// sampler Var carries its own.
 	uint32_t nSampler = 0;
 	uint32_t maxBinding = 0;
 	bool bVS = false, bPS = false;
@@ -377,8 +316,7 @@ bool ImageProcessing::CreateResources()
 	}
 
 	// One combined image sampler per sampler binding any of the pixel shaders
-	// declares. Bindings the active shader does not use are still written in
-	// BindResources -- see the note there.
+	// declares.
 	for (auto &s : Shaders) {
 		if (!s.second.pPSConst) continue;
 		for (auto &v : s.second.pPSConst->Vars()) {
@@ -415,9 +353,9 @@ bool ImageProcessing::CreateResources()
 		return false;
 	}
 
-	// The pool. 64 sets is the mesh template's group count with room to
-	// spare, and it is reset at the top of every Execute() so the figure is
-	// per call rather than per frame.
+	// The pool. 64 sets is the mesh template's group count with room to spare,
+	// and it is reset at the top of every Execute(), so the figure is per call
+	// rather than per frame.
 	{
 		VkDescriptorPoolSize sizes[2] = {};
 		sizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -437,15 +375,14 @@ bool ImageProcessing::CreateResources()
 		}
 	}
 
-	// The two uniform blocks. A block of zero bytes is not a legal buffer, so
-	// a stage that declares no constants gets none and its binding is absent
-	// from the layout above.
+	// A block of zero bytes is not a legal buffer, so a stage that declares no
+	// constants gets none and its binding is absent from the layout above.
 	if (bVS && pVSConst && pVSConst->BlockSize()) {
 		pVSBuf = pDevice->CreateBuffer(pVSConst->BlockSize(), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, true);
 		if (!pVSBuf) { LogErr("ImageProcessing(%s): VS uniform block failed", file); return false; }
 	}
 	if (bPS) {
-		// Sized for the LARGEST of the compiled pixel shaders, because
+		// Sized for the largest of the compiled pixel shaders, because
 		// Activate() swaps between them and each writes into this one buffer.
 		uint32_t n = 0;
 		for (auto &s : Shaders) {
@@ -458,13 +395,11 @@ bool ImageProcessing::CreateResources()
 		}
 	}
 
-	// The 1x1 white default. EVERY binding in the layout must be written
-	// before the set is used, whether the active shader reads it or not: a
-	// descriptor left unwritten and then read is undefined behaviour and the
-	// validation layer says so. D3D9 had no such rule -- an unset texture
-	// stage sampled white -- so white is what an unset binding gets, which
-	// makes the two behave the same. Same decision, same reason, as
-	// VulkanEffectFile's pWhite.
+	// The 1x1 white default. Every binding in the layout must be written before
+	// the set is used, whether the active shader reads it or not -- an
+	// unwritten descriptor that is then read is undefined behaviour. D3D9 had
+	// no such rule; an unset texture stage sampled white, so white is what an
+	// unset binding gets and the two behave the same.
 	if (nSampler) {
 		pWhite = pDevice->CreateTexture(1, 1, 1, VK_FORMAT_B8G8R8A8_UNORM,
 										VK_IMAGE_USAGE_SAMPLED_BIT |
@@ -477,22 +412,14 @@ bool ImageProcessing::CreateResources()
 		const DWORD white = 0xFFFFFFFF;
 		pDevice->UploadTexture(pWhite, 0, 0, &white, sizeof(white));
 
-		// AND A WHITE CUBE, if any of these shaders declares a samplerCube.
-		// THE THIRD AND LAST OF THE THREE PLACES THAT NEEDED THIS -- the
-		// other two are ShaderClass and VulkanEffectFile, and this one was
-		// left as a bare `pTex = pWhite;` after they were fixed.
-		//
+		// And a white cube, if any of these shaders declares a samplerCube.
 		// Filling a cube-dimensioned binding with a 2D view is not a wrong
-		// colour, it is a GPU fault:
-		//
-		//     VUID-VkDescriptorImageInfo-imageView-07752
-		//     ... the image view type does not match the descriptor's
-		//     declared dimensionality.
-		//
-		// D3D9 needed no such match -- an unset sampler stage sampled white
-		// whatever the shader declared -- so the fallback has to be built per
-		// dimension here. EnvMapBlur and IrradianceInteg are the two
-		// ImageProcessing shaders that read cubes.
+		// colour but a GPU fault (VUID-VkDescriptorImageInfo-imageView-07752:
+		// the view type must match the descriptor's dimensionality). D3D9
+		// needed no such match -- an unset sampler stage sampled white
+		// whatever the shader declared -- so the fallback is built per
+		// dimension. EnvMapBlur and IrradianceInteg are the two shaders here
+		// that read cubes.
 		bool bAnyCube = false;
 		for (auto &s : Shaders) {
 			if (!s.second.pPSConst) continue;
@@ -521,15 +448,11 @@ bool ImageProcessing::CreateResources()
 
 // ================================================================================================
 // Counterpart of ID3DXConstantTable::SetValue, and the destination of every
-// Set* function in this file.
-//
-// D3DX took a device because a D3D9 constant table wrote straight into the
-// device's constant registers. Here the bytes go into a uniform buffer the
-// pipeline reads, so the device is not a parameter -- the buffer is. The
-// bounds test is new for the same reason it is new in
-// ShaderClass::WriteConstants: SetValue silently ignored a write past the end
-// of a constant, whereas overrunning a mapped Vulkan allocation corrupts
-// whatever is next in it.
+// Set* function in this file. D3DX took a device because a constant table
+// wrote into the device's constant registers; the bytes go into a uniform
+// buffer here, so the buffer is the destination. The bounds test is new:
+// SetValue silently ignored a write past the end of a constant, where
+// overrunning a mapped Vulkan allocation corrupts whatever is next in it.
 // ================================================================================================
 bool ImageProcessing::WriteConstants(ShaderReflection *pCB, const ShaderReflection::Var *v,
 									 const void *data, int bytes)
@@ -557,22 +480,18 @@ bool ImageProcessing::WriteConstants(ShaderReflection *pCB, const ShaderReflecti
 
 
 // ================================================================================================
-// One slot's VkSampler. This is where the eight SetSamplerState calls that
-// Execute() issued per slot on Windows actually go.
+// One slot's VkSampler -- where the eight SetSamplerState calls Execute()
+// issued per slot on Windows go. The IPF_ decoding keeps the Windows order of
+// the filter tests (LINEAR, then PYRAMIDAL, then GAUSSIAN, each overriding the
+// last), because that order decides the result when a caller passes more than
+// one.
 //
-// The IPF_ decoding below is the Windows loop line for line, including the
-// order of the filter tests -- LINEAR, then PYRAMIDAL, then GAUSSIAN, each
-// overriding the last -- because that order is what decides the result when a
-// caller passes more than one.
+// D3DTEXF_PYRAMIDALQUAD and D3DTEXF_GAUSSIANQUAD have no counterpart; no PC
+// driver ever implemented them, so they select linear here, which is what the
+// D3D9 runtime fell back to.
 //
-// D3DTEXF_PYRAMIDALQUAD and D3DTEXF_GAUSSIANQUAD HAVE NO COUNTERPART. They
-// were D3D9 filter modes no PC driver ever implemented, so they select linear
-// here, which is what the D3D9 runtime fell back to. Same finding as
-// ShaderClass::UpdateTextures.
-//
-// D3DSAMP_MIPFILTER was D3DTEXF_NONE -- "sample level 0 only" -- which is
-// maxLod 0 here, not a mipmapMode. There is no "no mip filter" enum in
-// Vulkan; clamping the LOD range is how the same thing is said.
+// D3DSAMP_MIPFILTER was D3DTEXF_NONE ("sample level 0 only"), which is maxLod 0
+// here, not a mipmapMode -- Vulkan has no "no mip filter" enum.
 // ================================================================================================
 void ImageProcessing::UpdateSampler(int idx)
 {
@@ -624,12 +543,9 @@ void ImageProcessing::UpdateSampler(int idx)
 
 // ================================================================================================
 // Allocate one descriptor set, write the two uniform blocks and every sampler
-// binding into it, and bind it.
-//
-// This is the counterpart of the SetTexture(idx, ...) calls at the end of the
-// Windows Execute() -- and of the two constant tables reaching the device,
-// which they did invisibly at SetValue time. A fresh set per call; see the
-// note on vkPool in the header for why it cannot be one set rewritten.
+// binding into it, and bind it. Counterpart of the SetTexture(idx, ...) calls
+// at the end of the Windows Execute(), and of the two constant tables reaching
+// the device, which they did invisibly at SetValue time.
 // ================================================================================================
 bool ImageProcessing::BindResources(VkCommandBuffer cmd)
 {
@@ -677,25 +593,18 @@ bool ImageProcessing::BindResources(VkCommandBuffer cmd)
 		writes.push_back(w);
 	}
 
-	// Every sampler binding the LAYOUT declares is written, not merely the
-	// ones the active pixel shader reads. See the note by pWhite in
-	// CreateResources: an unwritten descriptor that is then read is undefined
-	// behaviour, where an unset D3D9 sampler stage simply produced white.
+	// Every sampler binding the layout declares is written, not merely the ones
+	// the active pixel shader reads -- see pWhite in CreateResources. The slot
+	// a binding takes its texture from is the sampler index in the ACTIVE
+	// shader's reflection, which is the number SetTexture() used to index
+	// pTextures; a binding belonging only to some other entry point gets white.
 	//
-	// The slot a binding takes its texture from is the sampler INDEX in the
-	// ACTIVE shader's reflection -- which is the number SetTexture() used to
-	// index pTextures, and the number GetSamplerIndex() answered on Windows.
-	// A binding that belongs only to some other compiled entry point has no
-	// slot here and gets white.
-	//
-	// THE ACTIVE SHADER IS WALKED FIRST, AND IT HAS TO BE. Two entry points in
-	// one file routinely declare the SAME sampler name at the same binding --
+	// The active shader has to be walked first. Two entry points in one file
+	// routinely declare the same sampler name at the same binding --
 	// IrradianceInteg.glsl's PSPreInteg and PSPostBlur both read `tSrc` -- and
-	// the entries are walked out of a std::map, which orders them by name
-	// rather than by which one is active. Filling a binding from whichever
-	// entry point came first alphabetically would hand the active shader
-	// white for a texture the caller had just set. So the active shader
-	// claims its bindings, and the rest fill in what is left.
+	// the entries come out of a std::map, ordered by name rather than by which
+	// is active. Filling a binding from whichever came first alphabetically
+	// would hand the active shader white for a texture the caller had just set.
 	uint32_t nImg = 0;
 	const size_t imgBase = writes.size();
 
@@ -714,13 +623,9 @@ bool ImageProcessing::BindResources(VkCommandBuffer cmd)
 			}
 		}
 		if (!pTex) {
-			// White, through slot 0's sampler -- built here if the slot has
-			// never had one, since its parameters do not matter for a 1x1
-			// image.
-			//
-			// A CUBE-DECLARED BINDING GETS THE WHITE CUBE, not the white 2D:
+			// White, through slot 0's sampler, whose parameters do not matter
+			// for a 1x1 image. A cube-declared binding gets the white cube:
 			// the view type must match the declaration or the draw faults.
-			// See pWhiteCube in CreateResources.
 			pTex = (v.bCube && pWhiteCube) ? pWhiteCube : pWhite;
 			UpdateSampler(0);
 			imgs[nImg].sampler = pTextures[0].pSampler;
@@ -762,8 +667,9 @@ bool ImageProcessing::BindResources(VkCommandBuffer cmd)
 
 // ================================================================================================
 // The scratch buffers the template draws copy into, grown on demand and never
-// shrunk. Identical to ShaderClass::EnsureScratch and VulkanEffectFile's, and
-// deliberately so -- see DrawUP in VulkanUtil.h for the argument.
+// shrunk. There is no "draw from this pointer in my memory" in Vulkan -- a draw
+// sources its vertices from a VkBuffer bound to the command buffer, which is
+// what the D3D9 runtime did behind DrawPrimitiveUP anyway.
 // ================================================================================================
 bool ImageProcessing::EnsureScratch(VkDeviceSize vbytes, VkDeviceSize ibytes)
 {
@@ -784,42 +690,28 @@ bool ImageProcessing::EnsureScratch(VkDeviceSize vbytes, VkDeviceSize ibytes)
 
 
 // ================================================================================================
-// Build the VkPipeline for one Execute(). This is where the fifteen
-// SetRenderState / SetVertexShader / SetPixelShader / SetVertexDeclaration
-// calls at the top of the Windows Execute() end up, each one now a field set
-// once and immutable afterwards:
+// Build the VkPipeline for one Execute() -- where the fifteen SetRenderState /
+// SetShader / SetVertexDeclaration calls at the top of the Windows Execute()
+// end up. Two of them have no direct counterpart:
 //
-//   SetVertexShader / SetPixelShader        pStages[0] / pStages[1]
-//   SetVertexDeclaration(pPosTexDecl)       pVertexInputState, from pDecl
-//   D3DRS_FILLMODE   = D3DFILL_SOLID        polygonMode = FILL
-//   D3DRS_CULLMODE   = D3DCULL_NONE / CCW   cullMode + frontFace; see below
-//   D3DRS_ALPHABLENDENABLE (blendop != 0)   blendEnable
-//   D3DRS_BLENDOP/SRCBLEND/DESTBLEND        colorBlendOp / src / dst
-//   D3DRS_ALPHATESTENABLE = false           no counterpart -- the alpha test
-//                                           was removed from the API after
-//                                           D3D9; a shader discards instead
-//   D3DRS_STENCILENABLE = false             stencilTestEnable
-//   D3DRS_COLORWRITEENABLE = 0xF            colorWriteMask, all four channels
-//   D3DRS_COLORWRITEENABLE1/2/3 = 0xF       the same mask on attachments 1..3,
-//                                           which is why the attachment array
-//                                           below is filled rather than one
-//                                           state being set four times
-//   D3DRS_ZENABLE / ZWRITEENABLE            depthTestEnable / depthWriteEnable
+//   D3DRS_ALPHATESTENABLE       the alpha test was removed from the API after
+//                               D3D9; a shader discards instead
+//   D3DRS_COLORWRITEENABLE1/2/3 per-attachment here, which is why the
+//                               attachment array below is filled rather than
+//                               one state being set four times
 //
-// D3DCULL_CW AND D3DCULL_CCW ARE THE SAME VULKAN CULL MODE. Both are
-// VK_CULL_MODE_BACK_BIT and differ only in frontFace, because "cull the
+// D3DCULL_CW and D3DCULL_CCW are the same Vulkan cull mode: both are
+// VK_CULL_MODE_BACK_BIT, differing only in frontFace, because "cull the
 // clockwise triangles" and "cull the counter-clockwise ones" are one cull with
-// opposite ideas of which winding faces front. Same table as ShaderClass's
-// GetPipeline and VulkanEffect.cpp's.
+// opposite ideas of which winding faces front.
 // ================================================================================================
 VkPipeline ImageProcessing::GetPipeline(DWORD blendop, VkPrimitiveTopology topo, bool bCull,
 										bool bDepth, const VertexDecl *pDecl)
 {
-	// The render pass joins the key, and it is read once here so that the key
-	// and pi.renderPass below cannot disagree. See VulkanFrame.h: a pipeline
-	// may be bound only in a render pass COMPATIBLE with the one it was built
-	// against, and this class draws into a different set of attachments on
-	// nearly every call.
+	// The render pass joins the key, read once here so the key and
+	// pi.renderPass below cannot disagree: a pipeline may be bound only in a
+	// render pass compatible with the one it was built against, and this class
+	// draws into a different set of attachments on nearly every call.
 	VkRenderPass pass = pDevice ? pDevice->GetRenderPass() : VK_NULL_HANDLE;
 
 	PipeKey key = { blendop, topo, bCull, bDepth, pDecl, pass, pPixel };
@@ -832,9 +724,9 @@ VkPipeline ImageProcessing::GetPipeline(DWORD blendop, VkPrimitiveTopology topo,
 	stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 	stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
 	stages[0].module = pVertex;
-	// The SPIR-V entry point name, which is the one glslang was given. Same
-	// two names D3DXCompileShaderFromFile took; they simply have to survive
-	// as far as the pipeline here. See vsentry in the header.
+	// The SPIR-V entry point name, the one glslang was given -- the same name
+	// D3DXCompileShaderFromFile took, which simply has to survive as far as
+	// the pipeline here.
 	stages[0].pName = vsentry;
 	stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 	stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -899,13 +791,11 @@ VkPipeline ImageProcessing::GetPipeline(DWORD blendop, VkPrimitiveTopology topo,
 	cb.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
 	cb.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
 
-	// The Windows code sets the blend equation only for blendop == 1; any
-	// other non-zero value enabled blending and left whatever equation the
-	// device happened to carry. That is not expressible here -- a pipeline has
-	// no "leave it as it was" -- and it was never a deliberate mode: the only
-	// callers pass 0 or 1. So blendop 1 gets its stated equation and any other
-	// non-zero value gets the same one, which is what a freshly reset D3D9
-	// device would have given it.
+	// The Windows code sets the blend equation only for blendop == 1; any other
+	// non-zero value enabled blending and left whatever equation the device
+	// happened to carry. A pipeline has no "leave it as it was", and the only
+	// callers pass 0 or 1, so any non-zero value gets blendop 1's equation --
+	// what a freshly reset D3D9 device would have given it.
 	if (blendop != 0) {			// D3DBLENDOP_ADD, SRCALPHA, INVSRCALPHA
 		cb.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
 		cb.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
@@ -915,8 +805,8 @@ VkPipeline ImageProcessing::GetPipeline(DWORD blendop, VkPrimitiveTopology topo,
 		cb.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
 	}
 
-	// ONE ATTACHMENT STATE PER COLOUR ATTACHMENT -- a Vulkan requirement with
-	// no D3D9 counterpart, and the place D3DRS_COLORWRITEENABLE1/2/3 land.
+	// One attachment state per colour attachment: a Vulkan requirement, and
+	// where D3DRS_COLORWRITEENABLE1/2/3 land.
 	VkPipelineColorBlendAttachmentState cbs[8];
 	uint32_t nCb = pDevice->GetRenderPassColourCount();
 	if (nCb > ARRAYSIZE(cbs)) nCb = ARRAYSIZE(cbs);
@@ -969,8 +859,8 @@ bool ImageProcessing::SetupViewPort()
 	// Check that the first render target is valid
 	//
 	// pRtg[0]->GetDesc(&desc) becomes desc = pRtg[0]->Desc(). A D3D9 surface
-	// answered questions about itself; a VkImage answers none, which is why
-	// VulkanTexture records what it was asked for. See VulkanTypes.h.
+	// answered questions about itself; a VkImage answers none, so VulkanTexture
+	// records what it was asked for.
 	if (pRtg[0]) desc = pRtg[0]->Desc();
 	else {
 		LogErr("ImageProcessing(%s): No render target is set", _PTR(this));
@@ -994,20 +884,16 @@ bool ImageProcessing::SetupViewPort()
 
 	// Setup view-projection matrix and viewport
 	//
-	// D3DXMatrixOrthoOffCenterLH becomes VMAT_OrthoOffCenterLH -- the same
-	// matrix, written out in VulkanUtil.cpp from the D3DX documentation's own
-	// definition, because D3DX is a Direct3D utility library with no Vulkan
-	// counterpart. The DEPTH RANGE needs no adjustment: D3D9 clip space is
-	// 0 <= z <= w and so is Vulkan's. It is OpenGL, with -w <= z <= w, that
-	// would have needed a different matrix. Same finding, argued at length,
-	// in VulkanPad.cpp's SetViewMode.
+	// D3DXMatrixOrthoOffCenterLH becomes VMAT_OrthoOffCenterLH, written out in
+	// VulkanUtil.cpp from the D3DX documentation's own definition. The depth
+	// range needs no adjustment: D3D9 clip space is 0 <= z <= w and so is
+	// Vulkan's. It is OpenGL, with -w <= z <= w, that would have needed a
+	// different matrix.
 	VMAT_OrthoOffCenterLH(&mVP, 0.0f, (float)desc.Width, (float)desc.Height, 0.0f, 0.0f, 1.0f);
 
-	// The viewport is still computed here and from the same numbers, but it
-	// is NOT pushed: VulkanDevice::BeginOffscreen sets the viewport and the
-	// scissor from the extent of the attachments it is handed, which is this
-	// same rectangle reached from the same place. So SetViewport() has no
-	// call here -- see note 1 in the file header.
+	// The viewport is computed here from the same numbers but is NOT pushed:
+	// BeginOffscreen sets the viewport and scissor from the extent of the
+	// attachments it is handed, which is this same rectangle.
 	iVP.x = 0.0f;
 	iVP.y = 0.0f;
 	iVP.width  = (float)desc.Width;
@@ -1016,10 +902,7 @@ bool ImageProcessing::SetupViewPort()
 	iVP.maxDepth = 1.0f;
 
 	// pVSConst->SetMatrix/SetVector(pDevice, handle, value) becomes
-	// WriteConstants(table, handle, bytes). D3DX took the device because a
-	// constant table wrote into the device's registers; the bytes go into a
-	// uniform buffer here, so the buffer is the destination and the device is
-	// not a parameter.
+	// WriteConstants(table, handle, bytes); see WriteConstants above.
 	if (!WriteConstants(pVSConst, hVP, &mVP, sizeof(FMATRIX4))) return false;
 	FVECTOR4 vSize(float(desc.Width), float(desc.Height),
 				   1.0f/float(desc.Width), 1.0f/float(desc.Height));
@@ -1052,9 +935,8 @@ void ImageProcessing::SetMesh(const MESHHANDLE hMesh, const char *tex, gcIPInter
 			return;
 		}
 		mesh_tex_idx = pPSConst->GetSamplerIndex(hVar);
-		// The slot also has to remember which BINDING it feeds; on Windows the
-		// sampler index WAS the device slot, so one number answered both
-		// questions. See the note on pTextures::binding in the header.
+		// The slot also has to remember which binding it feeds; on Windows the
+		// sampler index WAS the device slot, so one number answered both.
 		if (mesh_tex_idx >= 0 && mesh_tex_idx < int(ARRAYSIZE(pTextures)))
 			pTextures[mesh_tex_idx].binding = hVar->binding;
 	}
@@ -1083,9 +965,7 @@ bool ImageProcessing::Execute(const char *shader, bool bInScene, DWORD blendop)
 //
 bool ImageProcessing::Execute(DWORD blendop, bool bInScene, gcIPInterface::ipitemplate mode, int grp)
 {
-	// bInScene has no counterpart; see note 7 in the file header. The
-	// parameter stays because gcIPInterface passes it.
-	(void)bInScene;
+	(void)bInScene;		// nothing left to guard; see the file header
 
 	if (!IsOK()) return false;
 	if (!CreateResources()) return false;
@@ -1093,13 +973,10 @@ bool ImageProcessing::Execute(DWORD blendop, bool bInScene, gcIPInterface::ipite
 
 	// Set device state -------------------------------------------------------
 	//
-	// EVERY LINE OF THE WINDOWS BLOCK THAT STOOD HERE IS PIPELINE STATE. The
-	// two SetShader calls, SetVertexDeclaration and the eleven
-	// SetRenderState calls are fields of the VkPipeline GetPipeline() builds,
-	// listed one by one in the note above it. The save and restore of
-	// D3DRS_FILLMODE around the call go with them: this class's pipelines are
-	// built with VK_POLYGON_MODE_FILL and nothing global is changed, so there
-	// is nothing to put back.
+	// Every line of the Windows block that stood here is pipeline state and is
+	// now a field of the VkPipeline GetPipeline() builds. The save and restore
+	// of D3DRS_FILLMODE go with them: these pipelines are built with
+	// VK_POLYGON_MODE_FILL and nothing global changes.
 
 	// Define vertices --------------------------------------------------------
 	//
@@ -1115,14 +992,10 @@ bool ImageProcessing::Execute(DWORD blendop, bool bInScene, gcIPInterface::ipite
 	// Set render targets -----------------------------------------------------
 	//
 	// Was four GetRenderTarget/SetRenderTarget pairs plus the three
-	// COLORWRITEENABLE1/2/3 states. All of it becomes the attachment list
-	// BeginOffscreen is handed: the colour write masks are per-attachment
-	// pipeline state now (see GetPipeline), and there is nothing to save --
-	// EndOffscreen restores the frame's command buffer itself.
-	//
-	// The count stops at the first NULL, which is what SetOutput's own
-	// documentation says it means: "After a NULL render target all later
-	// targets are ignored."
+	// COLORWRITEENABLE1/2/3 states, all of it now the attachment list
+	// BeginOffscreen is handed. The count stops at the first NULL, which is
+	// what SetOutput documents: "After a NULL render target all later targets
+	// are ignored."
 	uint32_t nRtg = 0;
 	while (nRtg < 4 && pRtg[nRtg]) nRtg++;
 	if (nRtg == 0) return false;
@@ -1130,16 +1003,15 @@ bool ImageProcessing::Execute(DWORD blendop, bool bInScene, gcIPInterface::ipite
 	// Set Depth-Stencil surface ----------------------------------------------
 	//
 	// The two ZENABLE/ZWRITEENABLE branches become one bool that joins the
-	// pipeline key; the surface itself becomes BeginOffscreen's depth
-	// attachment. pDepthBak has nothing to save into -- see the header.
+	// pipeline key; the surface becomes BeginOffscreen's depth attachment.
 	const bool bDepth = (pDepth != NULL);
 
 	// Set textures and samplers -----------------------------------------------
 	//
 	// Was, per slot: nine SetSamplerState calls decoding the IPF_ flags, then
-	// SetTexture. The decoding is in UpdateSampler() and the binding is in
-	// BindResources(); this loop is what is left of the outer one -- make
-	// sure each occupied slot owns a VkSampler matching its flags.
+	// SetTexture. The decoding is in UpdateSampler() and the binding in
+	// BindResources(); what is left here is making sure each occupied slot owns
+	// a VkSampler matching its flags.
 	for (size_t idx=0;idx<ARRAYSIZE(pTextures);idx++) {
 
 		if (pTextures[idx].hTex==NULL) continue;
@@ -1147,7 +1019,7 @@ bool ImageProcessing::Execute(DWORD blendop, bool bInScene, gcIPInterface::ipite
 		UpdateSampler((int)idx);
 	}
 
-	// A fresh set of descriptor sets for this call; see the note on vkPool.
+	// A fresh set of descriptor sets for this call.
 	vkResetDescriptorPool(pDevice->GetDevice(), vkPool, 0);
 
 	// Execute ----------------------------------------------------------------
@@ -1155,10 +1027,9 @@ bool ImageProcessing::Execute(DWORD blendop, bool bInScene, gcIPInterface::ipite
 	// BeginScene/EndScene become BeginOffscreen/EndOffscreen, which is not the
 	// same pairing spelled differently: BeginScene only said "I am about to
 	// draw", where this builds or fetches a render pass for these attachment
-	// formats, a framebuffer for these exact images, transitions them, and
-	// swaps in a command buffer of its own. EndOffscreen submits and waits,
-	// which is the guarantee EndScene() gave on a render target the next call
-	// sampled.
+	// formats, a framebuffer for these exact images, transitions them and swaps
+	// in a command buffer of its own. EndOffscreen submits and waits, which is
+	// the guarantee EndScene() gave on a target the next call sampled.
 	if (!pDevice->BeginOffscreen(pRtg, nRtg, pDepth)) {
 		LogErr("ImageProcessing(%s): BeginOffscreen failed. Entrypoint[%s]", file, entry);
 		return false;
@@ -1166,26 +1037,22 @@ bool ImageProcessing::Execute(DWORD blendop, bool bInScene, gcIPInterface::ipite
 
 	VkCommandBuffer cmd = pDevice->GetCommandBuffer();
 
-	// THE VIEWPORT, WITH A NEGATIVE HEIGHT, AND IT IS PUSHED AFTER ALL.
+	// The viewport, with a negative height, and pushed after all.
 	//
-	// SetupViewPort builds VMAT_OrthoOffCenterLH(0, W, H, 0, 0, 1) -- the
-	// reference's matrix unchanged -- which sends screen y = 0 to clip +1
-	// because in D3D9 clip +1 is the TOP of the target. In Vulkan clip +1 is
-	// the BOTTOM, so against BeginOffscreen's plain top-left viewport every
-	// image this class draws comes out MIRRORED VERTICALLY, and is then
-	// sampled as though it were not.
+	// SetupViewPort keeps the reference's VMAT_OrthoOffCenterLH(0, W, H, 0, 0,
+	// 1), which sends screen y = 0 to clip +1 because in D3D9 clip +1 is the
+	// TOP of the target. In Vulkan clip +1 is the BOTTOM, so against
+	// BeginOffscreen's plain top-left viewport every image this class draws
+	// comes out mirrored vertically and is then sampled as though it were not.
+	// vPlanet::UpdateScatter builds all seven atmospheric lookup tables through
+	// this path and Scatter.glsl indexes them by altitude on V, so upside down
+	// every lookup returns the value for the opposite altitude.
 	//
-	// That is not a subtle shading difference. vPlanet::UpdateScatter builds
-	// all seven atmospheric lookup tables through this path, and Scatter.glsl
-	// indexes them by altitude on V; upside down, every lookup returns the
-	// value for the opposite altitude.
-	//
-	// The flip is issued HERE rather than in BeginOffscreen because
+	// The flip is issued here rather than in BeginOffscreen because
 	// BeginOffscreen is shared: the sketchpad draws MFD and HUD content into
 	// offscreen surfaces with no projection matrix of its own and is correct
-	// against the plain viewport, so flipping it there turns those upside
-	// down instead. ShaderClass and VulkanEffectFile are indifferent -- both
-	// re-issue their own viewport at bind time.
+	// against the plain viewport, so flipping it there turns those upside down
+	// instead.
 	iVP.y = float(desc.Height);
 	iVP.height = -float(desc.Height);
 	vkCmdSetViewport(cmd, 0, 1, &iVP);
@@ -1219,10 +1086,9 @@ bool ImageProcessing::Execute(DWORD blendop, bool bInScene, gcIPInterface::ipite
 
 	if (mode == gcIPInterface::ipitemplate::Octagon)
 	{
-		// DrawPrimitiveUP(D3DPT_TRIANGLEFAN, 8, pOcta, sizeof(SMVERTEX)) --
-		// eight triangles from ten fan vertices. The fan becomes an indexed
-		// TRIANGLELIST over the same ten vertices; see note 6 in the file
-		// header for why the topology is not carried over literally.
+		// DrawPrimitiveUP(D3DPT_TRIANGLEFAN, 8, pOcta, sizeof(SMVERTEX)). The
+		// fan becomes an indexed TRIANGLELIST over the same ten vertices; see
+		// cOcta above.
 		VkPipeline pipe = GetPipeline(blendop, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
 									  false, bDepth, pPosTexDecl);
 
@@ -1247,12 +1113,9 @@ bool ImageProcessing::Execute(DWORD blendop, bool bInScene, gcIPInterface::ipite
 
 	if (mode == gcIPInterface::ipitemplate::Mesh)
 	{
-		// SetRenderState(D3DRS_CULLMODE, D3DCULL_CCW) becomes the bCull
-		// argument, which is pipeline state; see GetPipeline.
-		//
-		// THE VERTEX DECLARATION CHANGES HERE and it did on Windows too --
+		// The vertex declaration changes here, and it did on Windows too --
 		// silently. SketchMesh renders NTVERTEX, not SMVERTEX, so the
-		// declaration set at the top of the function was wrong for this path
+		// declaration set at the top of the function was wrong for this path,
 		// and D3D9 tolerated it because SetVertexDeclaration was device state
 		// SketchMesh::Init could and did overwrite. Vulkan bakes the layout
 		// into the pipeline, so the right declaration has to be named here.
@@ -1271,8 +1134,8 @@ bool ImageProcessing::Execute(DWORD blendop, bool bInScene, gcIPInterface::ipite
 					SURFHANDLE hTex = pMesh->GetTexture(i);
 					pTextures[mesh_tex_idx].hTex = hTex ? SURFACE(hTex)->GetTexture() : NULL;
 				}
-				// One descriptor set per group, because the texture changes
-				// between them; see the note on vkPool in the header.
+				// One descriptor set per group: the texture changes between
+				// them.
 				if (!BindResources(cmd)) { bOK = false; break; }
 				pMesh->RenderGroup(i);
 			}
@@ -1291,18 +1154,16 @@ bool ImageProcessing::Execute(DWORD blendop, bool bInScene, gcIPInterface::ipite
 
 	// Disconnect render targets ----------------------------------------------
 	//
-	// The two Windows blocks that stood here -- put the depth surface back,
-	// put the four render targets back and release the references
-	// GetRenderTarget added -- have no counterpart: EndOffscreen has just
-	// restored the frame's command buffer, and no reference was taken because
-	// nothing here is reference counted.
+	// The two Windows blocks that stood here -- put the depth surface and the
+	// four render targets back, release the references GetRenderTarget added
+	// -- have no counterpart: EndOffscreen has just restored the frame's
+	// command buffer, and nothing here is reference counted.
 
 	// Disconnect textures -----------------------------------------------------
 	//
 	// Was SetTexture(idx, NULL) for every occupied slot. There is no "unbind a
-	// texture" in Vulkan: a descriptor set is written and a draw either uses
-	// it or does not, and the next Execute() allocates a fresh set. Same
-	// finding as ShaderClass::DetachTextures.
+	// texture" in Vulkan: a descriptor set is written and a draw either uses it
+	// or does not, and the next Execute() allocates a fresh set.
 
 	return bOK;
 }
@@ -1311,17 +1172,13 @@ bool ImageProcessing::Execute(DWORD blendop, bool bInScene, gcIPInterface::ipite
 // ================================================================================================
 // The Set* family.
 //
-// ID3DXConstantTable::SetFloatArray / SetIntArray / SetBoolArray / SetValue
-// all become one WriteConstants, because all four did the same thing: put N
-// bytes at the constant's offset. D3DX needed four because it also converted
-// -- SetBoolArray took a BOOL (32-bit int) array and SetFloatArray a float
-// one, and the table knew which registers to touch. In a uniform block the
+// ID3DXConstantTable::SetFloatArray / SetIntArray / SetBoolArray / SetValue all
+// become one WriteConstants: all four put N bytes at the constant's offset, and
+// D3DX needed four only because it also converted. In a uniform block the
 // layout is the shader's and the bytes are written as given, so the only
-// conversion that survives is the bool one below, which is a real widening
-// from C++ bool to the 32-bit bool of a std140/scalar block.
-//
-// THE COUNT ARGUMENTS ARE GONE FOR THE SAME REASON. bytes>>2 was "how many
-// floats"; WriteConstants takes bytes, which is what the caller already had.
+// conversion that survives is the bool widening below, from C++ bool to the
+// 32-bit bool of a std140/scalar block. The count arguments go for the same
+// reason -- bytes>>2 was "how many floats", and WriteConstants takes bytes.
 // ================================================================================================
 
 
@@ -1370,11 +1227,9 @@ void ImageProcessing::SetBool(const char *var, const bool *val, int bytes)
 		return;
 	}
 
-	// 'bytes' is the COUNT of bools here, not a byte count -- the callers
-	// pass sizeof(bool), which is 1 -- and the widening loop below is the
-	// Windows one unchanged. What changes is the destination: a BOOL array in
-	// a constant register file becomes 32-bit uints in a uniform block, so
-	// the write is count * 4 bytes.
+	// 'bytes' is the COUNT of bools here, not a byte count -- the callers pass
+	// sizeof(bool), which is 1. The destination is 32-bit uints in a uniform
+	// block, so the write is count * 4 bytes.
 	int *data = new int[bytes];
 	for (int i=0;i<bytes;i++) data[i] = val[i];
 
@@ -1429,23 +1284,17 @@ void ImageProcessing::SetBool(const char *var, bool val)
 
 
 // ================================================================================================
-// THE FOUR VS FUNCTIONS BELOW ALL WRITE THROUGH pPSConst ON WINDOWS.
+// Bug fixed from the Windows source: all four VS functions below take the
+// handle from the VERTEX table and write through the PIXEL one --
 //
 //     D3DXHANDLE hVar = pVSConst->GetConstantByName(NULL, var);
 //     if (pPSConst->SetFloatArray(pDevice, hVar, ...) != S_OK) ...
 //
-// The handle comes from the VERTEX table and the write goes through the PIXEL
-// one, in all four, and the error messages say "IPInterface::SetFloat()"
-// rather than SetVSFloat -- so this is one copy-paste slip propagated four
-// times, not a deliberate aliasing. It is the SAME MISTAKE, in the same
-// shape, as the one in ShaderClass::SetPSConstants; see the note there.
-//
-// In D3DX it was survivable: a D3DXHANDLE is an opaque pointer with no idea
-// which table it came from, and SetFloatArray on the wrong table with a
-// foreign handle failed quietly. Here a Var carries the stage it was
-// reflected from and WriteConstants writes into that stage's buffer, so the
-// mistake cannot be spelled -- the handle decides the destination. That is
-// the fix, and it is a correction rather than a translation.
+// -- and their error messages still say "IPInterface::SetFloat()", so it is one
+// copy-paste slip propagated four times. D3DX made it survivable: a D3DXHANDLE
+// carries no idea which table it came from, and the write failed quietly. Here
+// a Var carries the stage it was reflected from and WriteConstants writes into
+// that stage's buffer, so the mistake cannot be spelled.
 // ================================================================================================
 void ImageProcessing::SetVSFloat(const char *var, const void *val, int bytes)
 {
@@ -1545,8 +1394,7 @@ void ImageProcessing::SetTexture(const char *var, SURFHANDLE hTex, DWORD flags)
 
 	pTextures[idx].hTex = SURFACE(hTex)->GetTexture();
 	pTextures[idx].flags = flags;
-	// The binding this slot feeds; see the note on pTextures::binding.
-	pTextures[idx].binding = hVar->binding;
+	pTextures[idx].binding = hVar->binding;		// the binding this slot feeds
 }
 
 
@@ -1583,9 +1431,6 @@ void ImageProcessing::SetOutput(int id, SURFHANDLE hTex)
 	if (id<0) id=0;
 	if (id>3) id=3;
 
-	// GetSurface() still answers "the image this surface renders into", which
-	// is what LPDIRECT3DSURFACE9 was. See VulkanSurface.h on why GetSurface()
-	// and GetTexture() are now the same image.
 	if (hTex) pRtg[id] = SURFACE(hTex)->GetSurface();
 	else 	  pRtg[id] = NULL;
 }
@@ -1630,10 +1475,6 @@ bool ImageProcessing::IsOK()
 // ================================================================================================
 // PUBLIC INTERFACE
 // ================================================================================================
-//
-// Not one line of this block changes. gcIPInterface is the SDK's face on this
-// class, every method forwards, and nothing it names is a Direct3D type.
-//
 
 gcIPInterface::~gcIPInterface()
 {

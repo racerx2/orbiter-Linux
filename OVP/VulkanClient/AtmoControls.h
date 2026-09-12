@@ -4,30 +4,15 @@
 // Dual licensed under GPL v3 and LGPL v3
 // Copyright (C) 2014-2026 Jarmo Nikkanen
 // ==============================================================
-//
-// CONVERTED FROM OVP/D3D9Client/AtmoControls.h. What changed, and why:
-//
-//   1. THE INCLUDES ARE NEW, and that is the whole of the change. The Windows
-//      header includes NOTHING and still names FVECTOR3, HWND, WORD and
-//      string -- it compiles only because every one of its includers happens
-//      to have pulled in <windows.h>, DrawAPI.h and a `using namespace std`
-//      first. That works until a file includes it first, and it is the kind
-//      of thing that turns into a hundred-line error message in an unrelated
-//      file. Spelling out what it uses costs nothing and is not a rewrite.
-//
-//   2. `string` BECAME std::string. The Windows file relies on a `using
-//      namespace std` reaching it from an includer, for the same reason.
-//
-//   3. NOTHING ELSE. This file names no Direct3D type at all -- it is a
-//      parameter block, two small structs and a namespace of functions. HWND,
-//      WORD, INT_PTR and CALLBACK come from the core's Win32 layer in
-//      Src/Orbiter/Linux, which is what runs Orbiter's whole dialog system on
-//      Linux and is not part of this client.
-// ==============================================================
 
 #ifndef __ATMOCONTROLS_H
 #define __ATMOCONTROLS_H
 
+// The D3D9 header included nothing at all, yet named FVECTOR3, HWND, WORD and
+// an unqualified string: it compiled only while every includer happened to
+// pull in <windows.h>, DrawAPI.h and a `using namespace std` first, and broke
+// the moment some file included it first. These three includes make it stand
+// on its own, and string is qualified.
 #include <windows.h>
 #include "DrawAPI.h"
 #include <string>

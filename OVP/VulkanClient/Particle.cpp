@@ -6,49 +6,22 @@
 //				 2011 - 2016 Jarmo Nikkanen (D3D9Client modification)
 // ==============================================================
 //
-// CONVERTED FROM OVP/D3D9Client/Particle.cpp, read end to end (851 lines).
+// The three render functions share the same three changes:
 //
-// Exhaust and re-entry smoke. Three quarters of the file is particle
-// physics -- creation rate, atmospheric slowdown, wind, the ground
-// intersection of a shadow -- and every line of it converts unchanged. The
-// three render functions are where the work is, and they all have the same
-// shape, so the notes are given once here:
+//  1. SetVertexDeclaration moves out of the pass and in front of Begin(): the
+//     vertex layout is baked into the VkPipeline that BeginPass binds. The
+//     topology goes with it, and is set explicitly rather than relied on --
+//     VulkanEffectFile remembers the last topology it was given, and
+//     HazeManager's sky dome sets TRIANGLESTRIP. A triangle list drawn
+//     through a strip pipeline is not an error, just a mess.
 //
-//  1. SetVertexDeclaration MOVES UP, out of the pass and in front of
-//     Begin(), because the vertex layout is baked into the VkPipeline that
-//     BeginPass binds. The topology goes with it, and it is set EXPLICITLY
-//     rather than relied on: VulkanEffectFile remembers the last topology it
-//     was given, and HazeManager's sky dome sets TRIANGLESTRIP. A triangle
-//     list drawn through a strip pipeline is not an error, it is a mess.
+//  2. FX->CommitChanges() becomes EndPass() + BeginPass(). The uniform block
+//     is uploaded and the descriptor set written at BeginPass, so a parameter
+//     set afterwards does not reach the draw; each batch closes and reopens
+//     its pass.
 //
-//  2. FX->CommitChanges() BECOMES EndPass() + BeginPass(). D3DX buffered
-//     parameter writes and CommitChanges pushed them to the device; here the
-//     uniform block is uploaded and the descriptor set written AT BeginPass,
-//     so a parameter set afterwards does not reach the draw. Each batch
-//     therefore closes and reopens its pass. Same as SurfMgr, CloudMgr and
-//     CelSphere.
-//
-//  3. DrawIndexedPrimitiveUP -> VulkanEffectFile::DrawUP, and the count
-//     changes meaning. The Windows call takes a PRIMITIVE count (n*2
-//     triangles); DrawUP takes an INDEX count, which is n*6. Getting this
-//     wrong draws a third of the particles.
-//
-//  4. HR() IS DROPPED FROM THE FX CALLS. It checks a VkResult now, and
-//     VulkanEffectFile::SetTechnique returns void while the Set* return
-//     bool -- so the macro cannot wrap them at all. The calls are otherwise
-//     unchanged.
-//
-// TWO DEAD `smokemat` LOCALS. RenderDiffuse and RenderEmissive each declare
-// a `static D3DMATERIAL9 smokemat` and neither reads it -- the emissive
-// colour actually used comes from SetMaterial() into eColor. They are
-// commented out, in their converted form (D3DMATERIAL9 -> MATERIAL, whose
-// four COLOUR4 and float sit in the same order), because MSVC's C4189 is off
-// by default and GCC's -Wunused-variable is inside -Wall.
-//
-// The type mapping is the usual one: D3D9ParticleStream ->
-// VulkanParticleStream, D3D9Client -> VulkanClient, D3D9Effect ->
-// VulkanEffect, LPDIRECT3DDEVICE9 -> VulkanDevice*, LPDIRECT3DTEXTURE9 ->
-// VulkanTexture*, D3DCOLORVALUE -> COLOUR4, D3DMAT_Identity -> VMAT_Identity.
+//  3. DrawIndexedPrimitiveUP's fourth argument is a primitive count (n*2
+//     triangles); VulkanEffectFile::DrawUP takes an index count, n*6.
 // ==============================================================
 
 #define STRICT 1
@@ -87,13 +60,9 @@ static PARTICLESTREAMSPEC DefaultParticleStreamSpec = {
 	0, 1,						  // lmin and lmax levels for mapping
 	PARTICLESTREAMSPEC::ATM_PLOG, // mapping from atmosphere to alpha
 	1e-4, 1,					  // amin and amax densities for mapping
-	// PARTICLESTREAMSPEC's last member, `SURFHANDLE tex`, is not in the
-	// Windows initialiser. Aggregate initialisation value-initialises the
-	// members that are left out, so it was already NULL and "NULL for
-	// default" is what the SDK documents -- but MSVC does not report the
-	// omission and -Wextra's -Wmissing-field-initializers does. Spelled out
-	// rather than suppressed: the value is identical, and the reader no
-	// longer has to know the rule to see what the texture is.
+	// `SURFHANDLE tex` is omitted from the Windows initialiser; aggregate
+	// initialisation already value-initialised it to NULL. Spelled out for
+	// -Wmissing-field-initializers, same value.
 	NULL						  // particle texture (NULL = default)
 };
 
@@ -472,9 +441,9 @@ void VulkanParticleStream::Render(VulkanDevice *dev)
 
 void VulkanParticleStream::RenderDiffuse(VulkanDevice *dev)
 {
-	// Declared and never read; see the file header. D3DMATERIAL9's five
-	// members are Diffuse, Ambient, Specular, Emissive and Power, which is
-	// MATERIAL's four COLOUR4 and float in the same order.
+	// Declared and never read on Windows either -- the emissive colour used
+	// comes from SetMaterial() into eColor. Commented out for
+	// -Wunused-variable, which MSVC's equivalent leaves off by default.
 	//static MATERIAL smokemat = { // emissive material for engine exhaust
 	//	{1,1,1,1},
 	//	{0,0,0,1},
@@ -492,8 +461,6 @@ void VulkanParticleStream::RenderDiffuse(VulkanDevice *dev)
 
 	CalcNormals(plast->pos - camera_gpos, dvtx);
 
-	// Was dev->SetVertexDeclaration(pNTVertexDecl) inside the pass. Both this
-	// and the topology are pipeline state -- see point 1 in the file header.
 	FX->SetVertexDecl(pNTVertexDecl);
 	FX->SetTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
 
@@ -523,13 +490,8 @@ void VulkanParticleStream::RenderDiffuse(VulkanDevice *dev)
 		if (++n == stride || n+i0 == np) {
 			float alpha = (float)max (0.1, p->alpha0*(1.0-(oapiGetSimTime()-p->t0)*ipht2));
 			FX->SetFloat(eMix, alpha);
-			// FX->CommitChanges() -- see point 2 in the file header.
 			FX->EndPass();
 			FX->BeginPass(0);
-			// DrawIndexedPrimitiveUP(TRIANGLELIST, 0, n*4, n*2, idx,
-			// INDEX16, dvtx+i0*4, sizeof(NTVERTEX)). The fourth argument is
-			// a PRIMITIVE count; DrawUP's last is an INDEX count, and n*2
-			// triangles need n*6 indices.
 			FX->DrawUP(dvtx+i0*4, n*4, sizeof(NTVERTEX), idx, n*6);
 			i0 += n;
 			n = 0;
@@ -543,7 +505,7 @@ void VulkanParticleStream::RenderDiffuse(VulkanDevice *dev)
 
 void VulkanParticleStream::RenderEmissive(VulkanDevice *dev)
 {
-	// Declared and never read; see the file header.
+	// Declared and never read on Windows either; see RenderDiffuse.
 	//static MATERIAL smokemat = { // emissive material for engine exhaust
 	//	{0,0,0,1},
 	//	{0,0,0,1},
@@ -567,8 +529,8 @@ void VulkanParticleStream::RenderEmissive(VulkanDevice *dev)
 
 	if (tex) FX->SetTexture(eTex0, SURFACE(tex)->GetTexture());
 
-	// D3DCOLORVALUE is four floats named r,g,b,a; COLOUR4 is the same four
-	// floats with the same names, so the upload size is unchanged.
+	// SetMaterial writes r, g and b only, so the Windows code uploaded an
+	// uninitialised alpha. Initialised here before the call.
 	COLOUR4 color;
 	color.r = color.g = color.b = color.a = 1.0f;
 	SetMaterial(color);

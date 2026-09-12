@@ -13,48 +13,20 @@
 // background (stars, constellations, grids, labels, etc.)
 // ==============================================================
 //
-// CONVERTED FROM OVP/D3D9Client/CelSphere.cpp, read end to end (671 lines).
+// Six render functions share one Windows shape, and one change dominates: the
+// primitive topology moves from the draw call into the pipeline. On Windows a
+// D3DPRIMITIVETYPE is an argument to DrawPrimitive; in Vulkan it is baked into
+// the VkPipeline that BeginPass builds, so FX->SetTopology must be called
+// before Begin(). Four are used here: POINT_LIST for stars, LINE_LIST for the
+// constellations, LINE_STRIP for the grids, TRIANGLE_LIST for the labels.
+// DrawPrimitive's primitive counts also become vkCmdDraw's vertex counts; that
+// arithmetic is written out at each call.
 //
-// The DATA side of this file -- the star database walk, the grid geometry,
-// the label mesh, the four grid transforms and their colours -- is
-// trigonometry and converts line for line. The RENDER side is six functions
-// that all have the same Windows shape:
-//
-//     SetVertexDeclaration / SetStreamSource / SetIndices
-//     FX->Begin(&numPasses, D3DXFX_DONOTSAVESTATE); FX->BeginPass(0);
-//     DrawPrimitive(<D3DPRIMITIVETYPE>, first, primCount);
-//     FX->EndPass(); FX->End();
-//
-// and the same three changes:
-//
-//   1. THE TOPOLOGY MOVES FROM THE DRAW TO THE PIPELINE. On Windows a
-//      D3DPRIMITIVETYPE is an argument to DrawPrimitive. In Vulkan it is
-//      baked into the VkPipeline, which BeginPass builds -- so it must be
-//      declared BEFORE Begin(). FX->SetTopology sits beside SetVertexDecl
-//      for that reason. This file uses four of them: POINT_LIST for stars,
-//      LINE_LIST for the constellations, LINE_STRIP for the grids, and
-//      TRIANGLE_LIST for the labels.
-//
-//   2. PRIMITIVE COUNTS BECOME VERTEX (or INDEX) COUNTS. DrawPrimitive took
-//      a number of primitives; vkCmdDraw takes a number of vertices. The
-//      arithmetic is per topology and is written at each call.
-//
-//   3. D3DXFX_DONOTSAVESTATE BECOMES 0. The flag told D3DX not to save and
-//      restore device state around the technique. Nothing is saved or
-//      restored here -- a pipeline is not layered over, the next bind
-//      replaces it -- so the flag has nothing to name.
-//
-// A BUG IN THE WINDOWS SOURCE IS FIXED BY THE CONVERSION ITSELF, in
-// RenderConstellationLines and RenderConstellationBoundaries. Both pass the
-// VERTEX count to DrawPrimitive(D3DPT_LINELIST, ...), whose last argument is
-// a PRIMITIVE count -- so D3D9 was told to draw m_nclVtx line segments from a
-// buffer holding only m_nclVtx vertices, i.e. to read twice the buffer. The
-// Vulkan call takes vertices, so passing the same variable is now correct.
-// Noted rather than silently corrected; see the two functions.
-//
-// The device calls that have no counterpart at all:
-//   SetRenderState(D3DRS_CULLMODE, D3DCULL_CCW) in RenderBkgImage -- cull
-//   mode is immutable pipeline state, so there is nothing to put back.
+// The conversion fixes a bug in the Windows source: RenderConstellationLines
+// and RenderConstellationBoundaries pass a vertex count to
+// DrawPrimitive(D3DPT_LINELIST, ...), whose last argument is a primitive
+// count, so D3D9 was told to read twice the buffer. vkCmdDraw takes vertices,
+// so the same variable is now correct.
 // ==============================================================
 
 #include "CelSphere.h"
@@ -73,12 +45,10 @@ using std::min;
 using namespace oapi;
 
 // ==============================================================
-// D3DXCOLOR's conversion to a packed D3DCOLOR, written out. It clamped each
-// channel to [0,1] and rounded to eight bits, packing 0xAARRGGBB -- which is
-// what VERTEX_XYZC::col holds and what PosColorDecl's
-// VK_FORMAT_B8G8R8A8_UNORM reads back byte for byte on a little-endian host.
-// D3DX is a Direct3D utility library and has no Vulkan counterpart; this is
-// four multiplications.
+// D3DXCOLOR's conversion to a packed D3DCOLOR, written out: clamp each channel
+// to [0,1], round to eight bits, pack 0xAARRGGBB -- which is what
+// VERTEX_XYZC::col holds and what PosColorDecl's VK_FORMAT_B8G8R8A8_UNORM
+// reads back byte for byte on a little-endian host.
 
 static inline DWORD PackColour(float r, float g, float b, float a)
 {
@@ -97,10 +67,8 @@ VulkanCelestialSphere::VulkanCelestialSphere(VulkanClient *gc, Scene *scene)
 	, m_gc(gc)
 	, m_scene(scene)
 	, m_pDevice(gc->GetDevice())
-	// Was gc->GetHardwareCaps()->MaxPrimitiveCount. See the note on
-	// MAX_STAR_CHUNK in CelSphere.h: Vulkan has no per-draw primitive limit,
-	// so there is nothing to read this from and the chunking is now a
-	// buffer-size choice.
+	// Was gc->GetHardwareCaps()->MaxPrimitiveCount; Vulkan has no per-draw
+	// primitive limit. See MAX_STAR_CHUNK in CelSphere.h.
 	, maxNumVertices(MAX_STAR_CHUNK)
 {
 	for (auto&& vtx : m_azGridLabelVtx)
@@ -130,8 +98,8 @@ VulkanCelestialSphere::VulkanCelestialSphere(VulkanClient *gc, Scene *scene)
 VulkanCelestialSphere::~VulkanCelestialSphere()
 {
 	ClearStars();
-	// Were Release() calls -- a COM reference count. A Vulkan buffer is
-	// destroyed by the device that made it.
+	// Were Release() calls on a COM refcount; a Vulkan buffer is destroyed by
+	// the device that made it.
 	if (m_clVtx) m_pDevice->DestroyBuffer(m_clVtx);
 	if (m_cbVtx) m_pDevice->DestroyBuffer(m_cbVtx);
 	if (m_grdLngVtx) m_pDevice->DestroyBuffer(m_grdLngVtx);
@@ -155,8 +123,6 @@ void VulkanCelestialSphere::InitCelestialTransform()
 {
 	m_rotCelestial = Ecliptic_CelestialAtEpoch();
 
-	// D3DXMATRIX's _11 is FMATRIX4's m11 -- the same element under the other
-	// library's naming. Nothing else changes on these four lines.
 	m_transformCelestial.m11 = (float)m_rotCelestial.m11; m_transformCelestial.m12 = (float)m_rotCelestial.m12; m_transformCelestial.m13 = (float)m_rotCelestial.m13; m_transformCelestial.m14 = 0.0f;
 	m_transformCelestial.m21 = (float)m_rotCelestial.m21; m_transformCelestial.m22 = (float)m_rotCelestial.m22; m_transformCelestial.m23 = (float)m_rotCelestial.m23; m_transformCelestial.m24 = 0.0f;
 	m_transformCelestial.m31 = (float)m_rotCelestial.m31; m_transformCelestial.m32 = (float)m_rotCelestial.m32; m_transformCelestial.m33 = (float)m_rotCelestial.m33; m_transformCelestial.m34 = 0.0f;
@@ -172,9 +138,8 @@ bool VulkanCelestialSphere::LocalHorizonTransform(MATRIX3& R, FMATRIX4& T)
 	MATRIX3 rot;
 	if (LocalHorizon_Ecliptic(rot)) {
 		R = transp(rot);
-		// D3DXMATRIX took a braced list; FMATRIX4 has a sixteen-float
-		// constructor in the same row order, so this is the same sixteen
-		// numbers written the same way round.
+		// FMATRIX4's sixteen-float constructor takes the same row order the
+		// braced D3DXMATRIX did.
 		T = FMATRIX4(
 			(float)R.m11, (float)R.m12, (float)R.m13, 0.0f,
 			(float)R.m21, (float)R.m22, (float)R.m23, 0.0f,
@@ -206,9 +171,7 @@ void VulkanCelestialSphere::InitStars ()
 		for (auto it = m_sVtx.begin(); it != m_sVtx.end(); it++) {
 			nv = min((DWORD)maxNumVertices, m_nsVtx - idx);
 			// CreateVertexBuffer(D3DUSAGE_WRITEONLY, D3DPOOL_DEFAULT) -> one
-			// host-visible buffer with the vertex usage flag. WRITEONLY was
-			// a hint that the CPU never reads it back; here that is what
-			// host-visible memory is for, and nothing reads it either.
+			// host-visible buffer with the vertex usage flag.
 			*it = m_pDevice->CreateBuffer(nv * sizeof(VERTEX_XYZC),
 										  VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, true);
 			if (!*it) { LogErr("CelSphere: star vertex buffer allocation failed"); return; }
@@ -348,8 +311,8 @@ void VulkanCelestialSphere::AllocGridLabels()
 		if (!vb) { LogErr("CelSphere: grid label vertex buffer allocation failed"); return; }
 		vbuf = (VERTEX_XYZ_TEX *)vb->Map();
 		if (!vbuf) return;
-		// MESHGROUP::nVtx is a DWORD; the loop counter was an int on Windows
-		// too. Cast, so the comparison is not a -Wsign-compare.
+		// nVtx is a DWORD and the counter was an int on Windows too; the cast
+		// settles -Wsign-compare.
 		for (int i = 0; i < (int)grp->nVtx; i++) {
 			vbuf[i].x = (float)grp->Vtx[i].x;
 			vbuf[i].y = (float)grp->Vtx[i].y;
@@ -586,8 +549,7 @@ void VulkanCelestialSphere::RenderStars(VulkanEffectFile *FX)
 	if (!m_nsVtx) return; // nothing to do
 
 	// render in chunks, because some graphics cards have a limit in the
-	// vertex list size -- see MAX_STAR_CHUNK in the header for why that is
-	// no longer true and why the loop is kept anyway.
+	// vertex list size -- see MAX_STAR_CHUNK in the header.
 	UINT i, j, numPasses = 0;
 
 	int bgidx = min(255, (int)(GetSkyBrightness() * 256.0));
@@ -597,23 +559,18 @@ void VulkanCelestialSphere::RenderStars(VulkanEffectFile *FX)
 	if (!pDev->IsRecording()) return;
 	VkCommandBuffer cmd = pDev->GetCommandBuffer();
 
-	// SetVertexDeclaration -> SetVertexDecl, and the topology joins it: a
-	// D3DPT_POINTLIST argument to DrawPrimitive is a VkPipeline property here
-	// and has to be declared before the pipeline is built at BeginPass.
 	FX->SetVertexDecl(pPosColorDecl);
 	FX->SetTopology(VK_PRIMITIVE_TOPOLOGY_POINT_LIST);
 	FX->Begin(&numPasses, 0);		// was D3DXFX_DONOTSAVESTATE; nothing is saved
 	FX->BeginPass(0);
-	// `i < ns` compared a UINT against an int on Windows too. ns is a cutoff
-	// index into a 256-entry table and is never negative.
+	// UINT against int on Windows too; ns indexes a 256-entry table and is
+	// never negative.
 	for (i = j = 0; i < (UINT)ns; i += maxNumVertices, j++) {
 		if (j >= m_sVtx.size() || !m_sVtx[j]) break;
 		VkBuffer vb = m_sVtx[j]->Buffer();
 		VkDeviceSize offset = 0;
 		vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &offset);
-		// DrawPrimitive(D3DPT_POINTLIST, 0, n): for a point list the
-		// primitive count IS the vertex count, so this one needs no
-		// arithmetic.
+		// For a point list the primitive count is the vertex count.
 		vkCmdDraw(cmd, min((UINT)ns - i, maxNumVertices), 1, 0, 0);
 	}
 	FX->EndPass();
@@ -642,13 +599,9 @@ void VulkanCelestialSphere::RenderConstellationLines(VulkanEffectFile *FX)
 	VkBuffer vb = m_clVtx->Buffer();
 	VkDeviceSize offset = 0;
 	vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &offset);
-	// Was DrawPrimitive(D3DPT_LINELIST, 0, m_nclVtx). ITS LAST ARGUMENT IS A
-	// PRIMITIVE COUNT, and m_nclVtx is a VERTEX count -- MapLineBuffer
-	// returns lineVtx.size() and sizes the buffer by it. So D3D9 was asked
-	// for m_nclVtx line segments, which needs 2*m_nclVtx vertices, from a
-	// buffer holding half that: an over-read of exactly 2x on every frame the
-	// constellation lines were drawn. vkCmdDraw takes a VERTEX count, so
-	// passing the same variable is now what the code always meant.
+	// Was DrawPrimitive(D3DPT_LINELIST, 0, m_nclVtx), whose last argument is a
+	// primitive count while m_nclVtx counts vertices -- so D3D9 read 2x the
+	// buffer. vkCmdDraw takes vertices, so this is now what it always meant.
 	vkCmdDraw(cmd, m_nclVtx, 1, 0, 0);
 	FX->EndPass();
 	FX->End();
@@ -700,9 +653,8 @@ void VulkanCelestialSphere::RenderGreatCircle(VulkanEffectFile *FX)
 	VkBuffer vb = m_grdLngVtx->Buffer();
 	VkDeviceSize offset = 0;
 	vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &offset);
-	// DrawPrimitive(D3DPT_LINESTRIP, 5*(NSEG+1), NSEG): start vertex, then
-	// NSEG SEGMENTS -- which is NSEG+1 vertices. The start vertex becomes
-	// vkCmdDraw's firstVertex unchanged.
+	// DrawPrimitive(D3DPT_LINESTRIP, 5*(NSEG+1), NSEG): NSEG segments is
+	// NSEG+1 vertices; the start vertex becomes firstVertex unchanged.
 	vkCmdDraw(cmd, NSEG + 1, 1, 5*(NSEG+1), 0);
 	FX->EndPass();
 	FX->End();
@@ -744,8 +696,7 @@ void VulkanCelestialSphere::RenderGrid(VulkanEffectFile *FX, bool eqline)
 void VulkanCelestialSphere::RenderGridLabels(VulkanEffectFile *FX, int az_idx, const oapi::FVECTOR4& baseCol, const MATRIX3& R, double dphi)
 {
 	if (!m_GridLabelTex) return;
-	// int against std::array::size(), which is a size_t. az_idx is 0, 1 or 2
-	// at every call site.
+	// int against size_t; az_idx is 0, 1 or 2 at every call site.
 	if (az_idx >= (int)m_azGridLabelVtx.size()) return;
 	if (!m_azGridLabelVtx[az_idx])
 		AllocGridLabels();
@@ -764,17 +715,14 @@ void VulkanCelestialSphere::RenderGridLabels(VulkanEffectFile *FX, int az_idx, c
 	vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &offset);
 	vkCmdBindIndexBuffer(cmd, m_GridLabelIdx->Buffer(), 0, VK_INDEX_TYPE_UINT16);
 	FX->SetTechnique(s_eLabel);
-	// Was m_pDevice->SetTexture(0, m_GridLabelTex->GetTexture()) AFTER
-	// BeginPass. Two things move it here: the bind now goes through the
-	// effect parameter rather than a numbered device slot (see s_eTex0 in
-	// CelSphere.h), and BeginPass is where the descriptor set is written --
-	// so a texture set after it would not reach this draw. Same reason the
-	// pad's render states became a PassOverride.
+	// Was SetTexture(0, ...) after BeginPass. It moves before: the bind goes
+	// through the effect parameter rather than a numbered device slot (see
+	// s_eTex0 in CelSphere.h), and BeginPass is where the descriptor set is
+	// written, so a texture set after it would not reach this draw.
 	FX->SetTexture(s_eTex0, m_GridLabelTex->GetTexture());
 	FX->Begin(&numPasses, 0);
 	FX->BeginPass(0);
-	// DrawIndexedPrimitive(TRIANGLELIST, 0, 0, 24*4, 0, 24*2): the last
-	// argument is 24*2 TRIANGLES, which is 24*2*3 indices.
+	// DrawIndexedPrimitive's last argument was 24*2 triangles = 24*2*3 indices.
 	vkCmdDrawIndexed(cmd, 24 * 2 * 3, 1, 0, 0, 0);
 	FX->EndPass();
 	FX->End();
@@ -782,8 +730,7 @@ void VulkanCelestialSphere::RenderGridLabels(VulkanEffectFile *FX, int az_idx, c
 	FMATRIX4 T0, T1;
 	if (dphi) {
 		// GetMatrix reads the parameter back out of the effect's own staged
-		// block -- see VulkanEffectFile::GetValue. D3DX did the same thing
-		// out of its own copy.
+		// block, as D3DX did out of its copy.
 		FX->GetMatrix(s_eWVP, &T0);
 		double cosp = cos(dphi), sinp = sin(dphi);
 		FMATRIX4 R2(
@@ -798,8 +745,7 @@ void VulkanCelestialSphere::RenderGridLabels(VulkanEffectFile *FX, int az_idx, c
 
 	vb = m_elGridLabelVtx->Buffer();
 	vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &offset);
-	// The second SetTexture(0, ...) of the Windows function, moved for the
-	// same reason as the first.
+	// The second SetTexture(0, ...), moved for the same reason.
 	FX->SetTexture(s_eTex0, m_GridLabelTex->GetTexture());
 	FX->Begin(&numPasses, 0);
 	FX->BeginPass(0);
@@ -819,19 +765,17 @@ void VulkanCelestialSphere::RenderGridLabels(VulkanEffectFile *FX, int az_idx, c
 void VulkanCelestialSphere::RenderBkgImage(VulkanDevice *dev)
 {
 	m_bkgImgMgr->Render(dev, 8, GetSkyBrightness());
-	// Was dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_CCW) -- putting the
-	// cull mode back after CSphereManager's draw. Cull mode is IMMUTABLE
-	// PIPELINE STATE in Vulkan: nothing was changed globally, so there is
-	// nothing to restore. The next pipeline bind carries its own.
+	// Was dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_CCW), restoring the cull
+	// mode after CSphereManager's draw. Cull mode is immutable pipeline state
+	// in Vulkan: nothing was changed globally, so nothing needs restoring.
 }
 
 // ==============================================================
 
 bool VulkanCelestialSphere::EclDir2WindowPos(const VECTOR3& dir, int& x, int& y) const
 {
-	// Was D3DXVec3TransformCoord(&homog, &fdir, pVP): transform and divide by
-	// w. DrawAPI.h declares exactly that as TransformCoord (DrawAPI.h:729),
-	// in the same row-vector convention.
+	// Was D3DXVec3TransformCoord: transform and divide by w. DrawAPI.h declares
+	// exactly that as TransformCoord, in the same row-vector convention.
 	FVECTOR3 fdir((float)dir.x, (float)dir.y, (float)dir.z);
 	FVECTOR3 homog = TransformCoord(fdir, *m_scene->GetProjectionViewMatrix());
 
@@ -860,12 +804,11 @@ void VulkanCelestialSphere::VulkanTechInit(VulkanEffectFile *fx)
 	s_eStar = fx->GetTechniqueByName("StarTech");
 	s_eLine = fx->GetTechniqueByName("LineTech");
 	s_eLabel = fx->GetTechniqueByName("LabelTech");
-	// GetParameterByName's first argument was D3DX's "parent parameter" --
-	// always 0 here, meaning file scope. There is only file scope now, so the
-	// argument is gone; see VulkanEffect.h.
+	// GetParameterByName's first argument was D3DX's parent parameter, always 0
+	// (file scope) here. There is only file scope now, so it is gone.
 	s_eColor = fx->GetParameterByName("gColor");
 	s_eWVP = fx->GetParameterByName("gWVP");
-	// NEW LOOKUP, for a parameter the Windows code went around rather than
+	// New lookup, for a parameter the Windows code went around rather than
 	// used. See s_eTex0 in CelSphere.h.
 	s_eTex0 = fx->GetParameterByName("gTex0");
 }

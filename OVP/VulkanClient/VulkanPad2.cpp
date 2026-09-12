@@ -4,35 +4,15 @@
 // licensed under LGPL v2
 // ===================================================
 //
-// CONVERTED FROM OVP/D3D9Client/D3D9Pad2.cpp, read end to end (1031 lines).
+// The D3DX matrix calls go through VMAT_ -- see VulkanUtil.cpp, where the term
+// order of D3DXMatrixTransformation2D is transcribed from its documentation
+// once. DrawMeshGroup's SetRenderState(D3DRS_CULLMODE) becomes a PassOverride
+// and its FX->CommitChanges() becomes closing and reopening the pass.
 //
-// THE SKETCHPAD2 ADDITIONS. Two thirds of this file is vertex-writing --
-// CopyRect, StretchRect, RotateRect, ColorKey, CopyTetragon, FillTetragon and
-// their Native variants all fill four (or thirty-six) SkpVtx and hand them to
-// the queue -- and every line of that converts unchanged. What changes:
-//
-//   The five D3DX matrix calls: D3DXMatrixAffineTransformation2D,
-//   D3DXMatrixMultiply, D3DXMatrixIdentity and two D3DXVECTOR2 constructions.
-//   D3DX is a Direct3D UTILITY library with no Vulkan counterpart, so these
-//   go through VMAT_ -- see VulkanUtil.cpp, where the term order of
-//   D3DXMatrixTransformation2D is transcribed from its documentation once.
-//
-//   The three casts through (const FMATRIX4*) in ViewMatrix,
-//   ProjectionMatrix and GetViewProjectionMatrix. Those existed because the
-//   members were D3DXMATRIX and the Sketchpad interface returns FMATRIX4; the
-//   members ARE FMATRIX4 now, so the casts are gone rather than converted.
-//   WorldMatrix's (LPD3DXMATRIX) cast goes the same way.
-//
-//   DrawMeshGroup's device calls: SetRenderState(D3DRS_CULLMODE) becomes a
-//   PassOverride, and FX->CommitChanges() -- which existed because D3DX
-//   buffered parameter writes -- becomes closing and reopening the pass, for
-//   the same reason RenderReEntry does in VulkanEffect.cpp.
-//
-//   VulkanPolyLine and VulkanTriangle: their vertex and index buffers, and
-//   their draws. THE TOPOLOGY IS THE ONE STRUCTURAL CHANGE -- see
-//   VulkanPolyBase::Topology in VulkanPad.h. VulkanTriangle picks a
-//   D3DPRIMITIVETYPE at draw time on Windows; Vulkan bakes it into the
-//   pipeline, which VulkanPad::Flush binds before Draw() is reached.
+// The one structural change is the topology: VulkanTriangle picks a
+// D3DPRIMITIVETYPE at draw time on Windows, where Vulkan bakes it into the
+// pipeline, which VulkanPad::Flush binds before Draw() is reached. See
+// VulkanPolyBase::Topology in VulkanPad.h.
 // ===================================================
 
 #include "VulkanPad.h"
@@ -400,10 +380,8 @@ void VulkanPad::CopyTetragon(const SURFHANDLE hSrc, const LPRECT _s, const FVECT
 	{
 		auto s = _s ? *_s : GetFullRect(hSrc);
 
-		// Was FVECTOR2{s.left, s.top} -- brace-initialising a float pair from
-		// two LONGs, which is a narrowing conversion in a braced initialiser
-		// list and ill-formed by the standard. MSVC accepts it; GCC rejects
-		// it. The conversion is spelled out.
+		// Was FVECTOR2{s.left, s.top}: narrowing from LONG in a braced
+		// initialiser, which MSVC accepts and the standard does not.
 		sp[0] = FVECTOR2(float(s.left) , float(s.top)   );
 		sp[1] = FVECTOR2(float(s.left) , float(s.bottom));
 		sp[2] = FVECTOR2(float(s.right), float(s.bottom));
@@ -439,9 +417,7 @@ void VulkanPad::CopyTetragon(const SURFHANDLE hSrc, const LPRECT _s, const FVECT
 			}
 		}
 
-		// `int j = 0;` stood above the grid loop and was never used -- the
-		// loop declares its own `i` and `k`. Dropped; GCC reports it
-		// (-Wunused-variable) and there is no behaviour to preserve.
+		// `int j = 0;` stood above the grid loop and was never used.
 	}
 }
 
@@ -454,11 +430,9 @@ void VulkanPad::FillTetragon(DWORD c, const FVECTOR2 pt[4])
 	Log("FillTetragon(0x%X)", c);
 #endif
 
-	// `DWORD fn = SKPSW_TEXTURE | SKPSW_CENTER;` stood here and is never
-	// used: SkpVtxFC sets fnc itself, to SKPSW_CENTER | SKPSW_FRAGMENT.
-	// Dropped rather than kept, for the same reason as above -- and note that
-	// had it been used it would have been WRONG, asking for a texture on a
-	// draw that has none.
+	// `DWORD fn = SKPSW_TEXTURE | SKPSW_CENTER;` stood here and is never used;
+	// SkpVtxFC sets fnc itself. Had it been used it would have asked for a
+	// texture on a draw that has none.
 
 	if (Topology(TRIANGLE)) {
 		AddRectIdx(vI);
@@ -578,8 +552,7 @@ void VulkanPad::Clipper(int idx, const VECTOR3 *uDir, double cos_angle, double d
 	if (idx > 1) idx = 1;
 
 	if (uDir) {
-		// Was D3DXVEC(*uDir), which built a D3DXVECTOR3 from a VECTOR3's
-		// three doubles. FVECTOR3 is the same three floats.
+
 		ClipData[idx].uDir = FVECTOR3(float(uDir->x), float(uDir->y), float(uDir->z));
 		ClipData[idx].ca = float(cos_angle);
 		ClipData[idx].dst = float(dist);
@@ -613,10 +586,6 @@ void VulkanPad::DepthEnable(bool bEnable)
 
 
 // ===============================================================================================
-//
-// The three casts through (const FMATRIX4*) are gone: mV, mP and mVP were
-// D3DXMATRIX and the Sketchpad interface returns FMATRIX4, so every one of
-// these had to launder the type. They ARE FMATRIX4 now.
 //
 const FMATRIX4 *VulkanPad::ViewMatrix() const
 {
@@ -709,12 +678,10 @@ void VulkanPad::SetWorldTransform2D(float scale, float rot, const IVECTOR2 *c, c
 	if (c) ctr = FVECTOR2(float(c->x), float(c->y));
 	if (t) trl = FVECTOR2(float(t->x), float(t->y));
 
-	// Was D3DXMatrixAffineTransformation2D(&mW, scale, &ctr, rot, &trl).
-	// D3DX documents that call as D3DXMatrixTransformation2D with no scaling
-	// centre, no scaling rotation, a UNIFORM scale, and the same point used
-	// as the rotation centre -- which is exactly this. The term order lives
-	// in VMAT_Transformation2D (VulkanUtil.cpp), transcribed there once from
-	// the documentation rather than re-derived per call site.
+	// Was D3DXMatrixAffineTransformation2D(&mW, scale, &ctr, rot, &trl), which
+	// D3DX documents as D3DXMatrixTransformation2D with no scaling centre, no
+	// scaling rotation, a uniform scale and the same point as the rotation
+	// centre. The term order lives in VMAT_Transformation2D.
 	const FVECTOR2 scl(scale, scale);
 	VMAT_Transformation2D(&mW, NULL, 0.0f, &scl, &ctr, rot, &trl);
 }
@@ -741,10 +708,7 @@ void VulkanPad::SetWorldBillboard(const FVECTOR3& wpos, float scale, bool bFixed
 #ifdef SKPDBG
 	Log("SetWorldBillboard()");
 #endif
-	// mP._11 / mV._11 became mP.m11 / mV.m11 -- the same elements, D3DXMATRIX's
-	// leading-underscore naming being the only difference. This function
-	// already worked on FMATRIX4 for its output (mWorld._x.xyz etc.), which
-	// is why only the two reads change.
+
 	scale *= (mP.m11 + mP.m22) * 0.5f;
 	Change |= SKPCHG_TRANSFORM;
 	FVECTOR3 up = unit(wpos);
@@ -752,12 +716,10 @@ void VulkanPad::SetWorldBillboard(const FVECTOR3& wpos, float scale, bool bFixed
 	FVECTOR3 x  = cross(up, y);
 	float d = (bFixed ? dot(up, wpos) / float(tgt_desc.Width) : 1.0f) * scale;
 	FMATRIX4 mWorld;
-	// The _x/_y/_z/_p view of FMATRIX4 is an anonymous struct of FVECTOR4, and
-	// GCC rejects a member with a user-declared constructor inside an anonymous
-	// aggregate -- so DrawAPI.h guards that view with #ifdef _WIN32 and tells
-	// callers elsewhere to write the m** fields, which name the same storage.
-	// _x.xyz is m11/m12/m13, _y.xyz is m21/m22/m23, and so on; the .w of each
-	// row (m14, m24, m34) is not written here on either build.
+	// Was mWorld._x.xyz etc. GCC rejects a member with a user-declared
+	// constructor inside an anonymous aggregate, so DrawAPI.h guards the
+	// _x/_y/_z/_p view with #ifdef _WIN32; the m** fields name the same
+	// storage. The .w of each row is not written here on either build.
 	mWorld.m11 = x.x * d;    mWorld.m12 = x.y * d;    mWorld.m13 = x.z * d;
 	mWorld.m21 = y.x * d;    mWorld.m22 = y.y * d;    mWorld.m23 = y.z * d;
 	mWorld.m31 = up.x * d;   mWorld.m32 = up.y * d;   mWorld.m33 = up.z * d;
@@ -815,10 +777,8 @@ void VulkanPad::TexChange(SURFHANDLE hNew)
 
 	if (SURFACE(hNew)->IsColorKeyEnabled()) {
 		bColorKey = true;
-		// Was D3DXCOLOR(SURFACE(hNew)->ColorKey), which unpacks a DWORD
-		// 0xAARRGGBB into four floats. FVECTOR4 has no DWORD constructor, so
-		// the unpack is written out -- the same four bytes in the same order
-		// as SkpColor's, which is the other place this appears.
+		// Was D3DXCOLOR(...), unpacking 0xAARRGGBB. FVECTOR4's own DWORD
+		// constructor reads ABGR, so the unpack is written out; see SkpColor.
 		const DWORD ck = SURFACE(hNew)->GetColorKey();
 		cColorKey = FVECTOR4(float((ck >> 16) & 0xFF) / 255.0f,
 							 float((ck >>  8) & 0xFF) / 255.0f,
@@ -859,14 +819,10 @@ int VulkanPad::DrawMeshGroup(const MESHHANDLE hMesh, DWORD grp, Sketchpad::MeshF
 	pMesh->Init();
 
 	// Was pDev->SetRenderState(D3DRS_CULLMODE, ...) between BeginPass and the
-	// draw. Cull mode is pipeline state here, so it goes in the override and
-	// arrives before the bind. See VulkanEffectFile::PassOverride.
+	// draw. Cull mode is pipeline state here, so it arrives before the bind.
 	VulkanEffectFile::PassOverride ovr;
-	// The Windows call is
-	// SetRenderState(D3DRS_CULLMODE, (flags & CULL_NONE) ? D3DCULL_NONE
-	//                                                    : D3DCULL_CCW),
-	// so the else branch is an explicit CCW rather than "leave it alone", and
-	// CULL_CCW says that rather than CULL_PASS.
+	// The Windows else branch is an explicit D3DCULL_CCW, not "leave it
+	// alone", so this is CULL_CCW rather than CULL_PASS.
 	ovr.cullMode = (flags & Sketchpad::MeshFlags::CULL_NONE)
 		? VulkanEffectFile::PassOverride::CULL_NONE
 		: VulkanEffectFile::PassOverride::CULL_CCW;
@@ -886,15 +842,11 @@ int VulkanPad::DrawMeshGroup(const MESHHANDLE hMesh, DWORD grp, Sketchpad::MeshF
 
 	// Draw a mesh group(s) ----------------------------------------
 	//
-	// ONE PASS PER GROUP, where Windows opens the pass once and calls
-	// FX->CommitChanges() between groups. CommitChanges existed because D3DX
-	// buffered parameter writes and a draw after BeginPass would otherwise
-	// not see them; here the parameter block is uploaded AT BeginPass, so a
-	// value changed afterwards has nowhere to go until the next one. Closing
-	// and reopening the pass is the same sequence of draws with the same
-	// values -- one more uniform slice out of the frame arena per group --
-	// and it is what VulkanEffect.cpp's RenderReEntry does for the same
-	// reason.
+	// One pass per group, where Windows opens the pass once and calls
+	// FX->CommitChanges() between groups. The parameter block is uploaded AT
+	// BeginPass here, so a value changed afterwards has nowhere to go until the
+	// next one; closing and reopening the pass is the same sequence of draws
+	// with the same values, at one more uniform slice per group.
 	while (grp < nGrp)
 	{
 		SURFHANDLE pTex = hTex ? hTex : pMesh->GetTexture(grp);
@@ -933,7 +885,7 @@ int VulkanPad::DrawMeshGroup(const MESHHANDLE hMesh, DWORD grp, Sketchpad::MeshF
 RECT VulkanPad::GetFullRectNative(VulkanTexture *hSrc)
 {
 	// Was hSrc->GetLevelDesc(0, &desc). A VkImage answers no questions about
-	// itself; VulkanTexture records what it was asked for. See VulkanTypes.h.
+	// itself; VulkanTexture records what it was asked for.
 	const VulkanImageDesc &desc = hSrc->Desc();
 	return {0, 0, static_cast<LONG>(desc.Width), static_cast<LONG>(desc.Height)};
 }
@@ -952,10 +904,9 @@ VulkanPolyLine::VulkanPolyLine(VulkanDevice *pDev, const FVECTOR2 *pt, int npt, 
 	nIdx = WORD(6 * nPt);
 
 	// Were CreateVertexBuffer and CreateIndexBuffer with D3DUSAGE_DYNAMIC |
-	// D3DUSAGE_WRITEONLY in D3DPOOL_DEFAULT -- "the CPU writes this every
-	// frame and never reads it". Vulkan has one buffer type and says the same
-	// thing with a usage flag and host-visible memory; D3DFMT_INDEX16 is not
-	// a property of the buffer either, it is given to vkCmdBindIndexBuffer.
+	// D3DUSAGE_WRITEONLY in D3DPOOL_DEFAULT. Vulkan says the same with a usage
+	// flag and host-visible memory; D3DFMT_INDEX16 is not a property of the
+	// buffer either, it is given to vkCmdBindIndexBuffer.
 	pOwnerDev = pDev;
 	pVB = pDev->CreateBuffer(nVtx * sizeof(SkpVtx), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, true);
 	pIB = pDev->CreateBuffer(nIdx * sizeof(WORD), VK_BUFFER_USAGE_INDEX_BUFFER_BIT, true);
@@ -1000,10 +951,8 @@ VulkanPolyLine::~VulkanPolyLine()
 //
 void VulkanPolyLine::Release()
 {
-	// Was SAFE_RELEASE on both. Vulkan objects are not reference counted --
-	// the device that made the buffer destroys it, which is pOwnerDev: the
-	// device this object's constructor was handed. See the note on
-	// VulkanDevice::DestroyBuffer for why this is a call rather than `delete`.
+	// Was SAFE_RELEASE on both. Nothing here is reference counted -- the device
+	// that made the buffer destroys it, which is pOwnerDev.
 	if (pOwnerDev) {
 		if (pVB) { pOwnerDev->DestroyBuffer(pVB); pVB = NULL; }
 		if (pIB) { pOwnerDev->DestroyBuffer(pIB); pIB = NULL; }
@@ -1016,9 +965,8 @@ void VulkanPolyLine::Release()
 void VulkanPolyLine::Draw(VulkanPad *pSkp, VulkanDevice *pDev)
 {
 	// Was SetStreamSource + SetIndices + SetRenderState(CULLMODE, NONE) +
-	// DrawIndexedPrimitive. The cull mode is pipeline state and VulkanPad's
-	// Flush already sets CULL_NONE for every Sketchpad draw, so it is not
-	// repeated here; the rest is the same three operations spelled in Vulkan.
+	// DrawIndexedPrimitive. Cull mode is pipeline state and VulkanPad::Flush
+	// already sets CULL_NONE for every Sketchpad draw.
 	if (!pVB || !pIB || !pDev->IsRecording()) return;
 
 	VkCommandBuffer cmd = pDev->GetCommandBuffer();
@@ -1028,10 +976,9 @@ void VulkanPolyLine::Draw(VulkanPad *pSkp, VulkanDevice *pDev)
 	vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &offset);
 	vkCmdBindIndexBuffer(cmd, pIB->Buffer(), 0, VK_INDEX_TYPE_UINT16);
 
-	// DrawIndexedPrimitive(TRIANGLELIST, 0, 0, vI, 0, vI-2) -- vI-2 is the
-	// PRIMITIVE count, so the index count is three times it. vkCmdDrawIndexed
-	// takes indices, which is why the multiplication appears here and the
-	// division disappears from VulkanPad::Flush.
+	// DrawIndexedPrimitive(TRIANGLELIST, 0, 0, vI, 0, vI-2): vI-2 is a
+	// primitive count, so the index count vkCmdDrawIndexed wants is three
+	// times it.
 	if (vI >= 2) vkCmdDrawIndexed(cmd, UINT(vI - 2) * 3, 1, 0, 0, 0);
 
 	(void)pSkp;
@@ -1047,9 +994,7 @@ void VulkanPolyLine::Update(const FVECTOR2 *_pt, int _npt, bool bConnect)
 	SkpVtx *Vx = (SkpVtx *)pVB->Map();
 	if (!Vx) return;
 
-	// Was `D3DXVECTOR2 *pt = (D3DXVECTOR2 *)_pt;` -- a reinterpret cast from
-	// FVECTOR2*, legal only because the two are the same two floats. With one
-	// vector type there is nothing to cast.
+
 	const FVECTOR2 *pt = _pt;
 
 	WORD npt = WORD(_npt);
@@ -1144,14 +1089,12 @@ void VulkanTriangle::Release()
 
 // ===============================================================================================
 // The three D3DPRIMITIVETYPEs this class draws with, moved from the draw to
-// the pipeline. See VulkanPolyBase::Topology.
+// the pipeline.
 //
-// TRIANGLE_FAN IS THE ONE TO WATCH. It is core Vulkan 1.0 and works on every
-// desktop driver, but it is the single topology that
-// VK_KHR_portability_subset can withhold -- MoltenVK on macOS does, because
-// Metal has no fan. Nothing in this port runs there; if anything ever does,
-// the fix is to expand a fan into a list in Update() rather than to change
-// this function, because the vertex data is already ours to reshape.
+// TRIANGLE_FAN is core Vulkan 1.0 and works on every desktop driver, but it is
+// the single topology VK_KHR_portability_subset can withhold -- MoltenVK does,
+// because Metal has no fan. Nothing in this port runs there; the fix if
+// anything ever does is to expand a fan into a list in Update().
 //
 VkPrimitiveTopology VulkanTriangle::Topology() const
 {
@@ -1173,10 +1116,9 @@ void VulkanTriangle::Draw(VulkanPad* pSkp, VulkanDevice *pDev)
 	VkDeviceSize offset = 0;
 	vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &offset);
 
-	// The three DrawPrimitive calls took a PRIMITIVE count -- nPt/3 triangles,
-	// or nPt-2 for a fan or a strip. vkCmdDraw takes a VERTEX count, which is
-	// nPt in all three cases: the topology already says how the vertices are
-	// grouped, and it is now baked into the pipeline (see Topology above).
+	// The three DrawPrimitive calls took a primitive count -- nPt/3 triangles,
+	// or nPt-2 for a fan or a strip. vkCmdDraw takes a vertex count, nPt in
+	// all three cases, because the topology now says how they are grouped.
 	vkCmdDraw(cmd, nPt, 1, 0, 0);
 
 	(void)pSkp;
@@ -1192,13 +1134,9 @@ void VulkanTriangle::Update(const gcCore::clrVtx *pt, int npt)
 	SkpVtx *Vx = (SkpVtx *)pVB->Map();
 	if (!Vx) return;
 
-	// memset(Vtx, 0, sizeof(SkpVtx)*npt) verbatim, through a void*. SkpVtx has
-	// a user-provided default constructor, which makes it non-trivial and
-	// makes GCC warn (-Wclass-memaccess) about memset on it -- correctly, in
-	// general. Not here: Vx points at freshly mapped device memory that no
-	// constructor has ever run over, and SkpVtx is trivially copyable, so
-	// clearing it is exactly what the Windows code meant. The cast is GCC's
-	// own documented way to say so.
+	// The Windows memset, through a void* to silence -Wclass-memaccess: Vx
+	// points at freshly mapped device memory no constructor has run over, and
+	// SkpVtx is trivially copyable.
 	memset(static_cast<void *>(Vx), 0, sizeof(SkpVtx)*npt);
 
 	for (int i = 0; i < npt; i++) {

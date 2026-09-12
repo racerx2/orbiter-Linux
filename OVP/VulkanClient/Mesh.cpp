@@ -6,47 +6,22 @@
 //				 2010 - 2022 Jarmo Nikkanen (VulkanClient implementation)
 // ==============================================================
 //
-// CONVERTED FROM OVP/D3D9Client/Mesh.cpp, read end to end (3431 lines).
+// Two changes run through every render entry point here:
 //
-// The mesh: vertex buffers, materials, textures, the light list, the shadow
-// passes and eleven render entry points. Most of it is Orbiter's own geometry
-// and material logic and converts by renaming types. What actually changed:
+//  1. FX->CommitChanges() has no counterpart. VulkanEffectFile uploads the
+//     uniform block and writes the descriptor set at BeginPass, so anything
+//     set after it does not reach the draw -- the pass therefore opens once
+//     per draw, after every per-group value has been written, rather than
+//     once per shader change.
 //
-//  1. MeshBuffer HOLDS FOUR HOST-VISIBLE BUFFERS AND FOUR SHADOW COPIES, and
-//     the shadow copies are NOT a D3D9 artefact -- see the note on Map()
-//     below, and Mesh.h's note 1. D3DUSAGE_DYNAMIC and D3DLOCK_DISCARD are
-//     the two things that genuinely disappear: both are hints to a runtime
-//     that renames buffers behind the client, and Vulkan has no such runtime.
+//  2. A render state set between Begin() and the draw becomes a PassOverride
+//     handed to BeginPassEx BEFORE the bind, because it is pipeline state
+//     here rather than device state read at the draw. The requirement
+//     inverts, and the matching restore lines have nothing to restore: a
+//     pipeline is not layered over.
 //
-//  2. SAFE_RELEASE ON A BUFFER IS DestroyBuffer. Vulkan objects are not
-//     reference counted; the wrapper owns its VkBuffer and VkDeviceMemory.
-//     SafeDestroy() below is that, written once because MeshBuffer releases
-//     four buffers in three places.
-//
-//  3. <xnamath.h> IS GONE, and it was never Direct3D. It is DirectXMath in
-//     its older XNA spelling -- a Windows SSE wrapper over the same _mm_*
-//     intrinsics GCC has always had. Same finding as VBase.cpp's; the uses
-//     are written out where they occur.
-//
-//  4. THE D3DX MATRIX AND VECTOR CALLS BECOME VMAT_ AND oapi::. D3DXMatrixIdentity
-//     -> VMAT_Identity, D3DXMatrixMultiply -> VMAT_MatrixMultiply (which
-//     returns void, so a call site using the return value needs a local),
-//     D3DXVec3TransformCoord/Normal -> oapi::TransformCoord/TransformNormal,
-//     D3DXVec3Normalize/Cross/Dot/Length -> the SDK's own free functions.
-//
-//  5. THE RENDER STATES SET BETWEEN Begin() AND THE DRAW BECOME PassOverrides,
-//     and the ones that no longer exist disappear. Same rule as Surfmgr2.cpp:
-//     a post-BeginPass SetRenderState is an override only when the state it
-//     names still exists.
-//
-// Type mapping, once: D3D9Mesh -> VulkanMesh, D3D9MatExt -> VulkanMatExt,
-// D3D9Tune -> VulkanTune, D3D9Sun -> VulkanSun, D3D9Pick -> VulkanPick,
-// D3D9Effect -> VulkanEffect, D3D9Client -> VulkanClient,
-// LPDIRECT3DDEVICE9 -> VulkanDevice*, LPDIRECT3DTEXTURE9 /
-// LPDIRECT3DCUBETEXTURE9 -> VulkanTexture*, LPDIRECT3DVERTEXBUFFER9 /
-// LPDIRECT3DINDEXBUFFER9 -> VulkanBuffer*, D3DXMATRIX -> FMATRIX4,
-// D3DXVECTOR3/4 -> FVECTOR3/4, D3DXCOLOR -> FVECTOR4, D3DCOLOR -> DWORD,
-// D3DMATERIAL9 -> MATERIAL, D3DXVec* -> the SDK's.
+// <xnamath.h> is gone; it is DirectXMath in its older XNA spelling, a Windows
+// SSE wrapper, and its handful of uses are written out where they occur.
 // ==============================================================
 
 #define VISIBILITY_TOL 0.0015f
@@ -60,10 +35,6 @@
 #include "DebugControls.h"
 #include "VectorHelpers.h"
 
-// <xnamath.h> and the two #pragma warning lines around it stood here. See
-// note 3 in the file header: it is DirectXMath, not Direct3D, and the handful
-// of places that used it are written out where they occur.
-
 using namespace oapi;
 
 
@@ -74,10 +45,8 @@ MeshShader::PSBools MeshShader::ps_bools = {};
 
 
 // -------------------------------------------------------------------------------------------
-// The counterpart of SAFE_RELEASE for a VulkanBuffer. See note 2 in the file
-// header. VulkanDevice::DestroyBuffer is the delete, and VulkanEffect::pDev is
-// the client's one device -- the same static every VulkanMesh method reaches
-// through its private VulkanEffect base.
+// The counterpart of SAFE_RELEASE for a VulkanBuffer: Vulkan objects are not
+// reference counted, the wrapper owns its VkBuffer and VkDeviceMemory.
 // -------------------------------------------------------------------------------------------
 static inline void SafeDestroy(VulkanBuffer *&p)
 {
@@ -113,10 +82,6 @@ MeshBuffer::MeshBuffer(DWORD _nVtx, DWORD _nFace, const class VulkanMesh *_pRoot
 
 	pVBSys = new NMVERTEX[nVtx];
 	pIBSys = new WORD[nIdx];
-	// D3DXVECTOR4 was not over-aligned; FVECTOR4 is alignas(16). An ARRAY of
-	// them is packed identically (16 bytes either way), and new[] gives the
-	// alignment automatically for an over-aligned type since C++17, which this
-	// builds as. See Mesh.h's note 2.
 	pGBSys = new FVECTOR4[nVtx];
 	pSBSys = new SMVERTEX[nVtx];
 
@@ -180,37 +145,18 @@ void MeshBuffer::MustRemap(DWORD mode)
 }
 
 // -------------------------------------------------------------------------------------------
-// Was: CreateVertexBuffer / CreateIndexBuffer into D3DPOOL_DEFAULT, then
+// Was CreateVertexBuffer / CreateIndexBuffer into D3DPOOL_DEFAULT, then
 // Lock / memcpy / Unlock from the four system-memory shadow copies.
 //
-// THREE THINGS CHANGE AND ONE DELIBERATELY DOES NOT.
+// D3DUSAGE_DYNAMIC and D3DLOCK_DISCARD disappear rather than being translated:
+// both are hints to a runtime that renames a buffer behind the client, and
+// Vulkan has no such runtime. Every write below is a full overwrite anyway.
 //
-//   D3DUSAGE_DYNAMIC AND D3DLOCK_DISCARD HAVE NO COUNTERPART, and need none.
-//   Both are hints to a runtime that renames a buffer behind the client so a
-//   full overwrite does not stall on the GPU still reading the old contents.
-//   Vulkan has no such runtime -- there is nothing between vkMapMemory and
-//   the memory -- so the two flags disappear rather than being translated
-//   into something weaker. What they bought is a driver optimisation, not a
-//   capability, and every write below is a full overwrite either way.
-//
-//   THE BUFFERS ARE HOST-VISIBLE IN BOTH MAP MODES. D3DPOOL_DEFAULT plus a
-//   Lock is a combination Vulkan does not have: device-local memory cannot be
-//   mapped at all, so a device-local vertex buffer would need a staging
-//   buffer and a vkCmdCopyBuffer for every remap. Host-visible is correct for
-//   both modes and is what VulkanCatalog.h's Vtxmgr and Idxmgr already do for
-//   the tile buffers. MAPMODE_STATIC and MAPMODE_DYNAMIC therefore no longer
-//   select different memory -- they still select different remap behaviour,
-//   which is what the callers actually use them for.
-//
-//   D3DFMT_INDEX16 IS NOT A BUFFER PROPERTY HERE. The index type is given to
-//   vkCmdBindIndexBuffer at bind time, so it leaves creation and reappears at
-//   the draw. Same note as Idxmgr's.
-//
-//   THE FOUR SHADOW COPIES STAY. They are not a D3DPOOL_DEFAULT workaround:
-//   the mesh code reads and edits vertices between frames (EditGroup,
-//   TransformGroup, UpdateTangentSpace), and reading back from a mapped
-//   write-combined pointer is as bad an idea here as reading back from a
-//   default-pool buffer was there.
+// The buffers are host-visible in BOTH map modes: D3DPOOL_DEFAULT plus a Lock
+// is a combination Vulkan does not have, since device-local memory cannot be
+// mapped. MAPMODE_STATIC and MAPMODE_DYNAMIC therefore no longer select
+// different memory, only different remap behaviour, which is what the callers
+// use them for.
 // -------------------------------------------------------------------------------------------
 void MeshBuffer::Map(VulkanDevice *pDev)
 {
@@ -290,21 +236,12 @@ void VulkanMesh::Null(const char *meshName /* = NULL */)
 
 	Locals = new LightStruct[Config->MaxLights()];
 
-	// THE (void*) CASTS ON THE memset/memcpy CALLS IN THIS FILE ARE NOT
-	// COSMETIC, and they are not a change of behaviour either. GCC's
-	// -Wclass-memaccess (on under -Wall) reports a memset or a cross-type
-	// memcpy on a class type that is not trivially default-constructible or
-	// whose source type differs; MSVC has no equivalent. Nine sites here:
-	// LightStruct and GROUPREC both hold FVECTOR4/FMATRIX4/D9BBox members
-	// with user-provided constructors, and the light copies read out of a
-	// VulkanLight, which derives from LightStruct.
-	//
-	// EVERY ONE OF THEM MUST STAY A memset OR memcpy. The obvious "fix" --
-	// using the type's own constructor -- would be WRONG here:
+	// The (void*) casts on the memset/memcpy calls in this file silence
+	// -Wclass-memaccess: LightStruct and GROUPREC hold members with
+	// user-provided constructors. Each must stay a memset or memcpy -- using
+	// the type's own constructor would be a different result, because
 	// LightStruct's default constructor sets Direction to (1,0,0) and
-	// Attenuation to (1,1,1), not to zero, so `Locals[i] = LightStruct()`
-	// is a different array from the one this line makes. The cast says "I
-	// mean the bytes" and nothing else changes.
+	// Attenuation to (1,1,1), not to zero.
 	memset((void*)Locals, 0, sizeof(LightStruct) * Config->MaxLights());
 	memset(LightList, 0, sizeof(LightList));
 	strcpy_s(this->name, ARRAYSIZE(this->name), meshName ? meshName : "???");
@@ -400,10 +337,6 @@ VulkanMesh::VulkanMesh(const MESHGROUPEX *pGroup, const MATERIAL *pMat, SurfNati
 
 	pBuf = new MeshBuffer(MaxVert, MaxFace, this);
 
-	// `(const D3DMATERIAL9*)pMat` on Windows -- a cast between two structures
-	// that are field for field the same. D3DMATERIAL9 has no counterpart and
-	// needs none: the overload takes the SDK's own MATERIAL, which is what
-	// the caller already has, so the cast disappears rather than changing type.
 	SetMaterial(pMat, 0, false);
 	CopyVertices(&Grp[0], pGroup);
 
@@ -728,31 +661,12 @@ void VulkanMesh::ResetTransformations()
 
 
 // ===========================================================================================
-// THE ONE FUNCTION IN THIS FILE THAT USED <xnamath.h>, and it is not Direct3D.
-//
-// XMVECTOR is DirectXMath's four-float SSE register type; XMLoadFloat3,
-// XMVectorSet, XMVector3Normalize, XMVector3Dot and XMStoreFloat3 are the
-// wrapper around the same _mm_* intrinsics GCC has always had. The arithmetic
-// underneath is three-component add, subtract, scale, dot and normalise --
-// every one of which FVECTOR3 already has -- so it is written out rather than
-// replaced by a second wrapper. Same finding, and the same treatment, as
-// VBase.cpp's CheckMeshStats.
-//
-// TWO SMALLER CONSEQUENCES:
-//
-//   _aligned_malloc / _aligned_free are MSVC CRT names with no counterpart
-//   here (the C11 spelling is aligned_alloc and the C++17 one is a new
-//   overload). They existed because XMVECTOR must be 16-byte aligned;
-//   FVECTOR3 is three floats and needs no alignment request, so the
-//   allocation is a plain new[]/delete[].
-//
-//   THE REFERENCE ALLOCATES nVtx+1 AND USES nVtx. The extra element is never
-//   written or read -- both loops stop at nVtx -- so it is slack rather than
-//   a guard, and the conversion allocates what is used.
-//
-// The one place accuracy could drift is XMVector3Dot, which returns a
-// splatted vector where dot() returns a scalar; the expression multiplies it
-// by n immediately, so the two are the same three products.
+// The XMVECTOR arithmetic here is written out as the FVECTOR3 operations it
+// performs. XMVector3Dot returns a splatted vector where dot() returns a
+// scalar; the expression multiplies it by n immediately, so the two are the
+// same three products. _aligned_malloc/_aligned_free existed because XMVECTOR
+// must be 16-byte aligned; FVECTOR3 needs no alignment request, so the
+// allocation is a plain new[]/delete[].
 // ===========================================================================================
 void VulkanMesh::UpdateTangentSpace(NMVERTEX *pVrt, WORD *pIdx, DWORD nVtx, DWORD nFace, bool bTextured)
 {
@@ -925,8 +839,7 @@ int VulkanMesh::EditGroup(DWORD grp, GROUPEDITSPEC *ges)
 
 	GROUPREC *g = &Grp[grp];
 	DWORD flag = ges->flags;
-	// `DWORD old = g->UsrFlag;` stood here and is never read -- finding 35's
-	// family, reported by GCC and not by MSVC.
+	// `DWORD old = g->UsrFlag;` stood here and is never read.
 
 	if (flag & GRPEDIT_SETUSERFLAG)	     g->UsrFlag  = ges->UsrFlag;
 	else if (flag & GRPEDIT_ADDUSERFLAG) g->UsrFlag |= ges->UsrFlag;
@@ -1193,9 +1106,6 @@ bool VulkanMesh::GetMaterial(VulkanMatExt *pMat, DWORD idx) const
 }
 
 // ===========================================================================================
-// D3DMATERIAL9 -> MATERIAL. The two are five COLOUR4-shaped fields and a
-// float, in the same order; CreateMatExt already took the SDK's own type on
-// Windows through a cast at every call site. See VulkanUtil.h's note 2.
 //
 void VulkanMesh::SetMaterial(const MATERIAL *pMat, DWORD idx, bool bStat)
 {
@@ -1229,12 +1139,9 @@ void VulkanMesh::SetMaterial(const VulkanMatExt *pMat, DWORD idx, bool bStat)
 //2 = graphics engine does not support operation, 3 = invalid mesh handle,
 //4 = material index out of range, 5 = material property not supported by shader used by the mesh.
 //
-// EVERY `*((D3DXVECTOR4*)value)` AND `*((D3DXVECTOR3*)value)` CAST DISAPPEARS.
-// The parameter is already an FVECTOR4 and the members are already FVECTOR3/4,
-// so what was a reinterpret_cast between two layout-compatible types is now an
-// assignment between the types themselves -- and for the FVECTOR3 members it
-// is `value->xyz`, the union view DrawAPI.h already provides, rather than a
-// cast that would read four floats out of a three-float member.
+// The `*((D3DXVECTOR3*)value)` casts become `value->xyz`, the union view
+// DrawAPI.h provides. The cast would have read four floats out of a
+// three-float member.
 //
 int VulkanMesh::SetMaterialEx(DWORD idx, MatProp mid, const FVECTOR4* value)
 {
@@ -1442,8 +1349,6 @@ void VulkanMesh::SetTexTune(const VulkanTune *pT, DWORD idx)
 }
 
 // ===========================================================================================
-// D3DCOLOR -> DWORD, the same 0xAARRGGBB packing under a name that does not
-// claim to be a Direct3D type.
 //
 void VulkanMesh::SetAmbientColor(DWORD c)
 {
@@ -1472,26 +1377,15 @@ void VulkanMesh::RenderGroup(int idx)
 // ===========================================================================================
 // Was SetVertexDeclaration + SetStreamSource + SetIndices + DrawIndexedPrimitive.
 //
-//   SetStreamSource / SetIndices -> vkCmdBindVertexBuffers /
-//   vkCmdBindIndexBuffer, which are COMMANDS recorded into the frame's command
-//   buffer rather than state set on a device. D3DFMT_INDEX16 reappears here as
-//   VK_INDEX_TYPE_UINT16: the index type is a bind-time argument in Vulkan and
-//   a creation-time one in D3D9.
+// DrawIndexedPrimitive's last argument is a PRIMITIVE count and
+// vkCmdDrawIndexed's first is an INDEX count, so nFace becomes nFace*3.
+// MinIndex and NumVertices have no counterpart -- they were a hint to the
+// software vertex processing path.
 //
-//   DrawIndexedPrimitive(TRIANGLELIST, BaseVertexIndex, MinIndex, NumVertices,
-//   StartIndex, PrimitiveCount) -> vkCmdDrawIndexed(indexCount, 1, firstIndex,
-//   vertexOffset, 0). THE COUNT CHANGES MEANING: D3D9 takes a PRIMITIVE count
-//   and Vulkan an INDEX count, so nFace becomes nFace*3. MinIndex and
-//   NumVertices have no counterpart -- they were a hint to the software vertex
-//   processing path. Same conversion as SketchMesh::RenderGroup's.
-//
-//   SetVertexDeclaration IS PIPELINE STATE HERE, and that changes WHEN it
-//   takes effect. On Windows it is device state read at the draw, so setting
-//   it one line before DrawIndexedPrimitive works. A VkPipeline bakes the
-//   vertex layout in and is bound at BeginPass, so this call reaches the NEXT
-//   pipeline build, not the draw below. It is kept in the reference's place
-//   because it is still the declaration this mesh needs; a caller drawing
-//   inside an already-open pass must have declared it before Begin().
+// SetVertexDeclaration is pipeline state here, and that changes WHEN it takes
+// effect: a VkPipeline bakes the vertex layout in and is bound at BeginPass,
+// so this call reaches the NEXT pipeline build, not the draw below. A caller
+// drawing inside an already-open pass must have declared it before Begin().
 //
 void VulkanMesh::RenderGroup(const GROUPREC *grp)
 {
@@ -1504,32 +1398,16 @@ void VulkanMesh::RenderGroup(const GROUPREC *grp)
 	VkCommandBuffer cmd = pDev->GetCommandBuffer();
 	if (!cmd || !pBuf->pVB || !pBuf->pIB) return;
 
-	// AND THE TOPOLOGY WITH IT, AND LEAVING IT OUT COST THE WHOLE COCKPIT.
-	//
-	// `D3DPT_TRIANGLELIST` is an ARGUMENT to DrawIndexedPrimitive on Windows,
-	// named afresh at every draw. Here it is pipeline state held on the shared
-	// VulkanEffectFile and it STICKS: BeaconArray.cpp sets POINT_LIST for the
-	// beacon sprites and nothing puts it back, so every mesh drawn after a
-	// vessel with beacons -- the virtual cockpit included -- was built into a
-	// POINT_LIST pipeline and rasterised as 110 groups of one-pixel dots.
-	//
-	// It presented as "the VC renders in about one run in five", because
-	// whether a beacon draw had happened first depends on load order. The
-	// validation layer named it and was not believed at first, because it
-	// names the SHADER rather than the draw:
-	//
-	//     VUID-VkGraphicsPipelineCreateInfo-topology-08773
-	//     ... topology is POINT_LIST, but PointSize is not written ...
-	//     POINTTRACE fx-pass: technique=VesselTech vs=PBR_VS ps=PBR_PS
-	//     POINTTRACE fx-pass: technique=ShadowTech vs=ShadowMeshTechExVS
-	//
-	// -- VesselTech is the vessel mesh shader; it has no business in a point
-	// pipeline at all.
-	//
-	// So every draw site names its own topology, exactly as every
-	// DrawPrimitive call on Windows names its own D3DPRIMITIVETYPE. Same
-	// reasoning as the one on SetVertexDecl above: it must be set before
-	// Begin(), because it reaches the pipeline build and not the draw.
+	// The topology likewise. D3DPT_TRIANGLELIST is an argument to
+	// DrawIndexedPrimitive, named afresh at every draw; here it is pipeline
+	// state held on the shared VulkanEffectFile and it STICKS. BeaconArray.cpp
+	// sets POINT_LIST for the beacon sprites and nothing puts it back, so
+	// every mesh drawn after a vessel with beacons -- the virtual cockpit
+	// included -- was built into a POINT_LIST pipeline and rasterised as
+	// groups of one-pixel dots. It presented as "the VC renders in about one
+	// run in five", because whether a beacon draw had happened first depends
+	// on load order. So every draw site names its own topology, and must do so
+	// before Begin(), because it reaches the pipeline build and not the draw.
 	FX->SetTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
 	FX->SetVertexDecl(pMeshVertexDecl);
 
@@ -1546,11 +1424,9 @@ void VulkanMesh::RenderGroup(const GROUPREC *grp)
 
 // reset stucts template
 //
-// `_p = { 0 }` on Windows, chosen by a __cplusplus test between two spellings
-// that differ only in where the zero comes from. `{}` is the same
-// value-initialisation in every standard from C++11 on, so the test has
-// nothing left to select, and it is what -Wmissing-field-initializers does not
-// report. Finding 36's family.
+// `_p = { 0 }` on Windows, behind a __cplusplus test. `{}` is the same
+// value-initialisation from C++11 on, and does not draw
+// -Wmissing-field-initializers.
 template <typename T> void reset (T& _p)
 	{ _p = {}; }
 
@@ -1621,15 +1497,11 @@ void VulkanMesh::CheckMeshStatus()
 		for (DWORD g = 0; g < nGrp; g++) Grp[g].Shader = SHADER_METALNESS;
 	}
 
-	// Which of the two draw paths this mesh will take, and why. Render()
-	// hands the mesh to RenderFast() -- the FAST_VS/FAST_PS pass P2 -- when
-	// bCanRenderFast is set, and keeps it on the PBR pass P0 otherwise, and
-	// the two do not agree about a translucent group: FAST_PS writes
-	// `cDiff.a = gMtrlAlpha`, PBR_PS writes `saturate(gMtrlAlpha + fTot)` and
-	// so turns a 0.15-alpha glass opaque wherever it reflects. Only a texture
-	// carrying a specular or roughness map (PBRStatus >= 0x2) clears
-	// bCanRenderFast, so name the group and the texture that did it.
-	// Diagnostic only; env-gated.
+	// ORBITER_VK_TRACE_GRP: which of the two draw paths this mesh takes and
+	// which group put it there. The two disagree about a translucent group --
+	// FAST_PS writes `cDiff.a = gMtrlAlpha`, PBR_PS writes
+	// `saturate(gMtrlAlpha + fTot)` and so turns a 0.15-alpha glass opaque
+	// wherever it reflects.
 	{
 		static const bool bTraceGrp = (getenv("ORBITER_VK_TRACE_GRP") != NULL);
 		if (bTraceGrp && nGrp > 64) {
@@ -1678,40 +1550,19 @@ void VulkanMesh::ConfigureAtmo()
 // ================================================================================================
 // This is a rendering routine for a Exterior Mesh, non-spherical moons/asteroids
 //
-// THE PASS STRUCTURE CHANGES, and it is the one substantial change in this
-// function. On Windows the loop opens a pass when the group's SHADER changes,
-// writes the group's parameters, calls FX->CommitChanges() and draws --
-// because D3DX buffered parameter writes and CommitChanges pushed them to the
-// device inside the open pass.
+// The pass structure changes: the Windows loop opens a pass when the group's
+// shader changes, writes the group's parameters, commits and draws. Here the
+// pass opens once per draw, after every per-group value has been written --
+// see the file header.
 //
-// There is nothing to commit here. VulkanEffectFile uploads the uniform block
-// and writes the descriptor set AT BeginPass, so anything set after it does
-// not reach the draw. So the pass opens ONCE PER DRAW, after every per-group
-// value has been written -- which is exactly the conversion SurfMgr, CloudMgr
-// and Particle.cpp already took, and CommitChanges disappears rather than
-// becoming a no-op.
+// D3DRS_CULLMODE, D3DRS_ZENABLE, D3DRS_ZWRITEENABLE and D3DRS_DESTBLEND become
+// a PassOverride handed to BeginPassEx before the bind. The reference's own
+// comment on the BASEBS line -- "Must be here because BeginPass() sets it
+// enabled" -- is the D3DX behaviour it worked around, and it inverts.
 //
-// THE FOUR RENDER STATES SET AROUND THE DRAW SPLIT THREE WAYS:
-//
-//   D3DRS_CULLMODE (DBG_FLAGS_DUALSIDED, and Grp[].bDualSided's CW pass),
-//   D3DRS_ZENABLE (RENDER_BASEBS and the HUD), D3DRS_ZWRITEENABLE (the
-//   dual-sided pass) and D3DRS_DESTBLEND (the HUD) are all pipeline state
-//   here, so they become a PassOverride handed to BeginPassEx BEFORE the
-//   bind, not device state set after it. The reference's own comment on the
-//   BASEBS line -- "Must be here because BeginPass() sets it enabled" -- is
-//   the D3DX behaviour it was working around, and it inverts: the override
-//   must now come first.
-//
-//   D3DRS_MULTISAMPLEANTIALIAS (the bOIT save/restore) HAS NO COUNTERPART AND
-//   NEEDS NONE. The core's render pass is single-sampled (UIHost.cpp creates
-//   it with VK_SAMPLE_COUNT_1_BIT), so there is no resolve to disable, and
-//   Vulkan has no core dynamic state for it in any case. Both the GetRenderState
-//   and the SetRenderState disappear, together with dwMSAA. Same finding, and
-//   the same reasoning, as Surfmgr2.cpp's.
-//
-//   The restore lines -- ZENABLE 1, ZWRITEENABLE 1, DESTBLEND INVSRCALPHA,
-//   CULLMODE CCW -- have nothing to restore. A pipeline is not layered over;
-//   the next BeginPassEx builds from the pass's own state plus its override.
+// D3DRS_MULTISAMPLEANTIALIAS (the bOIT save/restore) has no counterpart and
+// needs none: the core's render pass is single-sampled, so there is no resolve
+// to disable, and Vulkan has no core dynamic state for it in any case.
 //
 void VulkanMesh::Render(const FMATRIX4 *pW, int iTech, VulkanTexture **pEnv, int nEnv)
 {
@@ -1815,9 +1666,8 @@ void VulkanMesh::Render(const FMATRIX4 *pW, int iTech, VulkanTexture **pEnv, int
 	if (!cmd || !pBuf->pVB || !pBuf->pIB) return;
 
 	// The D3DPT_TRIANGLELIST of every DrawIndexedPrimitive below, named here
-	// because topology is pipeline state and STICKS across draws. See the long
-	// note in RenderGroup: without it a beacon draw's POINT_LIST reached this
-	// mesh and the vessel came out as a scatter of one-pixel dots.
+	// because topology is pipeline state and sticks across draws; see
+	// RenderGroup.
 	FX->SetTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
 	FX->SetVertexDecl(pMeshVertexDecl);
 	{
@@ -1827,7 +1677,7 @@ void VulkanMesh::Render(const FMATRIX4 *pW, int iTech, VulkanTexture **pEnv, int
 		vkCmdBindIndexBuffer(cmd, pBuf->pIB->Buffer(), 0, VK_INDEX_TYPE_UINT16);
 	}
 
-	// The base override every pass in this call inherits. See the note above.
+	// The base override every pass in this call inherits.
 	VulkanEffectFile::PassOverride ovrBase;
 	if (flags&DBG_FLAGS_DUALSIDED) ovrBase.cullMode = VulkanEffectFile::PassOverride::CULL_NONE;
 	if (iTech == RENDER_BASEBS) ovrBase.depthTest = 0;
@@ -1856,9 +1706,6 @@ void VulkanMesh::Render(const FMATRIX4 *pW, int iTech, VulkanTexture **pEnv, int
 
 	if (pLights && nSceneLights>0) {
 
-		// D3DXVec3TransformCoord(&pos, ptr(D3DXVECTOR3f4(BBox.bs)), pW) --
-		// the SDK's own TransformCoord, which returns rather than writing
-		// through an out-parameter.
 		FVECTOR3 pos = oapi::TransformCoord(FVECTOR3f4(BBox.bs), *pW);
 
 		// Find all local lights effecting this mesh ------------------------------------------
@@ -1909,8 +1756,7 @@ void VulkanMesh::Render(const FMATRIX4 *pW, int iTech, VulkanTexture **pEnv, int
 
 		bool bHUD = (Grp[g].MFDScreenId == 0x100);
 
-		// See RenderFast's copy of this: ORBITER_VK_NOVCHUD=1 skips the VC HUD
-		// glass. Diagnostic only.
+		// ORBITER_VK_NOVCHUD=1 skips the VC HUD glass.
 		{
 			static const bool bNoVCHud = (getenv("ORBITER_VK_NOVCHUD") != NULL);
 			if (bHUD && bNoVCHud) {
@@ -1924,9 +1770,9 @@ void VulkanMesh::Render(const FMATRIX4 *pW, int iTech, VulkanTexture **pEnv, int
 			}
 		}
 
-		// Group census: how many of this mesh's groups the two skip rules
-		// above actually let through. Reported once per group count so a
-		// per-frame walk does not flood the log. Diagnostic only.
+		// ORBITER_VK_TRACE_GRP: how many groups the two skip rules above let
+		// through. Once per group count, so the per-frame walk does not flood
+		// the log.
 		static const bool bTraceGrp = (getenv("ORBITER_VK_TRACE_GRP") != NULL);
 		if (bTraceGrp) {
 			static std::map<DWORD, int> seen;
@@ -1940,10 +1786,8 @@ void VulkanMesh::Render(const FMATRIX4 *pW, int iTech, VulkanTexture **pEnv, int
 				LogErr("GRPTRACE Render: mesh with %u groups: %u skipped by UsrFlag&2, "
 					   "%u HUD, %u drawn", nGrp, nSkip, nHud, nGrp - nSkip - nHud);
 
-				// And, for a mesh big enough to be a cockpit, one line per
-				// group: which texture and which material it draws with, and
-				// what alpha that material carries. Enough to find the one
-				// translucent group a picture is asking about.
+				// For a mesh big enough to be a cockpit, one line per group:
+				// texture, material and the material's alpha.
 				if (nGrp > 64) {
 					for (DWORD k = 0; k < nGrp; k++) {
 						const DWORD ti = Grp[k].TexIdx;
@@ -1965,10 +1809,8 @@ void VulkanMesh::Render(const FMATRIX4 *pW, int iTech, VulkanTexture **pEnv, int
 		// Inline engine renders HUD/MFDs in a separate rendering pass and flag 0x2 is used to disable rendering during the main rendering pass
 		if ((Grp[g].UsrFlag & 0x2) && (!bHUD)) continue;
 
-		// Bisection aid: ORBITER_VK_SKIPGRP=<n>[,<n>...] leaves those group
-		// indices of the mesh with more than 64 groups undrawn, so "which
-		// group IS that thing on the screen" is answered by looking rather
-		// than by inferring it from its size. Diagnostic only.
+		// ORBITER_VK_SKIPGRP=<n>[,<n>...] leaves those group indices of a mesh
+		// with more than 64 groups undrawn, as a bisection aid.
 		{
 			static const char *pSkip = getenv("ORBITER_VK_SKIPGRP");
 			if (pSkip && nGrp > 64) {
@@ -2000,9 +1842,8 @@ void VulkanMesh::Render(const FMATRIX4 *pW, int iTech, VulkanTexture **pEnv, int
 		// Select the pass -------------------------------------------------
 		//
 		// Was: EndPass the previous shader's pass and BeginPass this one's,
-		// here at the top of the loop. Only the bookkeeping stays here -- the
-		// rest of the loop reads CurrentShader -- and the BeginPass moves down
-		// to the draw. See the note on this function.
+		// here at the top of the loop. Only the bookkeeping stays; the
+		// BeginPass moves down to the draw.
 		//
 		CurrentShader = Grp[g].Shader;
 
@@ -2135,8 +1976,8 @@ void VulkanMesh::Render(const FMATRIX4 *pW, int iTech, VulkanTexture **pEnv, int
 			if (bHUD) hMFD = gc->GetVCHUDSurface(&hudspec);
 			else hMFD = gc->GetMFDSurface(Grp[g].MFDScreenId - 1);
 
-			// Which surface a VC screen group is actually textured with, and
-			// how big it is. Diagnostic only; env-gated.
+			// ORBITER_VK_TRACE_VC: which surface a VC screen group is textured
+			// with, and how big it is.
 			{
 				static const bool bTraceVC = (getenv("ORBITER_VK_TRACE_VC") != NULL);
 				if (bTraceVC) {
@@ -2192,9 +2033,6 @@ void VulkanMesh::Render(const FMATRIX4 *pW, int iTech, VulkanTexture **pEnv, int
 		//
 		if (Grp[g].bTransform) {
 			bWorldMesh = false;
-			// D3DXMatrixMultiply returned its output, so the call could be
-			// nested inside SetMatrix. VMAT_MatrixMultiply returns void, so
-			// the local it already writes into is named at the call.
 			VMAT_MatrixMultiply(&q, &pGrpTF[g], pW);
 			FX->SetMatrix(eW, &q);
 		}
@@ -2203,9 +2041,8 @@ void VulkanMesh::Render(const FMATRIX4 *pW, int iTech, VulkanTexture **pEnv, int
 			bWorldMesh = true;
 		}
 
-		// The world matrix and the first group's geometry, once per mesh, so a
-		// run in which this mesh does not appear can be compared against one in
-		// which it does. Diagnostic only; env-gated with ORBITER_VK_TRACE_VC.
+		// ORBITER_VK_TRACE_VC: the world matrix and the first group's geometry,
+		// once per mesh.
 		{
 			static const bool bTraceW = (getenv("ORBITER_VK_TRACE_VC") != NULL);
 			if (bTraceW) {
@@ -2260,10 +2097,8 @@ void VulkanMesh::Render(const FMATRIX4 *pW, int iTech, VulkanTexture **pEnv, int
 
 		
 
-		// FX->CommitChanges() stood here. It has no counterpart: D3DX buffered
-		// the parameter writes above and this pushed them to the device inside
-		// the open pass, where BeginPassEx below is the point at which they
-		// are uploaded. See the note on this function.
+		// FX->CommitChanges() stood here; BeginPassEx below is the point at
+		// which the parameters above are uploaded.
 
 
 
@@ -2328,38 +2163,32 @@ void VulkanMesh::Render(const FMATRIX4 *pW, int iTech, VulkanTexture **pEnv, int
 		//
 		VulkanEffectFile::PassOverride ovr = ovrBase;
 
-		// Was SetRenderState(ZENABLE, 0) + SetRenderState(DESTBLEND, ONE)
-		// around the draw, with the two restores below it.
-		//
-		// depthWrite GOES WITH depthTest, and that is not an addition:
-		// D3DRS_ZENABLE = D3DZB_FALSE turns depth buffering off ENTIRELY,
-		// writes included -- D3DRS_ZWRITEENABLE only selects among the writes
-		// that a live depth buffer would make. Vulkan splits the two, so both
-		// have to be said. Leaving the write on stamps the HUD glass quad
-		// into the depth buffer and hides whatever the cockpit draws behind it
-		// afterwards.
+		// Was SetRenderState(ZENABLE, 0) + SetRenderState(DESTBLEND, ONE).
+		// depthWrite goes with depthTest and is not an addition: D3DZB_FALSE
+		// turns depth buffering off entirely, writes included, where
+		// D3DRS_ZWRITEENABLE only selects among the writes a live depth buffer
+		// would make. Vulkan splits the two, so both have to be said -- leaving
+		// the write on stamps the HUD glass quad into the depth buffer and
+		// hides whatever the cockpit draws behind it afterwards.
 		if (bHUD) {
 			ovr.depthTest = 0;
 			ovr.depthWrite = 0;
 			ovr.dstBlend = VK_BLEND_FACTOR_ONE;
 		}
 
-		// Bisection aid: ORBITER_VK_MESHNODEPTH=1 takes the depth test out of
-		// every mesh draw, to tell "not drawn" apart from "drawn and hidden by
-		// the depth buffer". Diagnostic only.
+		// Bisection aids: ORBITER_VK_MESHNODEPTH=1 drops the depth test from
+		// every mesh draw, ORBITER_VK_MESHNOCULL=1 the cull.
 		{
 			static const bool bNoZ = (getenv("ORBITER_VK_MESHNODEPTH") != NULL);
 			if (bNoZ) { ovr.depthTest = 0; ovr.depthWrite = 0; }
-			// And the same for the cull, to tell "culled" apart from "not
-			// transformed onto the screen". Diagnostic only.
 			static const bool bNoCull = (getenv("ORBITER_VK_MESHNOCULL") != NULL);
 			if (bNoCull) ovr.cullMode = VulkanEffectFile::PassOverride::CULL_NONE;
 		}
 
 		if (Grp[g].bDualSided) {
-			// The reverse-facing pass: CULLMODE CW with ZWRITEENABLE off. It
-			// is its own pipeline here, so it is its own BeginPassEx rather
-			// than two SetRenderStates around an extra draw.
+			// The reverse-facing pass: CULLMODE CW with ZWRITEENABLE off. It is
+			// its own pipeline here, so its own BeginPassEx rather than two
+			// SetRenderStates around an extra draw.
 			VulkanEffectFile::PassOverride dsl = ovr;
 			dsl.cullMode = VulkanEffectFile::PassOverride::CULL_CW;
 			dsl.depthWrite = 0;
@@ -2368,18 +2197,11 @@ void VulkanMesh::Render(const FMATRIX4 *pW, int iTech, VulkanTexture **pEnv, int
 			FX->EndPass();
 		}
 
-		// The bOIT GetRenderState/SetRenderState pair on
-		// D3DRS_MULTISAMPLEANTIALIAS, and dwMSAA with them, stood here and
-		// around the draw below. See the note on this function: the core's
-		// render pass is single-sampled, so there is nothing to turn off.
-
-		// A FAILED BeginPass MUST NOT BE SILENT, and this is the second time
-		// that has cost a picture. D3DX's BeginPass either applied the pass's
-		// state or returned an error the caller saw; here a false means no
-		// pipeline was bound, and the vkCmdDrawIndexed below then draws this
-		// mesh's geometry with WHATEVER pipeline the previous draw left --
-		// another shader, another vertex layout, another blend. Reported once
-		// per technique so a bad frame does not flood the log.
+		// A failed BeginPass must not be silent: a false means no pipeline was
+		// bound, and the vkCmdDrawIndexed below then draws this mesh's geometry
+		// with whatever pipeline the previous draw left -- another shader,
+		// another vertex layout, another blend. Once per technique, so a bad
+		// frame does not flood the log.
 		if (!FX->BeginPassEx(CurrentShader, &ovr)) {
 			static std::map<int, int> seen;
 			if (seen.find(int(CurrentShader)) == seen.end()) {
@@ -2399,17 +2221,13 @@ void VulkanMesh::Render(const FMATRIX4 *pW, int iTech, VulkanTexture **pEnv, int
 
 	}
 
-	// `if (CurrentShader != 0xFFFF) FX->EndPass();` stood here, closing the
-	// one pass the loop left open. Every pass is now closed where it was
-	// opened, so there is none left.
+	// `if (CurrentShader != 0xFFFF) FX->EndPass();` stood here, closing the one
+	// pass the loop left open. Every pass is now closed where it was opened.
 
 	FX->End();
 
 	if (flags&(DBG_FLAGS_BOXES|DBG_FLAGS_SPHERES)) RenderBoundingBox(pW);
 	FX->SetVector(eColor, ptr(FVECTOR4(0.0f, 0.0f, 0.0f, 0.0f)));
-	// The trailing SetRenderState(CULLMODE, CCW) that undid DBG_FLAGS_DUALSIDED
-	// has nothing to undo: the cull mode was ovrBase's, and ovrBase does not
-	// outlive this call.
 }
 
 
@@ -2417,9 +2235,7 @@ void VulkanMesh::Render(const FMATRIX4 *pW, int iTech, VulkanTexture **pEnv, int
 // ================================================================================================
 // Render without animations 
 //
-// Same three changes as Render() above -- the pass opens once per draw rather
-// than once per shader change, the buffer binds are commands, and the
-// D3DRS_MULTISAMPLEANTIALIAS pair around the bOIT draw has no counterpart.
+// Same changes as Render() above.
 //
 void VulkanMesh::RenderSimplified(const FMATRIX4 *pW, VulkanTexture **pEnv, int nEnv, bool bSP)
 {
@@ -2434,8 +2250,7 @@ void VulkanMesh::RenderSimplified(const FMATRIX4 *pW, VulkanTexture **pEnv, int 
 		bMtrlModidied = false;
 	}
 
-	// `Scene *scn = gc->GetScene();` stood here and is never read in this
-	// function -- finding 35's family.
+	// `Scene *scn = gc->GetScene();` stood here and is never read.
 
 	bool bTextured = true;
 	bool bUpdateFlow = true;
@@ -2668,11 +2483,8 @@ void VulkanMesh::RenderSimplified(const FMATRIX4 *pW, VulkanTexture **pEnv, int 
 // ================================================================================================
 // Render a legacy orbiter mesh without any additional textures
 //
-// The pass structure differs from Render()'s in the reference -- ONE pass,
-// index 2, opened before the loop -- and converges on the same answer here,
-// because FX->CommitChanges() between the groups is what forced the change.
-// See Render() for the reasoning; the pass is opened per draw and pass 2 is
-// simply the constant it now takes.
+// The reference opens ONE pass, index 2, before the loop. Here the pass opens
+// per draw as everywhere else, with 2 as the constant it takes.
 //
 void VulkanMesh::RenderFast(const FMATRIX4 *pW, int iTech)
 {
@@ -2771,10 +2583,8 @@ void VulkanMesh::RenderFast(const FMATRIX4 *pW, int iTech)
 
 	VulkanEffectFile::PassOverride ovrBase;
 	if (flags&DBG_FLAGS_DUALSIDED) ovrBase.cullMode = VulkanEffectFile::PassOverride::CULL_NONE;
-	// Was SetRenderState(ZENABLE, 0) immediately AFTER BeginPass, with the
-	// reference's own comment "Must be here because BeginPass() sets it
-	// enabled". It is pipeline state here, so it must be declared BEFORE the
-	// bind instead -- the requirement inverts.
+	// Was SetRenderState(ZENABLE, 0) immediately AFTER BeginPass -- the
+	// requirement inverts; see the file header.
 	if (iTech == RENDER_BASEBS) ovrBase.depthTest = 0;
 
 
@@ -2841,10 +2651,7 @@ void VulkanMesh::RenderFast(const FMATRIX4 *pW, int iTech)
 
 		bool bHUD = Grp[g].MFDScreenId == 0x100;
 
-		// Bisection aid: ORBITER_VK_NOVCHUD=1 leaves the virtual-cockpit HUD
-		// glass undrawn, so "is that pane the HUD group or some other
-		// translucent group of the cockpit mesh?" can be answered by looking.
-		// Diagnostic only.
+		// ORBITER_VK_NOVCHUD=1 leaves the virtual-cockpit HUD glass undrawn.
 		{
 			static const bool bNoVCHud = (getenv("ORBITER_VK_NOVCHUD") != NULL);
 			if (bHUD && bNoVCHud) {
@@ -3051,10 +2858,8 @@ FMATRIX4 VulkanMesh::GetTransform(int g, bool bCombined)
 
 
 // ===========================================================================================
-// D3DXMatrixInverse(&out, NULL, &in) -> MatrixInverse(out, in). See
-// VectorHelpers.h: D3DX supplied the inverse and Orbiter's SDK does not, so it
-// is written out there once rather than per call site. The determinant
-// out-parameter D3DX took is the optional third argument.
+// D3DXMatrixInverse has no SDK counterpart; MatrixInverse in VectorHelpers.h
+// is it, with D3DX's determinant out-parameter as an optional third argument.
 //
 bool VulkanMesh::SetTransform(int g, const FMATRIX4 *pMat)
 {
@@ -3218,13 +3023,9 @@ void VulkanMesh::RenderBaseTile(const FMATRIX4 *pW)
 
 
 // ================================================================================================
-// TWO CALLS IN HERE PASS A MATRIX WHERE A POINTER IS WANTED.
-//
-// `D3DXMatrixIdentity(MeshShader::vs_const.mW)` and
-// `D3DXMatrixMultiply(MeshShader::vs_const.mW, ...)` are written without the
-// address-of operator, although `mW` is a float4x4 VALUE -- three lines below,
-// `MeshShader::vs_const.mW = mWorldMesh;` assigns to it as one. The address is
-// what both functions need, and it is what they are given here.
+// Bug fixed from the Windows source: `D3DXMatrixIdentity(vs_const.mW)` and
+// `D3DXMatrixMultiply(vs_const.mW, ...)` are written without the address-of
+// operator although mW is a float4x4 value. Both take the address here.
 //
 void VulkanMesh::RenderShadowMap(const FMATRIX4 *pW, const FMATRIX4 *pVP, int opt)
 {
@@ -3247,8 +3048,8 @@ void VulkanMesh::RenderShadowMap(const FMATRIX4 *pW, const FMATRIX4 *pVP, int op
 	if (!cmd || !pBuf->pIB) return;
 
 	// Was SetStreamSource with a different buffer and stride per branch. The
-	// binds are commands here; the STRIDE moves into the vertex declaration
-	// each Setup() names, which is where a VkPipeline keeps it.
+	// stride moves into the vertex declaration each Setup() names, which is
+	// where a VkPipeline keeps it.
 	VulkanBuffer *pStream = NULL;
 
 	if (opt == 1) {
@@ -3337,8 +3138,6 @@ void VulkanMesh::RenderStencilShadows(float alpha, const FMATRIX4 *pP, const FMA
 	if (!cmd || !pBuf->pSB || !pBuf->pIB) return;
 
 	// The D3DPT_TRIANGLELIST of the draws below; see the note in RenderGroup.
-	// ShadowTech was one of the two techniques the layer caught in a
-	// POINT_LIST pipeline it had no business being in.
 	FX->SetTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
 	FX->SetVertexDecl(pPosTexDecl);
 	{
@@ -3414,8 +3213,6 @@ void VulkanMesh::RenderShadowsEx(float alpha, const FMATRIX4 *pP, const FMATRIX4
 	if (!cmd || !pBuf->pSB || !pBuf->pIB) return;
 
 	// The D3DPT_TRIANGLELIST of the draws below; see the note in RenderGroup.
-	// ShadowTech was one of the two techniques the layer caught in a
-	// POINT_LIST pipeline it had no business being in.
 	FX->SetTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
 	FX->SetVertexDecl(pPosTexDecl);
 	{
@@ -3473,21 +3270,15 @@ void VulkanMesh::RenderShadowsEx(float alpha, const FMATRIX4 *pP, const FMATRIX4
 // ================================================================================================
 // This is a rendering routine for a Exterior Mesh, non-spherical moons/asteroids
 //
-// TWO DrawPrimitiveUP CALLS WITH TWO TOPOLOGIES, and that is what shapes the
+// Two DrawPrimitiveUP calls with two topologies, and that is what shapes the
 // pass structure here. D3DPT_LINESTRIP and D3DPT_LINELIST were arguments to
 // the draw on Windows; a VkPipeline bakes the topology in, so two topologies
-// are two pipelines and therefore two passes. SetTopology declares each one
-// before its BeginPass, which is the point at which the pipeline is fetched.
+// are two pipelines and therefore two passes, each with its SetTopology before
+// its BeginPass.
 //
-// THE COUNTS CHANGE MEANING. DrawPrimitiveUP takes a PRIMITIVE count -- 9
-// line-strip segments and 3 line-list lines -- and DrawUP takes a VERTEX
-// count, which is 10 and 6. Same finding as DrawUP's own note in
-// VulkanEffect.h, and getting it wrong draws part of the box.
-//
-// D3DVECTOR becomes FVECTOR3: twelve bytes either way, which is what
-// pPositionDecl's stride says. It is spelled with constructors rather than
-// braces because FVECTOR3 is a union with user-declared constructors and so
-// not an aggregate.
+// The counts change meaning: DrawPrimitiveUP takes a primitive count -- 9
+// line-strip segments and 3 line-list lines -- and DrawUP a vertex count,
+// which is 10 and 6.
 //
 void VulkanMesh::RenderBoundingBox(const FMATRIX4 *pW)
 {
@@ -3581,8 +3372,8 @@ void VulkanMesh::RenderBoundingBox(const FMATRIX4 *pW)
 			FX->EndPass();
 		}
 
-		// Topology is REMEMBERED between calls (see VulkanEffect.h), so it is
-		// put back to the triangle list every other caller assumes.
+		// Topology is remembered between calls, so it is put back to the
+		// triangle list every other caller assumes.
 		FX->SetTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
 
 		FX->End();
@@ -3601,10 +3392,7 @@ void VulkanMesh::RenderBoundingBox(const FMATRIX4 *pW)
 
 
 // ===========================================================================================
-// The second of the two <xnamath.h> users, and the same treatment: XMVectorMin
-// and XMVectorMax over a vertex list are a componentwise min and max. See
-// UpdateTangentSpace above, and VBase.cpp's CheckMeshStats.
-//
+// XMVectorMin/XMVectorMax over a vertex list are a componentwise min and max.
 // XMVectorSetW(mi, 0) survives as the explicit `.w = 0` on each corner: the
 // bounding box's min and max are FVECTOR4s whose w is not a coordinate.
 //
@@ -3635,10 +3423,10 @@ void VulkanMesh::TransformGroup(DWORD n, const FMATRIX4 *m)
 
 	bBSRecompute = true;
 
-	// `Grp[n].Transform = Grp[n].Transform * (*m);` -- D3DXMATRIX has an
-	// operator*, FMATRIX4 does not. VMAT_MatrixMultiply(out, a, b) applies a
-	// first, which is what `a * b` meant under D3DX's row-vector convention,
-	// and it builds into a local before assigning, so out may alias an input.
+	// Was `Grp[n].Transform = Grp[n].Transform * (*m);` -- FMATRIX4 has no
+	// operator*. VMAT_MatrixMultiply(out, a, b) applies a first, which is what
+	// `a * b` meant under D3DX's row-vector convention, and builds into a local
+	// before assigning, so out may alias an input.
 	VMAT_MatrixMultiply(&Grp[n].Transform, &Grp[n].Transform, m);
 	Grp[n].bTransform = true;
 	Grp[n].bUpdate = true;
@@ -3672,8 +3460,7 @@ void VulkanMesh::SetPosition(VECTOR3 &pos)
 	bGlobalTF = true;
 
 	// _41.._43 -> m41..m43. DrawAPI.h declares the underscore-style views only
-	// under #ifdef _WIN32; the m** names are the same storage and are always
-	// available. Same finding as VBase.cpp's.
+	// under #ifdef _WIN32; the m** names are the same storage.
 	mTransform.m41 = float(pos.x);
 	mTransform.m42 = float(pos.y);
 	mTransform.m43 = float(pos.z);
@@ -3738,9 +3525,8 @@ void VulkanMesh::UpdateBoundingBox()
 				if (bGlobalTF) {
 					FMATRIX4 q;
 					// The nested D3DXMatrixMultiply, unnested: VMAT_ returns
-					// void. The output aliases an input on the second call,
-					// which is safe -- VMAT_MatrixMultiply builds into a local
-					// and assigns at the end.
+					// void. q aliases an input on the second call, which is
+					// safe -- VMAT_MatrixMultiply assigns at the end.
 					VMAT_MatrixMultiply(&q, &mTransform, &Grp[i].Transform);
 					VMAT_MatrixMultiply(&q, &q, &mTransformInv);
 					D9AddAABB(&Grp[i].BBox, &q, &BBox, i==0);
@@ -3785,16 +3571,8 @@ float VulkanMesh::GetBoundingSphereRadius()
 }
 
 // ===========================================================================================
-// D3DXIntersectTri is IntersectTri in VectorHelpers.h -- the second caller in
-// the client, after Tile::Pick, which is why it lives in the shared header
-// rather than twice. Its output convention and the reason the two-sided
-// variant is safe are recorded there.
-//
-// D3DXVec3Cross / Dot / Normalize / TransformCoord / TransformNormal become
-// the SDK's cross / dot / unit / oapi::TransformCoord / oapi::TransformNormal,
-// which return their result instead of writing through an out-parameter.
-// D3DXMatrixInverse's determinant out-parameter is MatrixInverse's optional
-// third argument, and `det` is never read here.
+// D3DXIntersectTri has no SDK counterpart; it is IntersectTri in
+// VectorHelpers.h, which records its output convention.
 //
 VulkanPick VulkanMesh::Pick(const FMATRIX4 *pW, const FMATRIX4 *pT, const FVECTOR3 *vDir)
 {
@@ -3931,9 +3709,7 @@ VulkanPick VulkanMesh::Pick(const FMATRIX4 *pW, const FMATRIX4 *pT, const FVECTO
 
 // This is a special rendering routine used to render 3D arrow --------------------------------
 //
-// The CULLMODE pair around RenderGroup(0) is a PassOverride: it was device
-// state set after BeginPass, and it is pipeline state here. The restore has
-// nothing to restore -- see Render().
+// The CULLMODE pair around RenderGroup(0) is a PassOverride.
 //
 void VulkanMesh::RenderAxisVector(FMATRIX4 *pW, const FVECTOR4 *pColor, float len)
 {
@@ -3942,11 +3718,9 @@ void VulkanMesh::RenderAxisVector(FMATRIX4 *pW, const FVECTOR4 *pColor, float le
 	FX->SetFloat(eMix, len);
 	FX->SetValue(eColor, pColor, sizeof(FVECTOR4));
 	FX->SetMatrix(eW, pW);
-	// BEFORE Begin(), not inside RenderGroup. RenderGroup sets the topology
-	// too, but it runs inside the already-open pass below, so its call reaches
-	// the NEXT pipeline build rather than this one -- which is the same trap
-	// the note on SetVertexDecl there describes. See RenderGroup for what a
-	// leaked POINT_LIST costs.
+	// Before Begin(). RenderGroup sets the topology too, but it runs inside
+	// the already-open pass below, so its call reaches the next pipeline build
+	// rather than this one.
 	FX->SetTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
 	FX->Begin(&numPasses, 0);
 
@@ -4014,9 +3788,8 @@ void VulkanMesh::RenderRings2(const FMATRIX4 *pW, VulkanTexture *pTex, float ira
 
 
 // ===========================================================================================
-// Modules/D3D9Client/NewMesh.hlsl -> Modules/VulkanClient/NewMesh.glsl. The
-// module directory and the shading language both follow the module; the three
-// ENTRY POINT NAMES do not, because they are content the GLSL must match.
+// The shader path follows the module; the three entry point names do not,
+// because they are content the GLSL must match.
 //
 void VulkanMesh::GlobalInit(VulkanDevice *pDev)
 {

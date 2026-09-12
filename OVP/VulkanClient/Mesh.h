@@ -14,40 +14,18 @@
 // it to be rendered through the Vulkan device.
 // ==============================================================
 //
-// CONVERTED FROM OVP/D3D9Client/Mesh.h, read end to end (376 lines).
+// MeshBuffer's four system-memory shadow copies (pVBSys/pGBSys/pIBSys/pSBSys)
+// stay. They are not a D3DPOOL_DEFAULT artefact: the mesh code reads and edits
+// vertices between frames (EditGroup, TransformGroup, UpdateTangentSpace), and
+// device-local memory cannot be read back in Vulkan either. Map() copies into
+// host-visible buffers directly instead of Lock/Unlock.
 //
-// The class header comment on Windows still says "in terms of DX7 interface
-// elements", which stopped being true two ports ago; it says Vulkan here
-// because that is what the members are now.
+// FVECTOR4 is alignas(16) where D3DXVECTOR4 was not, so an array of them packs
+// identically (16 bytes either way) but the allocation must be 16-byte
+// aligned; new[] does that for an over-aligned type since C++17.
 //
-// This is a type-mapping conversion -- the mesh logic is Orbiter's, not
-// Direct3D's -- with three things worth naming:
-//
-//  1. MeshBuffer HELD FOUR BUFFERS AND FOUR SHADOW COPIES. pVB/pGB/pIB/pSB
-//     were D3DPOOL_DEFAULT resources with pVBSys/pGBSys/pIBSys/pSBSys as the
-//     system-memory originals, and Map() pushed the shadow copies into the
-//     device buffers. That two-copy dance is what D3DPOOL_DEFAULT forced: a
-//     default-pool buffer cannot be read back and is lost on device reset.
-//
-//     The shadow copies STAY. They are not a D3D9 artefact -- the mesh code
-//     reads and edits vertices between frames (EditGroup, TransformGroup,
-//     UpdateTangentSpace), and reading back from device-local memory is no
-//     more possible in Vulkan than it was in D3D9. What changes is Map(): it
-//     copies into host-visible buffers directly instead of Lock/Unlock.
-//
-//  2. D3DXVECTOR4 *pGBSys BECAME FVECTOR4* -- and this one has a size
-//     consequence. FVECTOR4 is alignas(16) where D3DXVECTOR4 was not, so an
-//     ARRAY of them is identically packed (16 bytes either way) but the
-//     allocation must be 16-byte aligned. new[] gives that automatically for
-//     an over-aligned type since C++17, which this builds as.
-//
-//  3. LPDIRECT3DCUBETEXTURE9 *pEnv BECAME VulkanTexture** . A cube map is an
-//     image with six array layers and a CUBE-typed view, not a separate
-//     interface.
-//
-// D3D9Mesh -> VulkanMesh, D3D9MatExt -> VulkanMatExt, D3D9Tune -> VulkanTune,
-// D3D9Sun -> VulkanSun, D3D9Pick -> VulkanPick, D3D9Effect -> VulkanEffect,
-// D3DXMATRIX -> FMATRIX4, D3DCOLOR -> DWORD, D3DMATERIAL9 -> MATERIAL.
+// LPDIRECT3DCUBETEXTURE9 *pEnv becomes VulkanTexture** -- a cube map is an
+// image with six array layers and a CUBE-typed view, not a separate interface.
 // ==============================================================
 
 #ifndef __MESH_H
@@ -122,17 +100,10 @@ public:
 		BOOL bOIT;		// Enable order independent transparency
 	} ps_bools;
 
-	// Measured, not assumed: these three are uploaded whole, by name, into
-	// the GLSL blocks of NewMesh.glsl, so their layout has to be the
-	// shader's. Two 64-byte matrices; three FVECTOR3s, which are 12 bytes and
-	// carry no alignas (unlike FVECTOR4 and FMATRIX4); one 32-bit BOOL. No
-	// #pragma pack is needed here for the same reason -- nothing in them
-	// declares an alignment above its own size -- and the asserts are what
-	// says so rather than leaving it to be rediscovered.
-	//
-	// The GLSL blocks mirroring them must be layout(scalar), which is what
-	// makes std140's vec3-to-16 rounding not apply. Confirmed against
-	// glslang: ps_const reflects at 0/12/24 and ps_bools.bOIT at 36.
+	// These three are uploaded whole into the GLSL blocks of NewMesh.glsl, so
+	// their layout has to be the shader's. The mirroring blocks must be
+	// layout(scalar): std140 would round each FVECTOR3 up to 16. Confirmed
+	// against glslang -- ps_const reflects at 0/12/24, ps_bools.bOIT at 36.
 	static_assert(sizeof(VSConst) == 128, "MeshShader::VSConst must be two 4x4 matrices");
 	static_assert(offsetof(VSConst, mW) == 64, "MeshShader::VSConst::mW at 64");
 	static_assert(sizeof(PSConst) == 36, "MeshShader::PSConst must be three tightly packed FVECTOR3");
@@ -141,9 +112,6 @@ public:
 	static_assert(sizeof(PSBools) == 4, "MeshShader::PSBools must be one 32-bit BOOL");
 
 
-	// The shader path changes with the module name and the language: the
-	// Windows line names Modules/D3D9Client/NewMesh.hlsl. The GLSL
-	// translation lives beside the module that loads it.
 	MeshShader(VulkanDevice *pDev, const char *file, const char *vs, const char *ps, const char *opt = NULL) :
 		ShaderClass(pDev, "Modules/VulkanClient/NewMesh.glsl", vs, ps, "MeshShader", opt)
 	{
@@ -181,8 +149,6 @@ public:
 	VulkanBuffer *pIB;
 	VulkanBuffer *pSB;
 
-	// The system-memory originals. See note 1 in the file header: these are
-	// not a D3D9 artefact and they stay.
 	NMVERTEX				*pVBSys;
 	FVECTOR4				*pGBSys;
 	WORD					*pIBSys;
@@ -378,6 +344,8 @@ public:
 	 * \param enable flag for enabling/disabling material alpha calculation.
 	 * \note By default, material alpha values are ignored for mesh groups
 	 *   with textures, and the texture alpha values are used instead.
+	 *   By enabling material alpha calculation, the final alpha value is
+	 *   calculated as the product of material and texture alpha value.
 	 */
 	inline void		EnableMatAlpha (bool enable) { bModulateMatAlpha = enable; }
 

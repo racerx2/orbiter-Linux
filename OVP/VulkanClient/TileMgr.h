@@ -11,42 +11,6 @@
 // Planetary surface rendering management, including a simple
 // LOD (level-of-detail) algorithm for surface patch resolution.
 // ==============================================================
-//
-// CONVERTED FROM OVP/D3D9Client/TileMgr.h, read end to end (281 lines).
-//
-// This is the LEGACY (v1) tile manager -- the one CSphereManager still uses
-// for the celestial-sphere background, and the one TileManager2 replaced for
-// planet surfaces. It is a declaration file and the structure survives
-// whole; the changes are all type substitutions already fixed elsewhere in
-// this port:
-//
-//   LPDIRECT3DTEXTURE9 -> VulkanTexture*
-//   LPDIRECT3DDEVICE9  -> VulkanDevice*
-//   D3DXMATRIX         -> FMATRIX4          (the same 16 floats)
-//   LPD3DXMATRIX       -> FMATRIX4*
-//   D3DCOLOR           -> DWORD             (it always was one: 0xAARRGGBB)
-//   D3DCOLORVALUE      -> COLOUR4           (field for field; see VulkanUtil.h)
-//   oapi::D3D9Client   -> oapi::VulkanClient
-//   D3D9Effect         -> VulkanEffect
-//   D3D9Config         -> VulkanConfig
-//
-// TWO THINGS DELIBERATELY DO NOT CHANGE:
-//
-//   ReadDDSSurface still returns HRESULT. HR() now checks a VkResult, but
-//   this function's HRESULT is its OWN return value -- S_OK or E_FAIL from
-//   its own file reading, not a device's -- and the shim supplies those
-//   names. Changing it would be renaming, not converting.
-//
-//   The loader threading. HANDLE, CreateThread, the queue mutex and
-//   `DWORD WINAPI LoadTile_ThreadProc(void*)` are Win32, not Direct3D, and
-//   the shim implements all of them over pthreads (windows.h:1220-1226,
-//   with WINAPI defined empty). See the same note in Tilemgr2.h.
-//
-// `static DWORD vbMemCaps` is left in place and left a DWORD. On Windows it
-// held D3DUSAGE/D3DPOOL bits chosen from the device caps; what it becomes in
-// Vulkan is a question for TileMgr.cpp, where it is read, not for the
-// declaration.
-// ==============================================================
 
 #ifndef __TILEMGR_H
 #define __TILEMGR_H
@@ -92,13 +56,11 @@ typedef struct {
 
 class VulkanConfig;
 class vPlanet;
-// FORWARD DECLARATION ADDED. TileManager below declares `friend class
-// TileBuffer;` and then a `static TileBuffer *tilebuf;` member. A friend
-// declaration introduces the name into the enclosing namespace but does NOT
-// make it findable by ordinary name lookup until a real declaration appears
-// -- [namespace.memdef]/3. MSVC finds it anyway; GCC follows the standard and
-// reports "'TileBuffer' does not name a type". The class is defined at the
-// bottom of this same header, so this only moves its declaration earlier.
+// Forward declaration added. TileManager declares `friend class TileBuffer;`
+// and then a `static TileBuffer *tilebuf;` member; a friend declaration does
+// not make the name findable by ordinary lookup ([namespace.memdef]/3). MSVC
+// finds it anyway, GCC reports "'TileBuffer' does not name a type". The class
+// is defined at the bottom of this header, so this only declares it earlier.
 class TileBuffer;
 
 
@@ -138,24 +100,12 @@ public:
 	virtual void SetMicrotexture (const char *fname);
 	virtual void SetMicrolevel (double lvl);
 
-	// THE PRAGMA IS FOR CloudManager, not for this declaration.
-	//
-	// CloudManager::Render takes FIVE parameters -- it has no bfog -- so it
-	// HIDES this one rather than overriding it, and GCC reports the hiding
-	// against THIS line (-Woverloaded-virtual), which is why the suppression
-	// has to live here rather than at the derived declaration. MSVC has the
-	// same warning (C4266) and leaves it off by default, which is why the
-	// Windows build is silent about it.
-	//
-	// The hiding is deliberate and pre-existing: CloudMgr.cpp calls this
-	// version explicitly as TileManager::Render(...), and nothing calls the
-	// six-argument form through a CloudManager. "Fixing" it -- giving
-	// CloudManager the same signature, or a `using` declaration -- would
-	// change which function an existing call resolves to. That is a
-	// behaviour change, not a conversion.
-	//
-	// SurfaceManager::Render has the identical six-parameter signature and
-	// overrides normally, so nothing is being hidden from it.
+	// The pragma is for CloudManager, not for this declaration. Its Render
+	// takes five parameters -- no bfog -- so it hides this one instead of
+	// overriding it, and GCC reports the hiding against this line, which is
+	// why the suppression lives here. The hiding is pre-existing and relied
+	// on: CloudMgr.cpp calls TileManager::Render(...) explicitly, so giving
+	// CloudManager a matching signature would re-resolve existing calls.
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Woverloaded-virtual"
 	virtual void Render(VulkanDevice *dev, FMATRIX4 &wmat, double scale, int level, double viewap = 0.0, bool bfog = false);
@@ -164,19 +114,15 @@ public:
 	void SetAmbientColor(DWORD cAmbient);
 
 	/// \brief D3DRS_CULLMODE for the next Render(), as a
-	///        ShaderClass::CullMode. Defaults to CULL_PASS -- the
-	///        technique's own, which is what every caller but one gets.
+	///        ShaderClass::CullMode. Defaults to CULL_PASS, the technique's
+	///        own, which is what every caller but one gets.
 	///
-	///        NEW, AND IT CARRIES A VALUE THAT USED TO TRAVEL AS DEVICE
-	///        STATE. vPlanet::RenderCloudLayer sets D3DRS_CULLMODE before
-	///        calling the cloud manager -- D3DCULL_NONE for the layer seen
-	///        from below and D3DCULL_CCW for the layer seen from above --
-	///        and restores it afterwards. Cull is baked into the pipeline
-	///        here, so the value has to reach the BeginPass that builds
-	///        it; CloudManager applies it through a PassOverride. The
-	///        surface manager leaves it alone and keeps the .tech's own.
-	///        Same reasoning, and the same field, as
-	///        TileManager2Base::cullMode for the v2 engine.
+	///        New field, carrying a value that used to travel as device
+	///        state: vPlanet::RenderCloudLayer set D3DRS_CULLMODE around the
+	///        cloud manager (NONE for the layer seen from below, CCW from
+	///        above) and restored it after. Cull is baked into the pipeline
+	///        here, so the value has to reach the BeginPass that builds it;
+	///        CloudManager applies it through a PassOverride.
 	int cullMode;
 
 protected:
@@ -338,8 +284,8 @@ private:
 
 	bool DeleteTile (TILEDESC *tile);
 
-	// Still an HRESULT: this is the function's OWN status, not a device's.
-	// See the file header.
+	// Still an HRESULT: this is the function's own file-reading status
+	// (S_OK / E_FAIL), not a device's.
 	static HRESULT ReadDDSSurface (VulkanDevice *pDev, const char *fname, LONG_PTR ofs, VulkanTexture **pTex, bool bManaged);
 	static DWORD WINAPI LoadTile_ThreadProc (void*);
 	// the thread function loading tile textures on demand

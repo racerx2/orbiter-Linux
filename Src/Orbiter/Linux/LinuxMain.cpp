@@ -1,12 +1,10 @@
 // Linux entry point and platform-backend bridge.
 //
-// Three things live here that do not belong with either the POSIX services in
-// Platform.cpp or the dialog layer in Win32Dlg.cpp:
-//
-//   1. The ELF entry point. Orbiter defines WinMain; ELF starts at main.
-//   2. The ImGui platform-backend bridge. Orbiter calls ImGui_ImplWin32_*
-//      by name; the Linux build compiles imgui_impl_glfw.cpp instead.
-//   3. HtmlHelp, which has no Linux equivalent and is redirected.
+// What lives here belongs with neither the POSIX services in Platform.cpp nor
+// the dialog layer in Win32Dlg.cpp: the ELF entry point (Orbiter defines
+// WinMain), the ImGui platform-backend bridge (Orbiter calls ImGui_ImplWin32_*
+// by name, and this build compiles imgui_impl_glfw.cpp instead), and HtmlHelp,
+// which has no Linux equivalent and is redirected.
 
 #include <windows.h>
 #include <commctrl.h>
@@ -14,22 +12,15 @@
 #include <string>
 #include <vector>
 
-// The ImGui backends are C++, not extern "C". Their real headers are included
-// rather than hand-declared, so the signatures and mangled names match the
-// definitions the build compiles from imgui_impl_glfw.cpp -- declaring them by
-// hand inside extern "C" produces unmangled symbols that nothing resolves.
+// The ImGui backends are C++, not extern "C", so their real headers are
+// included rather than hand-declared: declaring them by hand inside extern "C"
+// produces unmangled symbols that nothing resolves.
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 
-// ===========================================================================
-// The GLFW window
-//
 // The graphics client owns the render window. Until a Vulkan client exists
 // there is nothing to own it, so the pointer lives here and the client sets it
-// once created. Keeping it behind a setter rather than a bare global means the
-// ImGui backend cannot be initialised against a window that does not exist.
-// ===========================================================================
-
+// once created.
 namespace {
 GLFWwindow *g_glfwWindow = nullptr;
 }
@@ -37,62 +28,38 @@ GLFWwindow *g_glfwWindow = nullptr;
 extern "C" void orbiter_SetGLFWWindow(GLFWwindow *win) { g_glfwWindow = win; }
 extern "C" GLFWwindow *orbiter_GetGLFWWindow(void)     { return g_glfwWindow; }
 
-// Win32Dlg.cpp. Asserts the list-box message contract the Scenario Editor
-// depends on.
-//
-// IT DOES NOT RUN FROM HERE, AND THE COMMENT THAT SAID SO WAS LEFT BEHIND BY
-// THE FIX. It was called from main() once; the log is not open that early, so
-// the result went nowhere and the check printed nothing at all -- which is
-// indistinguishable from passing. It now runs, with three others, from
-// Win32Dlg.cpp's CreateDialogParam, where Orbiter::Create has already run.
-// The declaration is kept only because removing it would leave nothing here
-// pointing at where they went.
+// Defined in Win32Dlg.cpp; asserts the list-box message contract the Scenario
+// Editor depends on. It does not run from here: the log is not open this early,
+// so a failure would print nothing and be indistinguishable from a pass. It
+// runs, with three others, from Win32Dlg.cpp's CreateDialogParam, after
+// Orbiter::Create.
 extern "C" void orbiter_ListBoxSelfTest(void);
 
-// ===========================================================================
-// ImGui platform backend bridge
-//
-// Src/Orbiter/DlgMgr.cpp and Orbiter.cpp call the Win32 backend by name at
-// four sites. Rather than edit those sources, the names are provided here and
-// forwarded to the GLFW backend, which the build compiles in place of the
-// Win32 one.
-//
-// These carry C++ linkage, matching the declarations in imgui_impl_win32.h
-// that the callers compile against.
-// ===========================================================================
+// DlgMgr.cpp and Orbiter.cpp call the Win32 ImGui backend by name, so rather
+// than edit those sources the names are defined here and forwarded to the GLFW
+// backend the build compiles in its place. They carry C++ linkage, to match the
+// declarations in imgui_impl_win32.h the callers compile against.
 
 // True while the Orbiter core object exists.
 //
-// Module destructors run from _dl_fini, which is AFTER main returns and the
-// core has been destroyed. A module's ExitModule then calls back into the
-// core -- Meshdebug calls oapiUnregisterCustomCmd -- and dereferences a dead
-// g_pOrbiter. On Windows the equivalent never happens because Orbiter unloads
-// its modules explicitly while it is still alive, and the DLL detach that
-// follows has nothing left to do.
+// Module destructors run from _dl_fini, after main returns and the core has been
+// destroyed, and a module's ExitModule then calls back into it -- Meshdebug
+// calls oapiUnregisterCustomCmd -- dereferencing a dead g_pOrbiter. Windows
+// never has the problem, because Orbiter unloads its modules explicitly while it
+// is still alive.
 //
-// Cleared once WinMain returns, so any destructor running after that does
-// nothing rather than reaching into freed memory.
-//
-// AND CLEARED ON ANY exit() TOO, WHICH IS NOT THE SAME THING.
-//
-// Clearing it after WinMain covers only the orderly path. --fastexit does not
-// take it: Orbiter::CloseSession calls exit() directly (Orbiter.cpp:1012),
-// which runs the exit handlers and then _dl_fini while WinMain is still on the
-// stack and this flag is still true. Every module destructor then fires
-// against a core that is halfway through closing a session, and the first one
-// to call back into it dies. Measured, from the core dump:
+// Clearing the flag after WinMain returns covers only the orderly path:
+// --fastexit calls exit() from inside Orbiter::CloseSession, which runs the exit
+// handlers and then _dl_fini while WinMain is still on the stack, so every
+// module destructor fires against a core halfway through closing a session:
 //
 //   Orbiter::CloseSession -> exit -> __run_exit_handlers -> _dl_fini
-//     -> orb_module_detach -> ExitModule (TrackIR.cpp:298)
+//     -> orb_module_detach -> ExitModule (TrackIR)
 //       -> 0x0000000000000111        <- a vtable read out of dead memory
 //
-// TrackIR's ExitModule calls oapiUnregisterLaunchpadItem and then deletes an
-// object with a virtual destructor; neither survives the core being gone.
-//
-// An atexit handler is the right hook because it catches every route to
-// exit(), not just the one route known today. glibc registers _dl_fini's
-// closure first and runs the list in reverse, so a handler installed from main
-// runs BEFORE the module destructors -- which is exactly the ordering needed.
+// An atexit handler catches every route to exit(), not just the one known today,
+// and glibc registers _dl_fini's closure first and runs the list in reverse, so
+// a handler installed from main runs before the module destructors.
 static bool g_coreAlive = true;
 extern "C" int orbiter_CoreAlive(void) { return g_coreAlive ? 1 : 0; }
 
@@ -103,19 +70,12 @@ bool ImGui_ImplWin32_Init(void *)
     GLFWwindow *win = orbiter_GetGLFWWindow();
     if (!win) return false;
 
-    // Only once per process.
-    //
-    // UIHost initialises this backend when it brings the Launchpad up, and
-    // DialogManager::InitImGui calls here again as soon as a graphics client
-    // attaches -- on Windows those are two different backends, Win32 for the
-    // dialogs and the client's own for the scene, so the second call is
-    // harmless there. Here both are the same GLFW backend, and ImGui asserts:
-    //     "Already initialized a platform backend!"
-    // which aborted the session the instant the Vulkan client loaded.
-    //
-    // The already-initialised case is a success, not a failure: the backend
-    // the caller wanted is present and working, which is exactly what it is
-    // asking for.
+    // Only once per process. UIHost initialises this backend for the Launchpad
+    // and DialogManager::InitImGui calls here again when a graphics client
+    // attaches; on Windows those are two different backends, so the second call
+    // is harmless there, while here both are the same GLFW backend and ImGui
+    // asserts "Already initialized a platform backend!". Already-initialised is
+    // reported as success: the backend the caller wanted is present.
     if (ImGui::GetIO().BackendPlatformUserData != nullptr)
         return true;
 
@@ -127,9 +87,9 @@ bool ImGui_ImplWin32_Init(void *)
 
 void ImGui_ImplWin32_Shutdown(void)
 {
-    // Not shut down here for the same reason: UIHost owns this backend and
-    // needs it after the session ends, to draw the Launchpad again. Tearing
-    // it down when a session closes would leave the Launchpad with no input.
+    // Deliberately empty: UIHost owns this backend and needs it after the
+    // session ends, to draw the Launchpad again. Tearing it down when a
+    // session closes would leave the Launchpad with no input.
 }
 
 void ImGui_ImplWin32_NewFrame(void)
@@ -139,11 +99,11 @@ void ImGui_ImplWin32_NewFrame(void)
 
 LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM)
 {
-    // On Windows this lets ImGui consume input messages before the
-    // application sees them. The GLFW backend receives input through GLFW's
-    // own callbacks instead, so by the time a message reaches Orbiter's
-    // WndProc ImGui has already had its chance. Reporting "not consumed" is
-    // therefore correct: claiming otherwise would swallow Orbiter's input.
+    // On Windows this lets ImGui consume input messages before the application
+    // sees them. The GLFW backend receives input through GLFW's own callbacks,
+    // so by the time a message reaches Orbiter's WndProc ImGui has already had
+    // its chance: claiming to consume anything here would swallow Orbiter's
+    // input.
     return 0;
 }
 
@@ -151,9 +111,8 @@ extern "C" {
 
 void InitCommonControls(void)
 {
-    // Registers the common control classes on Windows. The control types are
-    // implemented directly by Win32Dlg.cpp here, so there is nothing to
-    // register.
+    // Registers the common control classes on Windows. Win32Dlg.cpp implements
+    // the control types directly, so there is nothing to register.
 }
 
 DWORD GetWindowThreadProcessId(HWND, LPDWORD processId)
@@ -164,16 +123,11 @@ DWORD GetWindowThreadProcessId(HWND, LPDWORD processId)
     return (DWORD)(uintptr_t)pthread_self();
 }
 
-// ===========================================================================
-// HTML Help
-//
-// HtmlHelp opens a .chm through the Windows help viewer. There is no .chm
-// reader to rely on here, and Orbiter's documentation ships as PDF alongside
-// the compiled help, so the request is handed to the desktop's default
-// handler. Callers check the return value, so a failed open reports failure
-// rather than pretending the help appeared.
-// ===========================================================================
-
+// HtmlHelp opens a .chm through the Windows help viewer. There is no .chm reader
+// to rely on here, and Orbiter's documentation ships as PDF alongside the
+// compiled help, so the request goes to the desktop's default handler. Callers
+// check the return value, so a failed open must report failure rather than
+// pretend the help appeared.
 HWND HtmlHelpA(HWND, LPCSTR file, UINT, DWORD_PTR)
 {
     if (!file || !*file) return nullptr;
@@ -201,13 +155,6 @@ HWND HtmlHelpA(HWND, LPCSTR file, UINT, DWORD_PTR)
 
 } // extern "C"
 
-// ===========================================================================
-// Entry point
-//
-// ELF has no WinMain. This converts argc/argv into the single command-line
-// string WinMain expects and calls it.
-// ===========================================================================
-
 // WinMain carries C++ linkage: Orbiter.cpp defines it without extern "C", so
 // declaring it as C here would name a different, undefined symbol.
 INT WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, INT);
@@ -215,13 +162,12 @@ INT WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, INT);
 int main(int argc, char **argv)
 {
     // WinMain receives the command line *without* the program name, matching
-    // GetCommandLine's behaviour after the executable path is stripped. Orbiter
-    // parses it with its own tokenizer, which expects that form.
+    // GetCommandLine's behaviour after the executable path is stripped;
+    // Orbiter's own tokenizer expects that form, and the re-quoting below is
+    // what makes it split the arguments back into the shell's pieces.
     std::string cmdline;
     for (int i = 1; i < argc; ++i) {
         if (i > 1) cmdline += ' ';
-        // Arguments containing spaces are re-quoted so the tokenizer splits
-        // them back into the same pieces the shell produced.
         if (strchr(argv[i], ' ')) {
             cmdline += '"';
             cmdline += argv[i];
@@ -232,13 +178,13 @@ int main(int argc, char **argv)
     }
 
     // Every route out of the process must mark the core dead before the module
-    // destructors run, not just the one that returns from WinMain. --fastexit
-    // calls exit() from inside Orbiter::CloseSession and never comes back
-    // here; see the note by g_coreAlive for what that crashed.
+    // destructors run, not just the one that returns from WinMain: --fastexit
+    // calls exit() from inside Orbiter::CloseSession and never comes back here.
+    // See g_coreAlive.
     atexit(orbiter_MarkCoreDead);
 
-    // hInstance identifies the executable's own module. GetModuleHandle(NULL)
-    // returns exactly that, and is what the shim resolves symbols against.
+    // hInstance identifies the executable's own module, which is what
+    // GetModuleHandle(NULL) returns and what the shim resolves symbols against.
     HINSTANCE self = (HINSTANCE)GetModuleHandleA(nullptr);
 
     const int rc = (int)WinMain(self, nullptr, (LPSTR)cmdline.c_str(),

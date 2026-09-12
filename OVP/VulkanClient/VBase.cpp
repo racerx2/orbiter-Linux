@@ -15,61 +15,20 @@
 // land and take off.
 // ==============================================================
 //
-// CONVERTED FROM OVP/D3D9Client/VBase.cpp, read end to end (557 lines).
+// <xnamath.h> is DirectXMath in its older XNA spelling: a Windows SSE wrapper,
+// not part of Direct3D or of D3DX, and with no Linux counterpart because it
+// only wraps the same _mm_* intrinsics GCC already has. It was used in one
+// function, CheckMeshStats, for a componentwise min and max over a vertex
+// list, which is written out below. The #pragma warning(disable:4838) around
+// the include went with it.
 //
-// THE ONE HEADER THAT HAD TO GO IS <xnamath.h>, and it is worth being clear
-// about what it was. It is DirectXMath (in its older Xbox/XNA spelling): a
-// Windows SSE wrapper library, not part of Direct3D and not part of D3DX.
-// There is no Linux counterpart because there is nothing to port TO -- it
-// wraps the same _mm_* intrinsics GCC has had all along. It is used in
-// exactly one function, CheckMeshStats, and for exactly one thing: a
-// componentwise min and max over a vertex list. That is four lines of scalar
-// code, so it is written out.
+// CheckMeshStats and MeshStats have no caller. Its `rad` is computed from
+// max+min rather than max-min, which makes it the distance from the origin to
+// the box centre rather than a radius; carried over as written, since nothing
+// reads it.
 //
-//   XMVECTOR / XMFLOAT3           -> FVECTOR3
-//   XMLoadFloat3 / XMStoreFloat3  -> the load and store the casts already were
-//   XMVectorMin / XMVectorMax     -> componentwise min / max
-//
-// The #pragma warning(push/disable:4838/pop) around the include goes with
-// it: 4838 is MSVC's narrowing-conversion warning and it was suppressed for
-// xnamath.h's own headers, not for any code here.
-//
-// CheckMeshStats and MeshStats HAVE NO CALLER ANYWHERE IN THE TREE, and
-// cannot have one outside this file -- MeshStats is declared here, so no
-// other translation unit can even spell the second argument. Converted
-// rather than deleted, on the same principle as
-// CSphereManager::CreateDeviceObjects: removing dead code is a separate
-// decision from converting it. Its `rad` is computed from max+min rather
-// than max-min, which makes it the distance from the origin to the box
-// centre rather than a radius -- carried over as written, because it is not
-// a platform difference and nothing reads it.
-//
-// The rest of the file is the usual list, and every one of them is a type:
-//
-//   D3D9Mesh            -> VulkanMesh
-//   D3D9Sun             -> VulkanSun
-//   LPDIRECT3DDEVICE9   -> VulkanDevice *
-//   D3DXVECTOR3/4       -> FVECTOR3 / FVECTOR4
-//   D3DXMATRIX          -> FMATRIX4
-//   D3DXMatrixIdentity  -> VMAT_Identity        (returns void, not a pointer,
-//                                                so the call moves out of the
-//                                                argument list it was nested in)
-//   D3DMAT_SetRotation  -> VMAT_SetRotation
-//   D3DXMatrixMultiply  -> VMAT_MatrixMultiply
-//   D3DXVec3TransformNormal -> oapi::TransformNormal
-//   D3DXVec3Dot / Length-> oapi::dot / oapi::length
-//   D3DXVEC             -> FVEC
-//   mProj._11.._44      -> mProj.m11..m44       (DrawAPI.h guards the _11 view
-//                                                with #ifdef _WIN32; the m**
-//                                                names are the same storage)
-//
-// D9ComputeMinMaxDistance LOSES ITS DEVICE ARGUMENT at all three call sites.
-// That is not this file's decision: AABBUtil.cpp's own body never mentions
-// the device, and there is no IDirect3DDevice9 to pass. See AABBUtil.h.
-//
-// Two `if (assignment)` conditions get their parentheses, for the same
-// reason they did in CSphereMgr.cpp and TileMgr.cpp: -Wparentheses is inside
-// -Wall and MSVC's C4706 is off by default.
+// Two `if (assignment)` conditions get their parentheses: -Wparentheses is
+// inside -Wall, while MSVC's C4706 is off by default.
 // ==============================================================
 
 #include "VBase.h"
@@ -97,8 +56,6 @@ void CheckMeshStats(MESHHANDLE hMesh, MeshStats *stats)
 	int nGrp = oapiMeshGroupCount(hMesh);
 	if (nGrp == 0) return;
 
-	// XMLoadFloat3(ptr(XMFLOAT3(1e12f,1e12f,1e12f))) and its negation. See
-	// the file header: this is the whole of what xnamath.h was here for.
 	FVECTOR3 mi(1e12f, 1e12f, 1e12f);
 	FVECTOR3 mx = -mi;
 
@@ -107,10 +64,9 @@ void CheckMeshStats(MESHHANDLE hMesh, MeshStats *stats)
 		MESHGROUPEX *grp = oapiMeshGroupEx(hMesh, i);
 		
 		for (DWORD v = 0; v < grp->nVtx; v++) {
-			// XMLoadFloat3((XMFLOAT3*)&grp->Vtx[v].x) read the three floats
-			// at the head of an NTVERTEX -- the position -- and nothing else.
+			// The XMFLOAT3 cast read the three floats at the head of an
+			// NTVERTEX: the position, and nothing else.
 			FVECTOR3 x(grp->Vtx[v].x, grp->Vtx[v].y, grp->Vtx[v].z);
-			// XMVectorMin / XMVectorMax, componentwise.
 			if (x.x < mi.x) mi.x = x.x;
 			if (x.y < mi.y) mi.y = x.y;
 			if (x.z < mi.z) mi.z = x.z;
@@ -262,9 +218,8 @@ VECTOR3 vBase::FromLocal(VECTOR3 pos) const
 void vBase::FromLocal(VECTOR3 pos, FVECTOR3 *pTgt) const
 {
 	FVECTOR3 pv(float(pos.x-vLocalPos.x), float(pos.y-vLocalPos.y), float(pos.z-vLocalPos.z));
-	// D3DXVec3TransformNormal(out, in, mat) -- the 3x3 part of the matrix
-	// applied to a direction, with no translation. Same rotation, same
-	// row-vector convention.
+	// D3DXVec3TransformNormal: the 3x3 part applied to a direction, no
+	// translation.
 	*pTgt = oapi::TransformNormal(pv, mGlobalRotDX);
 }
 
@@ -359,8 +314,8 @@ bool vBase::GetMinMaxDistance(float *zmin, float *zmax, float *dmin)
 
 	VMAT_MatrixMultiply(&mWorldView, &mWorld, scn->GetViewMatrix());
 
-	// The device argument is gone from all three calls -- see the note in the
-	// file header and in AABBUtil.h.
+	// The device argument is gone from all three calls: AABBUtil.cpp's body
+	// never used it.
 	if (tilemesh) {
 		D9ComputeMinMaxDistance(tilemesh->GetAABB(), &mWorldView, &Field, zmin, zmax, dmin);
 	}
@@ -527,11 +482,9 @@ void vBase::RenderRunwayLights(VulkanDevice *dev)
 		if (flags&DBG_FLAGS_SELVISONLY && this!=DebugControls::GetVisual()) return; // Used for debugging
 		if (flags&DBG_FLAGS_BOXES) {
 			// D3DXMatrixIdentity returned its argument, so the Windows call
-			// nested it inside the argument list. VMAT_Identity returns void
-			// -- the identity is built first and then passed. The colour
-			// literals say `1.0f` rather than `1`: FVECTOR4 has all-float,
-			// all-int and all-double constructors where D3DXVECTOR4 had one,
-			// so a mixed call is ambiguous rather than silently converted.
+			// nested it in the argument list; VMAT_Identity returns void. The
+			// colour literals say 1.0f because FVECTOR4 also has an all-int
+			// constructor, which makes a mixed call ambiguous.
 			FMATRIX4 id;
 			VMAT_Identity(&id);
 			VulkanEffect::RenderBoundingBox(&mWorld, &id, &BBox.min, &BBox.max, ptr(FVECTOR4(1.0f, 0.0f, 1.0f, 0.75f)));
@@ -605,11 +558,10 @@ void vBase::RenderGroundShadow(VulkanDevice *dev, float alpha)
 			hn /= nd;
 			float ofs = zo / nd;
 
-			// _11.._44 is the D3DXMATRIX field naming. DrawAPI.h declares
-			// that view only under #ifdef _WIN32, because GCC rejects a
-			// member with a user-declared constructor inside an anonymous
-			// union member -- so the m** names, which are the same storage
-			// and are always available, are used instead.
+			// DrawAPI.h declares the _11.._44 view only under #ifdef _WIN32,
+			// because GCC rejects a member with a user-declared constructor
+			// inside an anonymous union member. The m** names are the same
+			// storage and are always available.
 			mProj.m11 = 1.0f - (float)(lsun.x*hn.x);
 			mProj.m12 = -(float)(lsun.y*hn.x);
 			mProj.m13 = -(float)(lsun.z*hn.x);

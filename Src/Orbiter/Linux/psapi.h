@@ -1,18 +1,10 @@
 // Linux <psapi.h> — process memory statistics.
 //
-// Included by Src/Orbiter/Memstat.h, which uses exactly one entry point:
-// GetProcessMemoryInfo, to report heap usage in the debug overlay.
-//
-// Memstat.cpp resolves it dynamically:
-//
-//     hLib = LoadLibrary("Psapi.dll");
-//     pGetProcessMemoryInfo = GetProcAddress(hLib, "GetProcessMemoryInfo");
-//
-// That path is preserved rather than bypassed. The Linux LoadLibrary returns a
-// sentinel handle for "Psapi.dll", and GetProcAddress resolves through dlsym
-// against the executable's own dynamic symbol table -- which works because the
-// Orbiter target is linked with -rdynamic. So the function below is found by
-// name at runtime exactly as the Windows one is, and Memstat.cpp needs no edit.
+// Memstat.cpp resolves GetProcessMemoryInfo dynamically, via
+// LoadLibrary("Psapi.dll") then GetProcAddress. The Linux LoadLibrary returns
+// a sentinel handle for that name and GetProcAddress goes through dlsym
+// against the executable's own dynamic symbol table -- which only works
+// because the Orbiter target is linked with -rdynamic.
 //
 // WorkingSetSize is the field Orbiter reads. The Linux equivalent is the
 // resident set size from /proc/self/statm, whose second field is RSS in pages.
@@ -39,26 +31,17 @@ typedef struct _PROCESS_MEMORY_COUNTERS {
     SIZE_T PeakPagefileUsage;
 } PROCESS_MEMORY_COUNTERS, *PPROCESS_MEMORY_COUNTERS;
 
-// The extended form, added for OVP/VulkanClient's control panel, which reports
-// PrivateUsage -- a field the base structure does not carry.
+// The extended form, which reports PrivateUsage -- a field the base structure
+// does not carry. There is no second entry point on Windows:
+// GetProcessMemoryInfo fills whichever of the two structures it is handed and
+// tells them apart by the 'cb' byte count alone, so a caller casts the EX form
+// down to PPROCESS_MEMORY_COUNTERS and passes its own sizeof. Platform.cpp
+// makes the same test.
 //
-// ON WINDOWS THIS IS NOT A SECOND FUNCTION. GetProcessMemoryInfo fills
-// whichever of the two structures it is handed and tells them apart by the
-// 'cb' byte count alone, which is why the call site casts the EX form down to
-// PPROCESS_MEMORY_COUNTERS and passes its own sizeof:
-//
-//     PROCESS_MEMORY_COUNTERS_EX memstats;
-//     memstats.cb = sizeof(PROCESS_MEMORY_COUNTERS_EX);
-//     GetProcessMemoryInfo(GetCurrentProcess(),
-//                          (PPROCESS_MEMORY_COUNTERS)&memstats, sizeof(memstats));
-//
-// Platform.cpp makes the same test for the same reason, so that call needs no
-// edit and neither does any existing caller of the base form.
-//
-// PrivateUsage on Windows is the process's private COMMIT charge: address
+// PrivateUsage on Windows is the process's private commit charge: address
 // space that cannot be shared with another process. Its Linux counterpart is
 // /proc/self/statm's sixth field, "data" -- VmData + VmStk in pages, the
-// private writable address space. It is deliberately NOT the resident set:
+// private writable address space. Deliberately not the resident set;
 // WorkingSetSize above is already that, and the two answer different
 // questions.
 typedef struct _PROCESS_MEMORY_COUNTERS_EX {
@@ -75,10 +58,9 @@ typedef struct _PROCESS_MEMORY_COUNTERS_EX {
     SIZE_T PrivateUsage;
 } PROCESS_MEMORY_COUNTERS_EX, *PPROCESS_MEMORY_COUNTERS_EX;
 
-// Src/Orbiter/Log.cpp walks the loaded modules to record which plugins were
-// active when a crash was logged. On Linux the module list comes from
-// dl_iterate_phdr, which reports the same thing: base address, span and path
-// of every object mapped into the process.
+// Log.cpp walks the loaded modules to record which plugins were active when a
+// crash was logged. On Linux the module list comes from dl_iterate_phdr, which
+// reports the same thing: base address, span and path of every mapped object.
 typedef struct _MODULEINFO {
     LPVOID lpBaseOfDll;
     DWORD  SizeOfImage;

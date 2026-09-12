@@ -3,46 +3,26 @@
 // licensed under LGPL v2
 // ===================================================
 //
-// CONVERTED FROM OVP/D3D9Client/D3D9Pad.cpp, read end to end (2098 lines).
+// Three places talk to Direct3D and change:
 //
-// THE DRAWING IS ARITHMETIC AND CONVERTS UNCHANGED. Every geometry-producing
-// function here -- FillRect, Rectangle, Ellipse, Polygon, Polyline,
-// AppendLineVertexList in both its forms, CheckTriangle and
-// CreatePolyIndexList -- writes into the static Vtx/Idx arrays and touches no
-// device at all. Those are carried over line for line, including the
-// ear-clipping triangulator and the wide-line expansion, which are the two
-// pieces of real algorithm in the file.
+// 1. Flush(), the only draw. It reads a dozen render states on Windows, sets
+//    them, draws, and puts them back. Vulkan bakes all of them into the
+//    pipeline, so they become a VulkanEffectFile::PassOverride filled in from
+//    the same variables. Nothing is read back or restored -- a pipeline is not
+//    layered over, the next bind replaces it outright.
 //
-// THREE PLACES DO CHANGE, and they are the three places the file talks to
-// Direct3D:
+// 2. SetupDevice(). Every line was already an FX->Set* call except
+//    SetScissorRect and D3DRS_SCISSORTESTENABLE, which move to the
+//    PassOverride: a scissor rectangle is dynamic state set on the command
+//    buffer at bind time rather than device state set whenever.
 //
-// 1. Flush(), which is the only draw. It reads a dozen render states on
-//    Windows, sets them, draws, and puts them back. Vulkan bakes all of them
-//    into the pipeline, so they become a VulkanEffectFile::PassOverride
-//    filled in from the same variables -- dwBlendState's four modes become a
-//    colour write mask and a blend-enable, its two filter modes select a
-//    sampler, bDepthEnable becomes the depth test and write, and the scissor
-//    rectangle stays dynamic. Nothing is read back and nothing is restored,
-//    because there is no device state to restore: the next bind replaces the
-//    pipeline outright. THAT is why the GetRenderState/SetRenderState pairs
-//    around the draw simply disappear rather than being emulated.
-//
-// 2. SetupDevice(), which applies whatever the Change flags say has moved.
-//    Every line of it was already an FX->Set* call; those convert one for one
-//    because VulkanEffectFile keeps the same call shape. The two that were
-//    NOT FX calls -- SetScissorRect and D3DRS_SCISSORTESTENABLE -- move to
-//    the PassOverride, because a scissor rectangle is dynamic state set on
-//    the command buffer at bind time rather than device state set whenever.
-//
-// 3. UTF8ToCP1252, which was two Win32 NLS calls. See the note on it below;
-//    it is the one function whose behaviour is deliberately not identical,
-//    and the reason is a bug in the original.
+// 3. UTF8ToCP1252, which was two Win32 NLS calls. See the note on it below; it
+//    is the one function whose behaviour is deliberately not identical, and
+//    the reason is a bug in the original.
 //
 // RenderState is gone -- see VulkanPad.h. The constructor's `new
-// RenderState(pDev)`, the Capture() in BeginDrawing and the Restore() in
-// EndDrawing go with it, and none of the three had any effect on Windows
-// either: D3D9Frame.cpp creates the device with D3DCREATE_PUREDEVICE
-// unconditionally, and a pure device fails GetRenderState.
+// RenderState(pDev)`, BeginDrawing's Capture() and EndDrawing's Restore() go
+// with it, and none of the three had any effect on Windows either.
 // ===================================================
 
 #include "VulkanPad.h"
@@ -94,37 +74,22 @@ oapi::Pen * defpen = 0;
 // ===============================================================================================
 // UTF-8 to the font atlas's code page.
 //
-// The Windows version is two calls into the NLS API:
+// The Windows version is MultiByteToWideChar(CP_UTF8, ...) followed by
+// WideCharToMultiByte(28591, ...), falling back to "return the string
+// unchanged and hope it was already 8-bit" whenever either step fails. The
+// fallback is deliberate and is kept: a legacy add-on that hands the Sketchpad
+// Windows-1252 bytes rather than UTF-8 still renders. There is no NLS API
+// here, so the UTF-8 decode is written out; iconv would be a dependency for a
+// single table.
 //
-//     MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, ...)   // decode
-//     WideCharToMultiByte(28591, ...)                           // encode
-//
-// with the whole thing falling back to "return the string unchanged and hope
-// it was already 8-bit" whenever either step fails -- which is deliberate and
-// is kept: a legacy add-on that hands the Sketchpad Windows-1252 bytes rather
-// than UTF-8 still renders.
-//
-// TWO THINGS ARE DIFFERENT HERE, AND THE SECOND IS A CORRECTION.
-//
-// The first is mechanical: there is no NLS API on Linux, so the UTF-8 decode
-// is written out. It is thirty lines and needs no dependency; iconv would be
-// one for a single table.
-//
-// The second: THE FUNCTION IS CALLED UTF8ToCP1252 AND CONVERTS TO 28591,
-// WHICH IS ISO-8859-1, NOT CP1252. The two agree everywhere except
-// 0x80-0x9F, where Latin-1 has unused control codes and CP1252 has the smart
-// quotes, the en and em dashes, the ellipsis, the bullet and the euro sign --
-// twenty-seven printable characters. And the font atlas IS indexed as CP1252:
-// D3D9TextMgr::Init walks bytes 0..255 through TextOutA, which interprets
-// them in the ANSI code page. So on Windows a right single quote arrives as
-// U+2019, has no Latin-1 spelling, is substituted with '?' by
-// WideCharToMultiByte -- and is drawn as a question mark, even though the
-// atlas has the glyph for it sitting at index 0x92.
-//
-// This converts to CP1252, which is what the function's name says, what the
-// atlas is indexed by, and what VulkanText::PrintSkp(LPCWSTR) already folds
-// to. The visible difference is that typographic punctuation renders instead
-// of turning into question marks.
+// Bug fixed from the Windows source: the function is called UTF8ToCP1252 and
+// converts to 28591, which is ISO-8859-1, not CP1252. The two agree everywhere
+// except 0x80-0x9F, where Latin-1 has unused control codes and CP1252 has the
+// smart quotes, dashes, ellipsis, bullet and euro sign. The font atlas IS
+// indexed as CP1252 -- Init walks bytes 0..255 through the ANSI code page -- so
+// a right single quote arrives as U+2019, has no Latin-1 spelling, is
+// substituted with '?', and draws as a question mark even though the atlas
+// holds its glyph at index 0x92. This converts to CP1252.
 // ===============================================================================================
 
 static std::string UTF8ToCP1252(const char *utf8, int ulen)
@@ -149,9 +114,8 @@ static std::string UTF8ToCP1252(const char *utf8, int ulen)
 		else if ((c & 0xF0) == 0xE0) { cp = c & 0x0F;	extra = 2; }
 		else if ((c & 0xF8) == 0xF0) { cp = c & 0x07;	extra = 3; }
 		else {
-			// A continuation byte or an invalid lead. This is
-			// MB_ERR_INVALID_CHARS failing, and the reference's answer is to
-			// assume the caller handed us 8-bit text already.
+			// A continuation byte or an invalid lead -- MB_ERR_INVALID_CHARS
+			// failing, whose answer is to assume 8-bit text.
 			return std::string(utf8, (size_t)ulen);
 		}
 
@@ -171,10 +135,8 @@ static std::string UTF8ToCP1252(const char *utf8, int ulen)
 			continue;
 		}
 
-		// The twenty-seven printable characters CP1252 puts in 0x80-0x9F.
-		// The table is VulkanTextMgr.cpp's kCp1252High read the other way;
-		// it is repeated rather than exported because it is thirty-two
-		// entries and this is not a hot path.
+		// The twenty-seven printable characters CP1252 puts in 0x80-0x9F --
+		// VulkanTextMgr.cpp's kCp1252High read the other way.
 		static const unsigned short kHigh[32] = {
 			0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
 			0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008D, 0x017D, 0x008F,
@@ -237,19 +199,12 @@ void VulkanPad::VulkanTechInit(VulkanClient *_gc, VulkanDevice *pDevice)
 	char name[256];
 	sprintf_s(name, 256, "Modules/VulkanClient/Sketchpad.glsl");
 
-	// Was D3DXCreateEffectFromFileA with no macros at all -- Sketchpad.fx
-	// takes no preprocessor definitions, unlike D3D9Client.fx. See
-	// VulkanEffectFile::Load: the technique table sits beside the shader
-	// under the same stem, as Sketchpad.tech.
 	FX = new VulkanEffectFile(pDev);
 
 	if (!FX->Load(name)) {
-		// Was MessageBoxA + FatalAppExitA. FatalAppExitA terminates the
-		// process without unwinding and the shim does not supply it; the
-		// message box says the same thing and returning lets the caller's
-		// failure path run. MissingRuntimeError() -- the second failure
-		// branch, for a NULL effect -- named the DirectX runtime and has
-		// nothing to name here.
+		// Was MessageBoxA + FatalAppExitA. FatalAppExitA terminates the process
+		// without unwinding and the shim does not supply it; returning lets the
+		// caller's failure path run instead.
 		LogErr("Failed to create an Effect (%s)", name);
 		oapiWriteLog((char*)"Vulkan: FAIL: Sketchpad.glsl did not compile. "
 						   "See Orbiter.log for details");
@@ -260,10 +215,8 @@ void VulkanPad::VulkanTechInit(VulkanClient *_gc, VulkanDevice *pDevice)
 		return;
 	}
 
-	// The Config->ShaderDebug block stood here and ran D3DXDisassembleEffect
-	// into Sketchpad_asm.html. VulkanUtil.cpp's CompileShaderStage already
-	// emits the SPIR-V disassembly when that flag is set -- per shader, at
-	// the compiler, rather than per effect afterwards.
+	// The Config->ShaderDebug block that ran D3DXDisassembleEffect stood here.
+	// CompileShaderStage emits the SPIR-V disassembly under the same flag.
 
 	pNoise	  = gc->GetNoiseTex();
 
@@ -315,9 +268,7 @@ void VulkanPad::GlobalExit()
 	fcache.clear();
 	qcache.clear();
 
-	// Was SAFE_RELEASE(FX). The effect owns its pipelines, layouts, samplers
-	// and arena and destroys them in its destructor; nothing is reference
-	// counted.
+	// Was SAFE_RELEASE(FX); nothing here is reference counted.
 	delete FX;
 	FX = NULL;
 
@@ -403,11 +354,8 @@ void VulkanPad::LoadDefaults()
 	QPen.bEnabled = false;
 	QBrush.bEnabled = false;
 
-	// Was memset(ClipData, 0, sizeof(ClipData)). ClipData holds an FVECTOR3,
-	// which has constructors, so memset over it is -Wclass-memaccess: it
-	// writes past what the class controls and would clobber anything the type
-	// grew. Value-initialising each element is the same zeroes with the
-	// type's own rules -- the same fix VulkanUtil.cpp applies to D9BBox.
+	// Was memset(ClipData, 0, sizeof(ClipData)); ClipData holds an FVECTOR3,
+	// whose constructors make that -Wclass-memaccess. Same zeroes.
 	for (int i = 0; i < 2; i++) {
 		ClipData[i].uDir = FVECTOR3(0, 0, 0);
 		ClipData[i].ca = 0.0f;
@@ -416,8 +364,6 @@ void VulkanPad::LoadDefaults()
 	}
 	ScissorRect = { 0,0,0,0 };
 
-	// Was D3DXCOLOR(DWORD(0)), which unpacks the DWORD 0 into four zero
-	// floats. FVECTOR4 has no DWORD constructor; the value is the same.
 	cColorKey  = FVECTOR4(0, 0, 0, 0);
 	brushcolor = SkpColor(0xFF00FF00);
 	bkcolor    = SkpColor(0xFF000000);
@@ -428,10 +374,6 @@ void VulkanPad::LoadDefaults()
 	VMAT_Identity(&mW);
 	VMAT_Identity(&mP);
 	VMAT_Identity(&mV);
-	// Was D3DXMatrixIdentity((D3DXMATRIX*)&ColorMatrix) -- a cast because
-	// ColorMatrix is an FMATRIX4 and D3DX only spoke D3DXMATRIX. Both are the
-	// same sixteen floats, which is why the cast worked; with one matrix type
-	// there is nothing to cast.
 	VMAT_Identity(&ColorMatrix);
 
 	Gamma = FVECTOR4(1, 1, 1, 1);
@@ -546,26 +488,18 @@ void VulkanPad::BeginDrawing(VulkanTexture *pRenderTgt, VulkanTexture *pDepthSte
 	}
 	else bMustEndScene = false;
 
-	// Was pRenderTgt->GetDesc(&tgt_desc) -- a D3D9 surface answered questions
-	// about itself. A VkImage answers none, which is why VulkanTexture
-	// records what it was asked for; Desc() hands back that record. See
-	// VulkanTypes.h.
+	// Was pRenderTgt->GetDesc(&tgt_desc). A VkImage answers nothing about
+	// itself, so VulkanTexture records what it was asked for.
 	tgt_desc = pRenderTgt->Desc();
 
 	zfar = float(tgt_desc.Width > tgt_desc.Height ? tgt_desc.Width : tgt_desc.Height);
 
-	// Was D3DXMatrixOrthoOffCenterLH(&mO, 0, W, H, 0, 0, zfar): a left-handed
-	// off-centre orthographic projection with the top edge at y=0 and the
-	// bottom at y=H, which is what puts the Sketchpad's origin at the top
-	// left. Written out because D3DX is a Direct3D utility library with no
-	// Vulkan counterpart -- see VMAT_Transformation2D in VulkanUtil.cpp for
-	// the same reasoning.
-	//
-	// THE DEPTH RANGE IS THE ONE REAL DIFFERENCE. D3D9 clip space is
-	// 0 <= z <= w and so is Vulkan's, so the LH orthographic matrix carries
-	// over unchanged -- it is OpenGL, with -w <= z <= w, that would have
-	// needed a different one. Nothing to adjust, but it is the first thing a
-	// reader will want to check.
+	// Was D3DXMatrixOrthoOffCenterLH(&mO, 0, W, H, 0, 0, zfar), written out:
+	// a left-handed off-centre orthographic projection with the top edge at
+	// y=0, which is what puts the Sketchpad's origin at the top left. The
+	// depth range needs no adjustment -- D3D9 clip space is 0 <= z <= w and so
+	// is Vulkan's; it is OpenGL, with -w <= z <= w, that would have needed a
+	// different matrix.
 	{
 		const float l = 0.0f, r = float(tgt_desc.Width);
 		const float b = float(tgt_desc.Height), t = 0.0f;
@@ -680,9 +614,9 @@ bool VulkanPad::Flush(HPOLY hPoly)
 
 	if (!FX) { iI = vI = 0; return false; }
 
-	// Which render targets the pad actually draws into, and how much. Reported
-	// once per target size so a frame of HUD and MFD drawing does not flood
-	// the log. Diagnostic only; env-gated.
+	// ORBITER_VK_TRACE_FLUSH: which render targets the pad draws into and how
+	// much. Once per target size, so a frame of HUD and MFD drawing does not
+	// flood the log.
 	{
 		static const bool bTraceFlush = (getenv("ORBITER_VK_TRACE_FLUSH") != NULL);
 		if (bTraceFlush) {
@@ -694,10 +628,9 @@ bool VulkanPad::Flush(HPOLY hPoly)
 					   tgt_desc.Width, tgt_desc.Height, vI, iI,
 					   hPoly ? "yes" : "no", (unsigned)(dwBlendState & 0xF),
 					   int(bDepthEnable && pDep), int(vmode));
-				// The geometry itself, for the first few vertices. A quad that
-				// produces no fragments is either degenerate, off-viewport or
-				// transformed by the wrong pass, and none of those can be told
-				// apart from the counts alone.
+				// A quad that produces no fragments is either degenerate,
+				// off-viewport or transformed by the wrong pass, and the
+				// counts alone do not separate those.
 				for (WORD k = 0; k < vI && k < 4; k++)
 					LogErr("FLUSHTRACE   v%u pos=(%.1f,%.1f) nxt=(%.1f,%.1f) clr=%08X fnc=%08X",
 						   (unsigned)k, Vtx[k].x, Vtx[k].y, Vtx[k].nx, Vtx[k].ny,
@@ -718,9 +651,8 @@ bool VulkanPad::Flush(HPOLY hPoly)
 	FX->SetVector(eTarget, &vTarget);
 	FX->SetTechnique(eSketch);
 
-	// The four blend states. D3DRS_COLORWRITEENABLE's bits are
-	// RED|GREEN|BLUE|ALPHA = 1|2|4|8 and VK_COLOR_COMPONENT_*_BIT is the same
-	// order, so 0x7 and 0x8 and 0xF carry over as they stand.
+	// The four blend states. D3DRS_COLORWRITEENABLE's bits are RGBA = 1|2|4|8
+	// and VK_COLOR_COMPONENT_*_BIT is the same order, so the masks stand.
 	if (dwBlend == Sketchpad::BlendState::ALPHABLEND) {
 		ovr.colorWriteMask = 0x7;
 		ovr.blendEnable = 1;
@@ -754,33 +686,28 @@ bool VulkanPad::Flush(HPOLY hPoly)
 	// state that persists until changed.
 	if (bEnableScissor) ovr.scissor = &ScissorRect;
 
-	// The topology. It was the D3DPRIMITIVETYPE argument to the draw on
-	// Windows; it is pipeline state here, so it is declared before the bind.
-	//
-	// A poly object carries its OWN topology -- VulkanTriangle draws a list,
-	// a fan or a strip depending on its style -- and the pipeline is bound
-	// before its Draw() is reached, so it has to be asked now. See
-	// VulkanPolyBase::Topology.
+	// The topology, which was the D3DPRIMITIVETYPE argument to the draw and is
+	// pipeline state here, declared before the bind. A poly object carries its
+	// own -- VulkanTriangle draws a list, a fan or a strip depending on its
+	// style -- and the pipeline is bound before its Draw() is reached, so it
+	// has to be asked now.
 	if (hPoly) FX->SetTopology(static_cast<VulkanPolyBase *>(hPoly)->Topology());
 	else if (tCurrent == TRIANGLE) FX->SetTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
 	else if (tCurrent == LINE)     FX->SetTopology(VK_PRIMITIVE_TOPOLOGY_LINE_LIST);
 	else { iI = vI = 0; return false; }
 
-	// THESE TWO RETURNS USED TO BE SILENT, AND THAT IS A DEFECT IN ITSELF.
+	// These two returns used to be silent, and that is a defect in itself: both
+	// discard the whole batch, Flush's bool is not checked by
+	// CopyRect/StretchRect/Text, and clbkScaleBlt's Sketchpad branch ends in
+	// `return AutoGenMips(tgt)`, which returns true unconditionally. So a pad
+	// that cannot open a pass renders nothing and every layer above it reports
+	// success.
 	//
-	// Both discard the whole batch. The caller cannot tell: VulkanPad::Flush's
-	// bool is not checked by CopyRect/StretchRect/Text, and clbkScaleBlt's
-	// Sketchpad branch ends in `return AutoGenMips(tgt)` -- which returns true
-	// unconditionally. So a pad that cannot open a pass renders nothing and
-	// every layer above it reports success.
-	//
-	// WHAT THAT HID: the Delta-glider's registration panel drew as a black
-	// rectangle. The DG composes it at runtime -- clbkSetClassCaps copies
-	// idpanel1.dds into a render target, clbkPostCreation writes the vessel
-	// name over it -- and because idpanel1.dds is DXT1, clbkScaleBlt's two
-	// BlitTexture paths are both gated on !bSC and it is forced down the
-	// Sketchpad route, the one route that needs a live render pass. The name
-	// appeared and the background did not, with a completely clean log.
+	// What that hid: the Delta-glider's registration panel drew as a black
+	// rectangle. The DG composes it at runtime, and because idpanel1.dds is
+	// DXT1 it is forced down the Sketchpad route -- the one route that needs a
+	// live render pass. The name appeared, the background did not, and the log
+	// was clean.
 	//
 	// Reported once per reason, not per call: this runs at frame rate.
 	if (!FX->Begin(&numPasses, 0)) {
@@ -812,11 +739,10 @@ bool VulkanPad::Flush(HPOLY hPoly)
 		return false;
 	}
 
-	// Bisection aid: ORBITER_VK_SKPCLEAR=1 clears the whole target to magenta
-	// inside the pad's own pass, immediately before its draw. If the target
-	// then reads back magenta the pass and the image are right and the
-	// geometry is at fault; if it reads back unchanged, the pass is not
-	// landing on this image at all. Diagnostic only.
+	// ORBITER_VK_SKPCLEAR=1 clears the whole target to magenta inside the pad's
+	// own pass, immediately before its draw: magenta afterwards means the pass
+	// and the image are right and the geometry is at fault, unchanged means the
+	// pass is not landing on this image at all.
 	{
 		static const bool bSkpClear = (getenv("ORBITER_VK_SKPCLEAR") != NULL);
 		if (bSkpClear) pDev->ClearFrame(true, false, false, 0xFFFF00FF, 1.0f, 0);
@@ -828,10 +754,9 @@ bool VulkanPad::Flush(HPOLY hPoly)
 		pBase->Draw(this, pDev);
 	}
 	else {
-		// Was DrawIndexedPrimitiveUP with a primitive COUNT -- iI/3 triangles
-		// or iI/2 lines. Vulkan's vkCmdDrawIndexed takes an INDEX count, so
-		// the division goes away rather than being repeated: DrawUP is given
-		// iI directly.
+		// Was DrawIndexedPrimitiveUP with a primitive count, iI/3 triangles or
+		// iI/2 lines. vkCmdDrawIndexed takes an index count, so DrawUP is
+		// given iI directly.
 		FX->DrawUP(Vtx, vI, sizeof(SkpVtx), Idx, iI);
 	}
 
@@ -931,8 +856,7 @@ void VulkanPad::SetupDevice(Topo tNew)
 			FX->SetBool(eCovEn, false);
 		}
 		else {
-			// mP._22 became mP.m22 -- the same element, D3DXMATRIX's own
-			// leading-underscore naming being the only difference.
+			// mP._22 became mP.m22 -- the same element under FMATRIX4's naming.
 			float d = float(tgt_desc.Height) * mP.m22;
 			float f = atan(1.0f / d) * 1.7f;
 			VMAT_MatrixMultiply(&mVP, &mV, &mP);
@@ -970,12 +894,10 @@ void VulkanPad::SetupDevice(Topo tNew)
 
 	// Apply a new setup -----------------------------------------------------------------
 	//
-	// Was SetScissorRect + D3DRS_SCISSORTESTENABLE here. Both moved into
-	// Flush's PassOverride: a scissor rectangle is dynamic state applied when
-	// the pipeline is bound, not device state that persists between draws.
-	// The SKPCHG_CLIPRECT flag stays -- it still means "the rectangle moved,
-	// flush what is queued before it does" -- and the flag is what forced the
-	// Flush at the top of this function.
+	// Was SetScissorRect + D3DRS_SCISSORTESTENABLE here; both moved into
+	// Flush's PassOverride. The SKPCHG_CLIPRECT flag stays -- it still means
+	// "the rectangle moved, flush what is queued before it does", and is what
+	// forced the Flush at the top of this function.
 
 
 	// Apply a new setup -----------------------------------------------------------------
@@ -999,10 +921,8 @@ void VulkanPad::SetupDevice(Topo tNew)
 
 		if (hTexture) {
 
-			// Was hTexture->GetLevelDesc(0, &desc), which asked the texture
-			// for its own dimensions. A VkImage answers nothing about itself,
-			// so the recorded description is read instead -- see
-			// VulkanTypes.h. Level 0 is what Desc() holds.
+			// Was hTexture->GetLevelDesc(0, &desc). A VkImage answers nothing
+			// about itself; Desc() is the recorded level 0.
 			const VulkanImageDesc &desc = hTexture->Desc();
 
 			tw = 1.0f / float(desc.Width);
@@ -1286,14 +1206,12 @@ bool VulkanPad::IsDashed() const
 
 // ===============================================================================================
 //
-// The three formats it tests for are the three that carry an alpha channel.
-// D3DFMT_A8R8G8B8 is VK_FORMAT_B8G8R8A8_UNORM here -- see the note in
-// VulkanSurface.h on why the X/A distinction is carried by the surface flags
-// rather than by the Vulkan format -- so the test on the FORMAT alone can no
-// longer tell A8R8G8B8 from X8R8G8B8. That distinction is what
-// OAPISURFACE_ALPHA/NOALPHA exists for, and the render target's own flags are
-// where it lives; tgt_desc has only the format, so the two float formats are
-// tested as before and the 8-bit case asks the surface.
+// The X/A distinction is carried by the surface flags here, not by the Vulkan
+// format -- D3DFMT_A8R8G8B8 and D3DFMT_X8R8G8B8 are both
+// VK_FORMAT_B8G8R8A8_UNORM -- so the test on the format alone can no longer
+// separate them. tgt_desc has only the format, so the two float formats are
+// tested as before and the 8-bit case asks the surface for its
+// OAPISURFACE_ALPHA/NOALPHA flag.
 //
 bool VulkanPad::IsAlphaTarget() const
 {
@@ -1524,8 +1442,7 @@ void VulkanPad::Rectangle (int l, int t, int r, int b)
 #ifdef SKPDBG
 	Log("Rectangle()");
 #endif
-	// Who fills and with what. Reported once per distinct state so a frame of
-	// HUD drawing does not flood the log. Diagnostic only; env-gated.
+	// ORBITER_VK_TRACE_SKP: who fills and with what, once per distinct state.
 	static const bool bTraceSkp = (getenv("ORBITER_VK_TRACE_SKP") != NULL);
 	if (bTraceSkp) {
 		static std::map<std::string, int> seen;
@@ -1574,8 +1491,8 @@ void VulkanPad::Ellipse (int x0, int y0, int x1, int y1)
 #endif
 
 	float w = float(x1 - x0); float h = float(y1 - y0);	float fx0 = float(x0); float fy0 = float(y0);
-	// Was max((x1-x0), (y1-y0)). The shim supplies no max() macro -- see
-	// VulkanUtil.h -- and std::max would need both arguments the same type.
+	// Was max((x1-x0), (y1-y0)). There is no windows.h max() macro here, and
+	// std::max would need both arguments the same type.
 	DWORD z = DWORD((x1 - x0) > (y1 - y0) ? (x1 - x0) : (y1 - y0));
 
 	w *= 0.5f;
@@ -1741,10 +1658,6 @@ void VulkanPad::ReleaseSaveBuffer () {
 
 // -----------------------------------------------------------------------------------------------
 // Subroutines Section
-//
-// Everything from here to the end of the templates is arithmetic on the
-// client's own arrays. No device call appears in any of it on either
-// platform, so it is carried over unchanged apart from the vector type.
 // -----------------------------------------------------------------------------------------------
 
 // ===============================================================================================
@@ -1863,10 +1776,8 @@ int CreatePolyIndexList(const Type *pt, short npt, WORD *Out)
 }
 
 
-// _FV2, _FV2Extrapolate and _FV2Length stood here as file-local helpers.
-// They are in VulkanPad.h now, because VulkanPad2.cpp's
-// VulkanPolyLine::Update needs the same extrapolation and duplicating it is
-// how two line renderers end up disagreeing about their end caps.
+// _FV2, _FV2Extrapolate and _FV2Length stood here as file-local helpers; they
+// are in VulkanPad.h now, because VulkanPad2.cpp needs the same extrapolation.
 
 
 // ===============================================================================================
@@ -2085,10 +1996,6 @@ void VulkanPad::AppendLineVertexList(const Type *pt)
 // ===============================================================================================
 // The static members.
 //
-// eSketch and eDrawMesh are TECHHANDLE -- they select a pipeline set. The
-// other twenty-eight name parameters and stay HANDLE. See VulkanEffect.h for
-// why D3DXHANDLE could be both and these cannot.
-//
 TECHHANDLE   VulkanPad::eSketch = 0;
 TECHHANDLE   VulkanPad::eDrawMesh = 0;
 HANDLE       VulkanPad::eVP = 0;
@@ -2126,12 +2033,9 @@ VulkanEffectFile* VulkanPad::FX = 0;
 VulkanClient * VulkanPad::gc = 0;
 WORD * VulkanPad::Idx = 0;
 SkpVtx * VulkanPad::Vtx = 0;
-// Five, not four, because the header declares five -- as the Windows header
-// does. Only 0..3 are ever filled (SinCos is called four times) and only 0..3
-// are freed in GlobalExit; the fifth has been unused since it was written.
-// The extent is spelled out here rather than left empty, which is what the
-// Windows definition does (`LPD3DXVECTOR2 D3D9Pad::pSinCos[];`) and which
-// GCC rejects as a conflicting declaration.
+// The Windows definition is `LPD3DXVECTOR2 D3D9Pad::pSinCos[];` with no bound,
+// which GCC rejects as a conflicting declaration. Five, as the header declares;
+// only 0..3 are ever filled or freed, the fifth has always been unused.
 FVECTOR2 * VulkanPad::pSinCos[5] = { 0, 0, 0, 0, 0 };
 VulkanDevice * VulkanPadFont::pDev = 0;
 VulkanDevice * VulkanPad::pDev = 0;
@@ -2140,11 +2044,6 @@ VulkanTexture * VulkanPad::pNoise = 0;
 FILE* VulkanPad::log = 0;
 CRITICAL_SECTION VulkanPad::LogCrit;
 
-// `LPD3DXVECTOR2 D3D9Pad::pSinCos[];` stood above with no bound at all --
-// legal only because the class declares the extent, and MSVC accepts it. It
-// is spelled with its four elements here so the definition says what it is.
-// std::map<MESHHANDLE, SketchMesh*> MeshMap is declared in the header and
-// defined by whichever of D3D9Pad2/3 uses it; that is unchanged.
 
 
 // ======================================================================
@@ -2189,12 +2088,10 @@ VulkanPadFont::VulkanPadFont(int height, bool prop, const char *face, FontStyle 
 	DWORD strikeout = (style & FONT_STRIKEOUT) ? TRUE : FALSE;
 
 	// The quality settings are carried over unchanged although the atlas
-	// builder does not read them: NONANTIALIASED / PROOF / CLEARTYPE_QUALITY
-	// are GDI's instructions to ITS rasteriser, and the rasteriser here is
-	// stb_truetype, which antialiases unconditionally and has no ClearType.
-	// They stay because GetQuality() is public and the value round-trips
-	// through the LOGFONT, and because dropping them would silently change
-	// what a caller reads back.
+	// builder does not read them: they are GDI's instructions to ITS
+	// rasteriser, and stb_truetype antialiases unconditionally and has no
+	// ClearType. GetQuality() is public and the value round-trips through the
+	// LOGFONT, so dropping them would change what a caller reads back.
 	Quality = NONANTIALIASED_QUALITY;
 
 	if ((flags & 0xF) == 0) {
@@ -2215,14 +2112,10 @@ VulkanPadFont::VulkanPadFont(int height, bool prop, const char *face, FontStyle 
 		pFont = std::make_shared<VulkanText>(pDev);
 		pFont->Init(hNew);
 
-		// VulkanText::Init consumes the handle -- DeleteObject(hFont) is the
-		// last thing it does, exactly as D3D9Text::Init did. The
-		// DeleteObject(hNew) that stood here would therefore be a SECOND
-		// delete of the same object. It is harmless on Windows because
-		// D3D9Text::Init's own DeleteObject already invalidated it and GDI
-		// ignores a stale handle; it is removed rather than kept, because
-		// "delete it twice and rely on the second one failing" is not a
-		// contract worth carrying over.
+		// Init() consumes the handle -- DeleteObject(hFont) is the last thing
+		// it does, as D3D9Text::Init did -- so the DeleteObject(hNew) that
+		// stood here was a second delete of the same object, harmless on
+		// Windows only because GDI ignores a stale handle.
 
 		pFont->SetRotation(rotation);
 
@@ -2289,19 +2182,11 @@ VulkanPadFont::VulkanPadFont(int height, char *face, int width, int weight, Font
 		pFont = std::make_shared<VulkanText>(pDev);
 		pFont->Init(hFont);
 
-		// AND HERE IS A REAL LEAK-AND-DANGLE IN THE WINDOWS SOURCE, kept
-		// visible rather than silently fixed.
-		//
-		// This branch assigns hFont, then hands it to Init() -- which
-		// DELETES it (D3D9Text::Init ends with DeleteObject(hFont), and
-		// VulkanText::Init does the same). The member hFont is then a stale
-		// handle for the life of the font object, and GetGDIFont() hands it
-		// out. The OTHER branch, below, creates a SECOND font for exactly
-		// this reason.
-		//
-		// So the second font is created here too. It costs one handle and it
-		// makes GetGDIFont() return something valid in both branches, which
-		// is what it already promises.
+		// Dangling handle fixed from the Windows source: this branch assigns
+		// hFont and then hands it to Init(), which deletes it, leaving the
+		// member stale for the life of the font object while GetGDIFont()
+		// hands it out. The other branch below creates a second font for
+		// exactly this reason, so one is created here too.
 		hFont = CreateFont(height, width, 0, 0, weight, italic, underline, strikeout, 0, 0, 2, Quality, 49, face);
 
 		pFont->SetRotation(0.0f);
@@ -2370,12 +2255,10 @@ void VulkanPadFont::VulkanTechInit(VulkanDevice *pDevice)
 // class GDIPen
 // ======================================================================
 
-// The initialiser list reads `oapi::Pen(style, width, col)` and passes the
-// class's OWN members -- both of them uninitialised at that point -- instead
-// of the parameters s and w two lines below. It is in the Windows source and
-// it is a genuine use of indeterminate values; the base class stores them and
-// nothing in the tree reads them back, which is why it has never shown. The
-// parameters are passed instead, which is plainly what was meant.
+// Bug fixed from the Windows source: the initialiser list reads
+// `oapi::Pen(style, width, col)`, passing the class's own members -- both
+// uninitialised at that point -- instead of the parameters s and w. Nothing in
+// the tree reads the base class's copies back, which is why it never showed.
 VulkanPadPen::VulkanPadPen (int s, int w, DWORD col): oapi::Pen (s, w, col)
 {
 	switch (s) {

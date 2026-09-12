@@ -1,72 +1,16 @@
 // ===================================================
 // Copyright (C) 2021-2026 Jarmo Nikkanen
 // licensed under LGPL v2
-//
-// LINUX/VULKAN CONVERSION OF OVP/D3D9Client/IProcess.h
-//
-// WHAT THIS CLASS IS, AND WHY IT SURVIVES ALMOST INTACT.
-//
-// ImageProcessing is the client's "run a pixel shader over a rectangle"
-// helper: give it a shader file and an entry point, set some constants and
-// textures, point it at a render target, and Execute() draws two triangles
-// covering the target so the shader runs once per pixel. Nothing about that
-// idea is Direct3D-specific, so the class keeps its name, its members, its
-// method list and the order of everything in it. What changes is what each
-// member IS.
-//
-// THE SIX SUBSTITUTIONS, once, so the rest reads as the same file:
-//
-//   LPDIRECT3DDEVICE9        -> VulkanDevice *
-//   LPDIRECT3DPIXELSHADER9   -> VkShaderModule   (and the vertex shader too;
-//                               Vulkan has one module type, not one per stage)
-//   LPD3DXCONSTANTTABLE      -> ShaderReflection *
-//   D3DXHANDLE               -> const ShaderReflection::Var *
-//   LPDIRECT3DSURFACE9       -> VulkanTexture *
-//   LPDIRECT3DBASETEXTURE9   -> VulkanTexture *   (D3D9 needed a base
-//                               interface because a 2D texture and a cube map
-//                               were different types; a VkImage is one type
-//                               whose view says which it is)
-//
-// THREE MEMBERS DISAPPEAR ENTIRELY, and each is worth naming:
-//
-//   pRtgBak[4] and pDepthBak. On Windows Execute() read the four current
-//   render targets and the depth surface back out of the device, set its own,
-//   drew, and put the old ones back -- because a render target IS device
-//   state in D3D9 and there was nowhere else to keep it. Vulkan has no such
-//   state to save: the attachments are baked into a VkFramebuffer inside a
-//   VkRenderPass, and VulkanDevice::BeginOffscreen/EndOffscreen bracket the
-//   draw with a pass of their own and restore the frame's command buffer
-//   afterwards. So the save/restore is not translated -- it is performed by
-//   the two calls that replace SetRenderTarget.
-//
-//   D3DVIEWPORT9 iVP is kept, as a VkViewport, because SetupViewPort() still
-//   computes it and the projection matrix from the target's size -- but it is
-//   no longer pushed with SetViewport(): BeginOffscreen sets the viewport and
-//   scissor from the attachment extent, which is the same number arrived at
-//   from the same place.
-//
-// SEVERAL MEMBERS ARE NEW, and none has a D3D9 counterpart at all: a
-// descriptor set layout, a pipeline layout, one descriptor set, the two
-// uniform buffers the constant writes land in, a pipeline cache keyed on what
-// Execute() varies, and the scratch vertex/index buffers that replace
-// DrawPrimitiveUP's hidden staging. Every one of them is the same addition,
-// for the same reason, as the ones ShaderClass grew in VulkanUtil.h -- see
-// the notes there rather than repeating them.
 // ===================================================
 
 #ifndef __IPROCESS_H
 #define __IPROCESS_H
 
-// Was <d3d9.h> and <d3dx9.h>. VulkanUtil.h brings in <vulkan/vulkan.h>, the
-// vertex declarations, SMVERTEX, SketchMesh and the two shader compilers --
-// which is the same set of things D3D9Util.h brought in beside the two
-// Direct3D headers.
-// VulkanFrame.h is named explicitly rather than left to VulkanUtil.h's own
-// include chain: this header stores a ShaderReflection::Var* and a
-// VulkanImageDesc BY VALUE, and VulkanTypes.h only forward-declares the class
-// that holds the first. D3D9Util.h had the same relationship with d3dx9.h and
-// got away with it because D3DXHANDLE is a typedef for a pointer to an opaque
-// struct -- no definition needed anywhere.
+// Was <d3d9.h> and <d3dx9.h>. VulkanFrame.h is named explicitly rather than
+// left to VulkanUtil.h's include chain: this header stores a
+// ShaderReflection::Var* and a VulkanImageDesc by value, and VulkanTypes.h
+// only forward-declares the class that holds the first. D3D9Util.h got away
+// without it because D3DXHANDLE is a pointer to an opaque struct.
 #include <list>
 #include <map>
 #include <string>
@@ -174,12 +118,10 @@ public:
 
 	// Native Vulkan calls --------------------------------------------------------------
 	//
-	// Was "Native DirectX calls". Same three functions, same purpose -- take
-	// the API's own object rather than a SURFHANDLE -- and the object is a
-	// VulkanTexture now. The two surface types D3D9 distinguished here,
-	// LPDIRECT3DSURFACE9 for a render target and LPDIRECT3DBASETEXTURE9 for a
-	// sampled texture, are one type in Vulkan: an image is a render target or
-	// a texture by its usage flags, not by its interface.
+	// The two surface types D3D9 distinguished here -- LPDIRECT3DSURFACE9 for
+	// a render target, LPDIRECT3DBASETEXTURE9 for a sampled texture -- are one
+	// type in Vulkan: an image is one or the other by its usage flags, not by
+	// its interface.
 	void	SetDepthStencil(VulkanTexture *hSrf = NULL);
 	void	SetOutputNative(int id, VulkanTexture *hSrf);
 	void	SetTextureNative(const char *var, VulkanTexture *hTex, DWORD flags);
@@ -196,21 +138,17 @@ private:
 	struct {
 		VulkanTexture  *hTex;
 		DWORD			flags;
-		// NEW, AND THE PRICE OF HAVING NO SAMPLER STATE ON THE DEVICE. D3D9
-		// set eight D3DSAMP_ values on a numbered slot and the runtime kept
-		// them; a VkSampler is an immutable object built from those same
-		// eight numbers, so the slot has to own one. Rebuilt only when the
-		// flags change, which is what the eight SetSamplerState calls cost
-		// when they changed nothing. Same member, same reasoning, as
-		// ShaderClass::TexParams::pSampler.
+		// New: there is no sampler state on the device. D3D9 set eight
+		// D3DSAMP_ values on a numbered slot and the runtime kept them; a
+		// VkSampler is an immutable object built from those same numbers, so
+		// the slot owns one and rebuilds it only when the flags change.
 		VkSampler		pSampler;
 		DWORD			smpFlags;	///< the flags pSampler was built from
-		// The GLSL binding number this slot's sampler is declared at. D3D9
-		// needed no such thing: the sampler INDEX was the device slot, so one
-		// number answered both questions. Here the index picks the entry in
-		// this array -- which is what GetSamplerIndex answered on Windows --
-		// and the binding says where in the descriptor set it goes, and the
-		// two are equal only by accident.
+		// The GLSL binding this slot's sampler is declared at. On Windows one
+		// number answered both questions, because the sampler index was the
+		// device slot. Here the index picks the entry in this array and the
+		// binding says where in the descriptor set it goes; the two are equal
+		// only by accident.
 		uint32_t		binding;
 	} pTextures[8];
 
@@ -219,7 +157,12 @@ private:
 	SketchMesh *pMesh;
 	std::map<std::string, SHADER> Shaders;
 	VulkanDevice *pDevice;
-	// pRtgBak[4] and pDepthBak are gone; see the file header.
+	// pRtgBak[4] and pDepthBak are gone. Execute() saved the device's four
+	// render targets and depth surface, set its own, drew, and put the old
+	// ones back, because a render target is device state in D3D9. There is no
+	// such state here -- the attachments live in a VkFramebuffer inside a
+	// VkRenderPass, and BeginOffscreen/EndOffscreen bracket the draw with a
+	// pass of their own and restore the frame's command buffer afterwards.
 	VulkanTexture *pRtg[4];
 	VulkanTexture *pDepth;
 	ShaderReflection *pVSConst;
@@ -239,19 +182,16 @@ private:
 	char	file[256];
 	char	ppf[256];
 	char	entry[32];
-	// NEW, AND ONLY BECAUSE A PIPELINE NAMES ITS ENTRY POINTS. D3D9 compiled
-	// an entry point into a shader object and SetVertexShader took the object;
-	// the name was not needed again. VkPipelineShaderStageCreateInfo::pName
-	// names the SPIR-V entry point at pipeline-build time, so the vertex
-	// entry has to be kept -- 'entry' already keeps the pixel one, which is
-	// why there is no second addition for that stage.
+	// New, because a pipeline names its entry points.
+	// VkPipelineShaderStageCreateInfo::pName needs the SPIR-V entry point at
+	// pipeline-build time, where D3D9 only needed it at compile time. 'entry'
+	// already keeps the pixel stage's.
 	char	vsentry[32];
 
 	std::list<std::string> def;
 
 	// ------------------------------------------------------------------
-	// Everything below this line is new, and none of it has a D3D9
-	// counterpart -- it is the machinery that replaces device state.
+	// Everything below is new: the machinery that replaces device state.
 	// ------------------------------------------------------------------
 
 	/// \brief Build the descriptor set layout, the pipeline layout, the two
@@ -259,20 +199,15 @@ private:
 	///        reflection of the shaders this object compiled.
 	bool	CreateResources();
 
-	/// \brief Fetch or build the pipeline for one Execute(). Its arguments
-	///        are exactly what Execute() varies: the blend mode, the
-	///        primitive topology the template implies, whether the mesh
-	///        path's D3DCULL_CCW is wanted, whether there is a depth
-	///        attachment, and the vertex declaration. Everything else that
-	///        Execute() used to set with SetRenderState is constant and is
-	///        written into the create-info directly.
+	/// \brief Fetch or build the pipeline for one Execute(). Its arguments are
+	///        what Execute() varies; everything else it used to set with
+	///        SetRenderState is constant and goes straight into the
+	///        create-info.
 	VkPipeline GetPipeline(DWORD blendop, VkPrimitiveTopology topo, bool bCull,
 						   bool bDepth, const VertexDecl *pDecl);
 
-	/// \brief Counterpart of ID3DXConstantTable::SetValue -- put 'bytes'
-	///        bytes at the variable's offset in its stage's uniform block.
-	///        The same function, for the same reason, as
-	///        ShaderClass::WriteConstants.
+	/// \brief Counterpart of ID3DXConstantTable::SetValue -- put 'bytes' bytes
+	///        at the variable's offset in its stage's uniform block.
 	bool	WriteConstants(ShaderReflection *pCB, const ShaderReflection::Var *v,
 						   const void *data, int bytes);
 
@@ -286,19 +221,18 @@ private:
 
 	/// \brief The scratch buffers the two template draws copy into.
 	///        DrawIndexedPrimitiveUP and DrawPrimitiveUP had the runtime do
-	///        this behind them. Same pair, same reason, as ShaderClass's.
+	///        this behind them.
 	bool	EnsureScratch(VkDeviceSize vbytes, VkDeviceSize ibytes);
 
 	VkDescriptorSetLayout	vkSetLayout;
 	VkPipelineLayout		vkPipeLayout;
-	// A POOL AND NOT A SINGLE SET, and the reason is the mesh template. That
-	// path draws one group at a time and changes the texture between groups
-	// -- SetTexture(mesh_tex_idx, ...) on Windows, which was device state and
-	// took effect at the next DrawPrimitive. A descriptor set is not device
-	// state: it is memory the recorded draw still refers to, so rewriting the
-	// same set between two draws in one command buffer changes what the FIRST
-	// draw samples as well. Hence a fresh set per draw, out of a pool this
-	// object owns and resets at the top of every Execute().
+	// A pool rather than a single set, because of the mesh template: that path
+	// draws one group at a time and changes the texture between groups, which
+	// on Windows was device state taking effect at the next DrawPrimitive. A
+	// descriptor set is memory the recorded draw still refers to, so rewriting
+	// one set between two draws in a command buffer changes what the first
+	// draw samples as well. Hence a fresh set per draw, from a pool this
+	// object resets at the top of every Execute().
 	VkDescriptorPool		vkPool;
 	VkDescriptorSet			vkSet;		///< the set BindResources last wrote
 	VulkanBuffer		   *pVSBuf;		///< the vertex stage's uniform block
@@ -309,17 +243,16 @@ private:
 	VkDeviceSize			scratchVBSize, scratchIBSize;
 	VulkanTexture		   *pWhite;		///< see BindResources
 	/// The cube-shaped counterpart of pWhite, for an unset samplerCube
-	/// binding. Built only when one of these shaders declares a cube -- see
-	/// CreateResources. A cube declaration filled with a 2D view faults.
+	/// binding. Built only when one of these shaders declares a cube; a cube
+	/// declaration filled with a 2D view faults.
 	VulkanTexture		   *pWhiteCube;
 
-	/// \brief The pipeline cache. Keyed on what GetPipeline() takes, for the
-	///        same reason ShaderClass::PipeKey is keyed on what Setup() takes
-	///        -- plus the render pass, because a VkPipeline is valid only in a
-	///        pass COMPATIBLE with the one it was built against and this class
-	///        draws into a different set of attachments on nearly every call,
-	///        and plus the pixel shader module, because Activate() swaps that
-	///        between calls and D3D9 could change it with one SetPixelShader.
+	/// \brief The pipeline cache, keyed on what GetPipeline() takes, plus two
+	///        things: the render pass, because a VkPipeline is valid only in a
+	///        pass compatible with the one it was built against and this class
+	///        draws into a different set of attachments on nearly every call;
+	///        and the pixel shader module, because Activate() swaps that
+	///        between calls where D3D9 needed only one SetPixelShader.
 	struct PipeKey {
 		DWORD				blend;
 		VkPrimitiveTopology	topo;

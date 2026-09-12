@@ -5,12 +5,6 @@
 // for the vertex and vector structs that Orbiter's mesh format is expressed
 // in, and never calls a Direct3D function or touches a GPU.
 //
-// So this header defines the data layout only. The two interface pointers it
-// declares (LPDIRECT3DDEVICE7, LPDIRECTDRAWSURFACE7) appear in meshc solely as
-// an unused Render() parameter and a texture-handle array; they are forward
-// declarations to structs that are never defined, which is enough to compile
-// and link and will fail loudly if anyone ever dereferences one.
-//
 // Layouts match the DirectX 7 SDK exactly, because Orbiter's .msh binary
 // format is written directly from these structs.
 
@@ -23,24 +17,16 @@
 
 #include <windows.h>
 
-// THE D3D*_DEFINED GUARDS BELOW ARE THE SDK'S OWN, and they are here for one
-// reason: on Linux this header and a Direct3D 9 header can end up in the same
-// translation unit, which on Windows they never do.
-//
-// The graphics client is written against <d3d9.h>, and the DirectX 9 SDK
-// header defines D3DVALUE, D3DVECTOR, D3DMATRIX, D3DCOLORVALUE and D3DCOLOR
-// itself -- each wrapped in exactly these #ifndef D3D*_DEFINED guards, for
-// exactly this coexistence. On Windows the guards are never needed by that
-// client, because the real <ddraw.h> does not include <d3dtypes.h>: the DX7
-// types arrive only via <d3d.h>, which nothing including <d3d9.h> also
-// includes. This tree's <ddraw.h> does include it (Src/Orbiter/Texture.h
-// wants DDSURFACEDESC2 and the DirectX 7 types together), so the two headers
-// meet, in both orders depending on the .cpp -- and the second one to be read
-// must yield rather than redefine.
-//
-// Nothing else here changed and the core cannot notice: nothing in the core
-// includes a Direct3D 9 header, so these flags are never pre-set for it and
-// every definition below is still taken.
+// The D3D*_DEFINED guards below are the SDK's own, and they matter here
+// because on Linux this header and a Direct3D 9 header can land in the same
+// translation unit, which on Windows they never do. <d3d9.h> defines
+// D3DVALUE, D3DVECTOR, D3DMATRIX, D3DCOLORVALUE and D3DCOLOR itself under
+// exactly these guards. On Windows the real <ddraw.h> does not include
+// <d3dtypes.h> -- the DX7 types arrive only via <d3d.h>, which nothing
+// including <d3d9.h> also includes. This tree's <ddraw.h> does include it
+// (Texture.h wants DDSURFACEDESC2 and the DirectX 7 types together), so the
+// two meet, in either order depending on the .cpp, and whichever is read
+// second must yield rather than redefine.
 
 #ifndef D3DVALUE_DEFINED
 #define D3DVALUE_DEFINED
@@ -152,7 +138,7 @@ typedef enum _D3DPRIMITIVETYPE {
 #define D3DRENDERSTATE_CULLMODE 22
 #define D3DRENDERSTATE_LIGHTING 137
 
-// Packs four 0..1 floats into a D3DCOLOR (0xAARRGGBB), as the SDK macro does.
+// Packs four 0..1 floats into a D3DCOLOR (0xAARRGGBB).
 #define D3DRGBA(r, g, b, a) \
     ((D3DCOLOR)( \
         (((DWORD)((a) * 255.0f + 0.5f)) << 24) | \
@@ -167,22 +153,14 @@ typedef enum _D3DPRIMITIVETYPE {
 
 #define D3DSTATUS_DEFAULT       0x00003000
 
-// Interface pointers.
-//
-// Mesh::Render() in Utils/meshc is a real Direct3D 7 draw path — it calls
-// ComputeSphereVisibility, SetMaterial, SetRenderState and
-// DrawIndexedPrimitive — so the interface cannot be left incomplete even
-// though meshc never invokes Render(): a mesh file converter has no device.
-//
 // DirectDraw surfaces appear only as opaque texture handles in this tree, so
 // an undefined struct is sufficient and prevents accidental dereference.
 struct IDirectDrawSurface7;
 typedef struct IDirectDrawSurface7 *LPDIRECTDRAWSURFACE7;
 
-// GroupSpec in Src/Orbiter/Mesh.h carries a vertex-buffer handle per mesh
-// group. Mesh.cpp calls Release() on it when freeing groups, so the interface
-// needs that one method; it is pure virtual for the same reason as the device
-// below, and nothing else on the type is ever touched by the core.
+// GroupSpec in Mesh.h carries a vertex-buffer handle per mesh group, and
+// Mesh.cpp calls Release() on it when freeing groups. That is the only method
+// the core ever touches.
 struct IDirect3DVertexBuffer7 {
     virtual ULONG Release () = 0;
 protected:
@@ -194,17 +172,18 @@ typedef struct IDirect3DVertexBuffer7 *LPDIRECT3DVERTEXBUFFER7;
 struct IDirect3D7;
 typedef struct IDirect3D7 *LPDIRECT3D7;
 
-// Device and driver capability blocks. Orbiter.cpp declares
-// ConfirmDevice(DDCAPS*, D3DDEVICEDESC7*) as a device-enumeration callback.
-// Nothing on Linux enumerates D3D devices, so the contents are never read and
-// incomplete types are sufficient for the declaration to compile.
+// Orbiter.cpp declares ConfirmDevice(DDCAPS*, D3DDEVICEDESC7*) as a
+// device-enumeration callback. Nothing on Linux enumerates D3D devices, so the
+// contents are never read and an incomplete type compiles the declaration.
 struct _D3DDEVICEDESC7;
 typedef struct _D3DDEVICEDESC7 D3DDEVICEDESC7, *LPD3DDEVICEDESC7;
 
-// The methods are pure virtual, which is also what they really are: Direct3D 7
-// interfaces are COM, so every call is vtable dispatch. That means Mesh.cpp
-// compiles and links with no bodies anywhere, while any actual call on a null
-// or bogus device faults immediately instead of silently succeeding.
+// Mesh::Render() in Utils/meshc is a real Direct3D 7 draw path, so the device
+// cannot be an incomplete type even though meshc never has a device to invoke
+// it with. The methods are pure virtual, which is what COM interfaces really
+// are: every call is vtable dispatch, so Mesh.cpp links with no bodies
+// anywhere and a call on a bogus device faults instead of silently
+// succeeding.
 struct IDirect3DDevice7 {
     virtual HRESULT ComputeSphereVisibility (LPD3DVECTOR centres, LPD3DVALUE radii,
                                              DWORD count, DWORD flags, LPDWORD ret) = 0;

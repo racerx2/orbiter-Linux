@@ -5,33 +5,6 @@
 // Copyright (C) 2006-2026 Martin Schweiger
 //				 2012-2016 Jarmo Nikkanen
 // ==============================================================
-//
-// CONVERTED FROM OVP/D3D9Client/VVessel.h, read end to end (229 lines).
-//
-// The vessel visual. A declaration file; the types change and the structure
-// does not:
-//
-//   oapi::D3D9Client        -> oapi::VulkanClient
-//   LPDIRECT3DDEVICE9       -> VulkanDevice*
-//   LPD3DXMATRIX / D3DXMATRIX -> FMATRIX4* / FMATRIX4
-//   D3DXVECTOR3             -> FVECTOR3
-//   D3D9Pad                 -> VulkanPad
-//   D3D9Mesh                -> VulkanMesh
-//   D3D9Pick                -> VulkanPick
-//   LPDIRECT3DTEXTURE9      -> VulkanTexture*
-//
-// **LPDIRECT3DCUBETEXTURE9 ALSO BECOMES VulkanTexture\*, and that is the one
-// substitution worth pausing on.** D3D9 had a separate INTERFACE for a cube
-// map. Vulkan does not: a cube map is a VkImage with six array layers and a
-// VkImageView created with viewType VK_IMAGE_VIEW_TYPE_CUBE. So the type is
-// the same type, and "is it a cube" is a property of how it was created --
-// which is why the three environment-map members below lose their distinct
-// type and keep their distinct names.
-//
-// `bool const Playback() const` loses the top-level const on its returned
-// prvalue (-Wignored-qualifiers); the value is unaffected. Same finding as
-// OapiExtension.h's and Tilemgr2.h's.
-// ==============================================================
 
 #ifndef __VVESSEL_H
 #define __VVESSEL_H
@@ -155,8 +128,11 @@ public:
 	bool RenderENVMap (VulkanDevice *pDev, DWORD cnt=2, DWORD flags=0xFF);
 	bool ProbeIrradiance(VulkanDevice *pDev, DWORD cnt = 2, DWORD flags = 0xFF);
 
-	// Were LPDIRECT3DCUBETEXTURE9 / LPDIRECT3DTEXTURE9. See the file header:
-	// Vulkan has no separate cube-map type.
+	// Were LPDIRECT3DCUBETEXTURE9 / LPDIRECT3DTEXTURE9. Vulkan has no separate
+	// cube-map interface: a cube map is a VkImage with six array layers seen
+	// through a VK_IMAGE_VIEW_TYPE_CUBE view, so "is it a cube" is a property
+	// of how it was created. That is why these three environment-map accessors
+	// share one type and keep their distinct names.
 	VulkanTexture *GetEnvMap(int idx);
 	VulkanTexture *GetIrradEnv() { return pIrdEnv; }
 	VulkanTexture *GetIrradianceMap() { return pIrrad; }
@@ -167,7 +143,9 @@ public:
 
 	bool HasExtPass();
 	bool HasShadow();
-	// Was `bool const Playback() const`; see the file header.
+	// Was `bool const Playback() const`. The top-level const on the returned
+	// prvalue does nothing and GCC reports it (-Wignored-qualifiers); the
+	// value is unaffected. The trailing const stays.
 	bool Playback() const { return vessel->Playback(); }
 	class MatMgr * GetMaterialManager() const { return pMatMgr; }
 

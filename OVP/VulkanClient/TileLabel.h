@@ -6,11 +6,6 @@
 //                    Peter Schneider (Kuddel)
 // ==============================================================
 
-// CONVERTED FROM OVP/D3D9Client/TileLabel.h, read end to end (58 lines).
-// ONE TYPE CHANGES: D3D9Pad -> VulkanPad, in Render() and nowhere else. The
-// rest is a label list read from a file. The include of the pad header
-// follows the pad's own rename.
-
 #ifndef __TILELABEL_H
 #define __TILELABEL_H
 
@@ -36,9 +31,8 @@ private:
 	struct TLABEL {
 		// The list is reordered to the declaration order -- lat, lng, alt,
 		// pos, labeltype, len, label, nLines, stopLen, rotStep. Members are
-		// initialised in DECLARATION order whatever the list says; every
-		// value here is a constant, so nothing observable changes. Same
-		// finding as Objmgr's, ScatterParams's, VBMESH's and the rest.
+		// initialised in declaration order whatever the list says; every
+		// value here is a constant, so nothing observable changes.
 		TLABEL() : lat(), lng(), alt(), pos(), labeltype(0), len(0), label(NULL), nLines(1), stopLen(0), rotStep(0) {}
 		~TLABEL() { SAFE_DELETEA(label); }
 		double  lat, lng, alt; ///< spheric coordinates of the label

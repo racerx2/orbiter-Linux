@@ -6,66 +6,12 @@
 //				 2012 - 2016 Jarmo Nikkanen
 // ==============================================================
 //
-// CONVERTED FROM OVP/D3D9Client/Scene.cpp, read end to end (3929 lines).
-//
-// The scene: the camera, the visual list, the render passes, the shadow maps,
-// the environment maps, the glare pipeline and the post-processing chain. It
-// is the largest file in the client and the one that touches the device most,
-// so the notes below are the ones that recur; the rest are beside the code.
-//
-//  1. THE THREE ARRAY PAIRS ARE ONE SET OF IMAGES EACH, and this is the first
-//     thing that can go wrong. Scene.h explains why psgBuffer/ptgBuffer,
-//     psShmRT/ptShmRT and pLocalResultsSL/pLocalResults each became the SAME
-//     VulkanTexture reached through two names: a D3D9 texture could not be
-//     bound as a render target without GetSurfaceLevel(0), so the client kept
-//     a SURFACE and a TEXTURE for every G-buffer. A VkImage is both.
-//
-//     SO THE DESTRUCTOR MUST NOT RELEASE BOTH. The Windows destructor calls
-//     SAFE_RELEASE on each array in turn, which is correct there -- two
-//     reference counts -- and would be a double free here. Each pair is
-//     destroyed once and both names are cleared.
-//
-//  2. GetSurfaceLevel(0) DISAPPEARS EVERYWHERE, for the same reason, and with
-//     it every SAFE_RELEASE of the surface it produced. Where the reference
-//     fetches a surface to render into, the texture IS the render target.
-//
-//  3. CreateDepthStencilSurface BECOMES CreateTexture WITH
-//     DEPTH_STENCIL_ATTACHMENT USAGE. D3DFMT_D24S8 is
-//     VK_FORMAT_D24_UNORM_S8_UINT, which is OPTIONAL in Vulkan --
-//     D32_SFLOAT_S8_UINT is the fallback every desktop driver supports, and
-//     SelectDepthFormat/SupportsDepthStencil make that choice. Same pattern
-//     as NatCreateSurface's.
-//
-//  4. D3DUSAGE_AUTOGENMIPMAP HAS NO COUNTERPART. Vulkan generates nothing;
-//     the level count is declared at creation and VulkanDevice::GenerateMipmaps
-//     fills the chain by blitting down it. Same finding as
-//     SurfNative::GenerateMipMaps'.
-//
-//  5. SetRenderTarget IS NOT DEVICE STATE. In D3D9 a render target is set on
-//     the device and changed between draws; in Vulkan it is baked into a
-//     VkFramebuffer inside a VkRenderPass, and a pass cannot be nested inside
-//     another. Everything in this file that renders into its own target --
-//     the shadow maps, the environment maps, the irradiance chain, the custom
-//     cameras, the post-processing buffers -- therefore goes through
-//     VulkanDevice::BeginOffscreen / EndOffscreen, which is the render-pass
-//     and framebuffer cache described in VulkanFrame.h. That is the piece
-//     IProcess.cpp was deferred waiting for.
-//
-//  6. THE HLSL PATHS BECOME GLSL PATHS AND THE MODULE DIRECTORY FOLLOWS THE
-//     MODULE, but the ENTRY POINT NAMES and the TEXTURE FILE NAMES do not:
-//     the first are content the GLSL must match, and the second are files
-//     shipped in the installation. "Modules/D3D9Client/Glare.hlsl" becomes
-//     "Modules/VulkanClient/Glare.glsl"; "D3D9Noise.dds" stays what it is on
-//     disk.
-//
-// Type mapping is the file-wide one: D3D9Client -> VulkanClient,
-// D3D9CelestialSphere -> VulkanCelestialSphere, D3D9Light/Sun/Pick/MatExt ->
-// Vulkan..., D3D9ParticleStream -> VulkanParticleStream, D3D9Text ->
-// VulkanText, D3D9Pad -> VulkanPad, LPDIRECT3DDEVICE9 -> VulkanDevice*,
-// LPDIRECT3DSURFACE9 / TEXTURE9 / CUBETEXTURE9 -> VulkanTexture*,
-// ID3DXEffect -> VulkanEffectFile, D3DXHANDLE -> TECHHANDLE or HANDLE,
-// D3DXMATRIX -> FMATRIX4, D3DXVECTOR2/3/4 -> FVECTOR2/3/4,
-// D3DXCOLOR -> FVECTOR4, D3DCOLOR -> DWORD.
+// A render target is device state in D3D9 and is baked into a VkFramebuffer
+// inside a VkRenderPass here, and a pass cannot be nested inside another.
+// Everything in this file that renders into its own target -- the shadow maps,
+// the environment maps, the irradiance chain, the custom cameras, the
+// post-processing buffers -- therefore goes through
+// VulkanDevice::BeginOffscreen / EndOffscreen.
 // ==============================================================
 
 #include "Scene.h"
@@ -77,13 +23,8 @@
 #include "VulkanUtil.h"
 #include "VulkanConfig.h"
 #include "VulkanSurface.h"
-// VulkanPad.h is named here and is NOT in the Windows include list, because
-// on Windows it did not have to be: D3D9Surface.h included D3D9Pad.h, and
-// that is where Scene.cpp got the full definition of the Sketchpad class it
-// uses on nearly every page. VulkanSurface.h includes VulkanTypes.h instead --
-// a deliberate narrowing recorded in that file, since the surface no longer
-// needs the pad's definition to declare itself. So the dependency Scene.cpp
-// always had is now spelled out rather than inherited.
+// Not in the Windows include list: there, D3D9Surface.h included D3D9Pad.h,
+// and that is where Scene.cpp got the Sketchpad definition it uses.
 #include "VulkanPad.h"
 #include "VulkanTextMgr.h"
 #include "VulkanCatalog.h"
@@ -129,13 +70,15 @@ static const int FONT_SIZES[4] = { 12, 16, 20, 26 };
 
 
 // -------------------------------------------------------------------------------------------
-// The counterparts of SAFE_RELEASE for the two client resource types. Vulkan
-// objects are not reference counted; VulkanDevice::DestroyTexture is the
-// delete. Written once here because this file releases some sixty images.
+// SAFE_RELEASE's counterpart: Vulkan objects are not reference counted, so
+// DestroyTexture is the delete. Written once because this file releases some
+// sixty images.
 //
-// SEE NOTE 1 IN THE FILE HEADER BEFORE ADDING A CALL: psgBuffer/ptgBuffer,
-// psShmRT/ptShmRT and pLocalResultsSL/pLocalResults are each ONE image under
-// two names, and destroying both names is a double free.
+// Before adding a call: psgBuffer/ptgBuffer, psShmRT/ptShmRT and
+// pLocalResultsSL/pLocalResults are each one image under two names -- a D3D9
+// texture could not be bound as a render target without GetSurfaceLevel(0), so
+// the client kept a surface and a texture for every G-buffer, and a VkImage is
+// both. Destroying both names is a double free.
 // -------------------------------------------------------------------------------------------
 static inline void SafeDestroy(VulkanTexture *&p)
 {
@@ -206,14 +149,11 @@ Scene::Scene(VulkanClient *_gc, DWORD w, DWORD h)
 
 	pDevice = _gc->GetDevice();
 
-	// (void*) ON THE THREE memsets BELOW. Scene::CAMERA holds VECTOR3s and
-	// FVECTOR3s, VulkanSun holds FVECTOR3s and SHADOWMAPPARAM holds FMATRIX4s,
-	// so none of the three is trivially copyable to GCC's eye and it warns
-	// (-Wclass-memaccess) where MSVC does not. THE ZERO IS STILL WHAT IS
-	// WANTED and a constructor is not a substitute: FVECTOR3's default
-	// constructor leaves its fields untouched, so value-initialising these
-	// would not zero them. Same treatment, same reasoning, as the nine sites
-	// in Mesh.cpp.
+	// (void*) on the three memsets below, and on the two later in this file:
+	// these structs hold FVECTOR3/FMATRIX4 members, so GCC warns
+	// (-Wclass-memaccess) where MSVC does not. The zero is still what is
+	// wanted, and a constructor is no substitute -- FVECTOR3's default
+	// constructor leaves its fields untouched.
 	memset((void*)&Camera, 0, sizeof(Camera));
 
 	VMAT_Identity(&ident);
@@ -266,8 +206,7 @@ Scene::Scene(VulkanClient *_gc, DWORD w, DWORD h)
 	// ------------------------------------------------------------------------------
 	// Read Sun glare sampling kernel file
 	//
-	// GKernel.txt is DATA that ships beside the module, so only the module
-	// directory changes -- the file keeps its name.
+	// GKernel.txt ships beside the module, so only the directory changes.
 
 	ifstream fs("Modules/VulkanClient/GKernel.txt");
 	if (fs.good()) {
@@ -293,8 +232,8 @@ Scene::Scene(VulkanClient *_gc, DWORD w, DWORD h)
 	{
 		pRenderGlares = new ShaderClass(pDevice, "Modules/VulkanClient/Glare.glsl", "GlareVS", "GlarePS", "RenderGlares", "");
 		pLocalCompute = new ShaderClass(pDevice, "Modules/VulkanClient/Glare.glsl", "VisibilityVS", "VisibilityPS", "LocalVisCheck", "");
-		// D3DXCreateTexture + GetSurfaceLevel(0). One image, two names -- see
-		// note 1: pLocalResultsSL is pLocalResults and is not destroyed twice.
+		// D3DXCreateTexture + GetSurfaceLevel(0). One image, two names:
+		// pLocalResultsSL is pLocalResults and is not destroyed twice.
 		pLocalResults = pDevice->CreateTexture(32, 1, 1, VK_FORMAT_R16_SFLOAT,
 			VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
 			VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
@@ -315,12 +254,10 @@ Scene::Scene(VulkanClient *_gc, DWORD w, DWORD h)
 	DWORD EnvMapSize = Config->EnvMapSize;
 	DWORD ShmMapSize = Config->ShadowMapSize;
 
-	// D3DFMT_D24S8 / D3DFMT_D24X8 -> the one depth-stencil format the device
-	// actually supports. D24_UNORM_S8_UINT is optional in Vulkan;
-	// D32_SFLOAT_S8_UINT is the fallback every desktop driver has. The X8 and
-	// S8 spellings collapse: Vulkan has no "stencil bits present but unused"
-	// format, and an unused stencil is the same image with the stencil left
-	// alone -- which is what D24X8 already meant.
+	// D24_UNORM_S8_UINT is optional in Vulkan; D32_SFLOAT_S8_UINT is the
+	// fallback every desktop driver has. The D24X8 and D24S8 spellings
+	// collapse: there is no "stencil present but unused" format, which is what
+	// D24X8 meant.
 	VkFormat dsFmt = VK_FORMAT_D24_UNORM_S8_UINT;
 	if (!pDevice->SupportsDepthStencil(dsFmt)) dsFmt = VK_FORMAT_D32_SFLOAT_S8_UINT;
 
@@ -340,7 +277,7 @@ Scene::Scene(VulkanClient *_gc, DWORD w, DWORD h)
 			ptShmRT[i] = pDevice->CreateTexture(size, size, 1, VK_FORMAT_R32_SFLOAT,
 				VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
 				VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
-			psShmRT[i] = ptShmRT[i];		// GetSurfaceLevel(0); see note 2
+			psShmRT[i] = ptShmRT[i];		// was GetSurfaceLevel(0)
 			size >>= 1;
 		}
 
@@ -379,12 +316,7 @@ Scene::Scene(VulkanClient *_gc, DWORD w, DWORD h)
 		int BufSize = 1;
 		int BufFmt = 0;
 
-		// Get the actual back buffer description.
-		//
-		// `D3DSURFACE_DESC desc; gc->GetBackBuffer()->GetDesc(&desc);` -- a
-		// query to the runtime. A VkImage answers no such question, so the
-		// client's own record is read instead: VulkanTexture carries the
-		// VulkanImageDesc it was created with. See VulkanTypes.h.
+		// Get the actual back buffer description
 		const VulkanImageDesc &desc = gc->GetBackBuffer()->Desc();
 
 		char flags[32] = { 0 };
@@ -399,10 +331,11 @@ Scene::Scene(VulkanClient *_gc, DWORD w, DWORD h)
 			BufFmt = pLightBlur->FindDefine("BufferFormat");
 		}
 
-		// D3DFMT_A16B16G16R16F -> R16G16B16A16_SFLOAT (the two names reverse
-		// the component order and mean the same bytes); D3DFMT_A2R10G10B10 ->
-		// A2R10G10B10_UNORM_PACK32, which is a PACKED format and therefore
-		// keeps D3D's DWORD-order naming rather than taking byte order.
+		// D3DFMT_A16B16G16R16F is R16G16B16A16_SFLOAT: a D3D name lists the
+		// packed word from the top down and a Vulkan one lists the bytes, so
+		// the reversal means the same bytes. D3DFMT_A2R10G10B10 keeps its
+		// order because A2R10G10B10_UNORM_PACK32 is a packed format and packed
+		// formats are named in DWORD order in both.
 		VkFormat BackBuffer = desc.Format;
 		if (BufFmt == 1) BackBuffer = VK_FORMAT_R16G16B16A16_SFLOAT;
 		if (BufFmt == 2) BackBuffer = VK_FORMAT_A2R10G10B10_UNORM_PACK32;
@@ -414,12 +347,9 @@ Scene::Scene(VulkanClient *_gc, DWORD w, DWORD h)
 		// Create auxiliary color buffer for color operations
 		ptgBuffer[GBUF_COLOR] = pDevice->CreateTexture(viewW, viewH, 1, BackBuffer, rtUsage);
 
-		// Load some textures.
-		//
-		// D3D9Noise.dds and D3D9CLUT.dds are FILES IN THE INSTALLATION, not
-		// code, so they keep their names -- renaming them here would ask for
-		// files that do not exist. NatLoadTexture is
-		// D3DXCreateTextureFromFileA's counterpart (VulkanSurface.h).
+		// Load some textures. D3D9Noise.dds and D3D9CLUT.dds are files in the
+		// installation, not code, so they keep their names: renaming them here
+		// would ask for files that do not exist.
 		char buff[MAX_PATH];
 		if (gc->TexturePath("D3D9Noise.dds", buff)) pTextures[TEX_NOISE] = NatLoadTexture(buff);
 		if (gc->TexturePath("D3D9CLUT.dds", buff)) pTextures[TEX_CLUT] = NatLoadTexture(buff);
@@ -431,13 +361,9 @@ Scene::Scene(VulkanClient *_gc, DWORD w, DWORD h)
 
 		if (pLightBlur) {
 			// Construct an offscreen backbuffer with custom pixel format.
-			//
-			// CreateRenderTarget's multisample arguments have no counterpart
-			// worth carrying: the core's render pass is single-sampled
-			// (UIHost.cpp, VK_SAMPLE_COUNT_1_BIT), so the back buffer this
-			// copies its sample type from is single-sampled too and the
-			// arguments would both be "one sample". Same finding as
-			// Surfmgr2.cpp's D3DRS_MULTISAMPLEANTIALIAS.
+			// CreateRenderTarget's multisample arguments have nothing to carry:
+			// the core's render pass is single-sampled, so the back buffer this
+			// copies its sample type from is too.
 			pOffscreenTarget = pDevice->CreateTexture(viewW, viewH, 1, BackBuffer, rtUsage);
 			if (!pOffscreenTarget) {
 				LogErr("Creation of Offscreen render target failed");
@@ -446,20 +372,14 @@ Scene::Scene(VulkanClient *_gc, DWORD w, DWORD h)
 		}
 	}
 
-	// `for (...) if (ptgBuffer[i]) ptgBuffer[i]->GetSurfaceLevel(0, &psgBuffer[i]);`
-	// -- the assignment is the whole of it now. See note 2.
 	for (int i = 0; i < int(ARRAYSIZE(ptgBuffer)); i++) psgBuffer[i] = ptgBuffer[i];
 
 
 	if (Config->GDIOverlay) {
-		// Clear the GDI Overlay with transparency.
-		//
-		// Was GetDC on the surface, CreateSolidBrush, FillRect, ReleaseDC --
-		// four GDI calls to fill an image with one colour, which is what a
-		// D3D9 surface's DC was good for. Src/Orbiter/Linux/Gdi.cpp is a
-		// display-list RECORDER and would record a FillRect that never
-		// reaches any pixels, so this says what it means: clear the image to
-		// the colour key. ClearImage is ColorFill's counterpart.
+		// Clear the GDI Overlay with transparency. Was GetDC on the surface,
+		// CreateSolidBrush, FillRect, ReleaseDC. The Linux GDI is a
+		// display-list recorder, so it would record a FillRect that never
+		// reaches any pixels; this says what it means instead.
 		DWORD color = 0xF08040; // BGR "Color Key" value for transparency
 		pDevice->ClearImage(psgBuffer[GBUF_GDI], NULL, color);
 	}
@@ -468,18 +388,16 @@ Scene::Scene(VulkanClient *_gc, DWORD w, DWORD h)
 }
 
 // ===========================================================================================
-// SEE NOTE 1 IN THE FILE HEADER. The Windows destructor releases psgBuffer and
-// ptgBuffer, psShmRT and ptShmRT, and pLocalResultsSL and pLocalResults --
-// six arrays holding three sets of objects, each with two COM references. Here
-// each pair is one image, so each is destroyed once and the second name is
-// simply cleared.
+// The Windows destructor releases psgBuffer and ptgBuffer, psShmRT and
+// ptShmRT, and pLocalResultsSL and pLocalResults -- six arrays holding three
+// sets of objects, each with two COM references. Here each pair is one image,
+// so each is destroyed once and the second name is simply cleared; releasing
+// both would be a double free.
 //
 // `pDevice->SetRenderTarget(0..3, NULL)` at the top has no counterpart and
 // needs none: it existed to make the runtime let go of the render targets
 // before they were released, and nothing in Vulkan holds a reference to an
-// image because it was once an attachment. The one thing that does -- a
-// command buffer still naming a descriptor -- is what orbiter_ResetFrameCommands
-// answers, and CVulkanFramework::DestroyObjects calls it.
+// image because it was once an attachment.
 //
 Scene::~Scene ()
 {
@@ -538,14 +456,14 @@ Scene::~Scene ()
 
 
 // ===========================================================================================
-// Every `pXxx->GetSurfaceLevel(0, &pTgt); ... SetOutputNative(0, pTgt); SAFE_RELEASE(pTgt);`
-// collapses to one line: the texture IS the render target. See note 2 in the
-// file header. pTgt goes with them.
+// Every `pXxx->GetSurfaceLevel(0, &pTgt); ... SetOutputNative(0, pTgt);
+// SAFE_RELEASE(pTgt);` collapses to one line -- the texture is the render
+// target -- and pTgt goes with them.
 //
 // D3DUSAGE_AUTOGENMIPMAP with a level count of 0 asked D3DX for a complete
 // chain and the driver to keep it current. Vulkan has neither, so the level
-// count is computed here and VulkanDevice::GenerateMipmaps fills the chain
-// after each glare is drawn -- which is where the driver would have done it.
+// count is computed here and GenerateMipmaps fills the chain after each glare
+// is drawn, which is where the driver would have done it.
 //
 void Scene::CreateSunGlare()
 {
@@ -568,7 +486,6 @@ void Scene::CreateSunGlare()
 			VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
 			VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 
-		// The complete chain D3DX's MipLevels=0 asked for.
 		auto mips = [](uint32_t d) { uint32_t m = 1; while (d > 1) { d >>= 1; m++; } return m; };
 
 		pSunTex      = pDevice->CreateTexture(ts * 5,  ts * 5,  mips(ts * 5),  VK_FORMAT_B8G8R8A8_UNORM, glareUsage);
@@ -784,10 +701,9 @@ std::set<vVessel *> Scene::GetVessels(double max_dst, bool bAct)
 }
 
 // ===========================================================================================
-// `pv->vobj->GetObject()` here and in DeleteAllVisuals is finding 34 again:
-// <windows.h> rewrites GetObject as GetObjectA, so the Windows source names
-// the method that survives the macro. vObject declares Object() and nothing
-// else. Three sites in this file.
+// `pv->vobj->GetObject()` here and in DeleteAllVisuals: <windows.h> rewrites
+// GetObject as GetObjectA, so the Windows source names the method that
+// survives the macro. vObject declares Object() and nothing else.
 //
 void Scene::DelVisualRec (VOBJREC *pv)
 {
@@ -1040,9 +956,6 @@ double Scene::GetTargetGroundAltitude() const
 // ============================================================================================
 // Up, North, Forward in Ecliptic frame
 //
-// D3DXVEC -> FVEC, and the two D3DX vector calls become the SDK's own, which
-// RETURN their result instead of writing through an out-parameter.
-//
 void Scene::GetLVLH(vVessel *vV, FVECTOR3 *up, FVECTOR3 *nr, FVECTOR3 *fw)
 {
 	if (!vV || !up || !nr || !fw) return;
@@ -1080,10 +993,8 @@ float Scene::ComputeNearClipPlane()
 		oapiGetGlobalPos(hObj,&pos);
 		double g = atan(Camera.apsq);
 		double t = dotp(unit(Camera.pos-pos), unit(Camera.dir));
-		// Two statements on one line in the Windows original. Split onto two
-		// lines because GCC reads the second `if` as an else-branch that is
-		// not indented like one (-Wmisleading-indentation) where MSVC says
-		// nothing. FORMATTING ONLY -- both clamps are kept exactly as
+		// Two statements on one line in the Windows original, split for
+		// -Wmisleading-indentation. Formatting only: both clamps are kept as
 		// written, including the first one's 1.0 (not -1.0), which is the
 		// author's and is not corrected here.
 		if (t<-1.0) t=1.0;
@@ -1180,9 +1091,8 @@ float Scene::ComputeNearClipPlane()
 	if (farpoint==0.0) farpoint = 20e4;
 
 	// The device argument is gone. D9NearPlane took one only to ask
-	// GetViewport() for the frame's height; the converted version reads it
-	// from VulkanEffect::pDev instead, because the viewport is not device
-	// state here. See the note at the top of AABBUtil.h.
+	// GetViewport() for the frame's height; the viewport is not device state
+	// here, so it reads the height from the device it already knows.
 	float znear = D9NearPlane(nearpoint, farpoint, neardist, GetProjectionMatrix(), (prteff!=0));
 
 	if (oapiCameraInternal()) {
@@ -1242,17 +1152,16 @@ bool Scene::UpdateCamVis()
 	//
 	sky_color = SkyColour();
 	bglvl = (sky_color.x + sky_color.y + sky_color.z) / 3.0;
-	// D3DCOLOR_RGBA(r,g,b,a) is a MACRO OVER FOUR INTEGERS -- (a<<24)|(r<<16)|
-	// (g<<8)|b -- and never called into Direct3D. bg_rgba is a DWORD in the
-	// same 0xAARRGGBB packing, so the macro is written out rather than
-	// replaced; there is nothing here to convert.
+	// D3DCOLOR_RGBA is a macro over four integers -- (a<<24)|(r<<16)|(g<<8)|b
+	// -- that never called into Direct3D, and bg_rgba is a DWORD in the same
+	// 0xAARRGGBB packing, so it is written out rather than replaced.
 	bg_rgba = (DWORD(255) << 24) |
 			  (DWORD(int(sky_color.x*255) & 0xFF) << 16) |
 			  (DWORD(int(sky_color.y*255) & 0xFF) << 8) |
 			   DWORD(int(sky_color.z*255) & 0xFF);
 
-	// DIAGNOSTIC: the daytime sky reads black and the stars are not being
-	// dimmed, both of which are driven from here. Env-gated, once a second.
+	// Diagnostic: the daytime sky reads black and the stars are not dimmed,
+	// both of which are driven from here.
 	if (getenv("ORBITER_VK_TRACE_SKY")) {
 		static double tLast = -1e9;
 		const double t = oapiGetSysTime();
@@ -1295,11 +1204,8 @@ bool Scene::UpdateCamVis()
 	VOBJREC *pv = NULL;
 	nplanets = 0;
 
-	// DWORD(MAXPLANET): nplanets is a DWORD and MAXPLANET an int literal, so
-	// GCC warns on the mixed-signedness comparison (-Wsign-compare) where
-	// MSVC does not. The cast changes nothing -- MAXPLANET is positive and
-	// far below 2^31 -- and is the same one-word fix applied wherever this
-	// pairing appears in the converted client.
+	// DWORD(MAXPLANET): GCC warns on the mixed-signedness comparison
+	// (-Wsign-compare) where MSVC does not. The cast changes nothing.
 	for (pv = vobjFirst; pv && nplanets < DWORD(MAXPLANET); pv = pv->next) {
 		if (pv->apprad < 0.01 && pv->type != OBJTP_STAR) continue;
 		if (pv->type == OBJTP_PLANET || pv->type == OBJTP_STAR) {
@@ -1324,9 +1230,6 @@ void Scene::ClearLocalLights()
 	lmaxdst2 = 0.0f;
 
 	// Clear active local lisghts list -------------------------------
-	// int(MAX_SCENE_LIGHTS): the constant is a DWORD and i an int, so GCC
-	// warns on the mixed-signedness comparison where MSVC does not. The cast
-	// changes nothing.
 	for (int i = 0; i < int(MAX_SCENE_LIGHTS); i++) Lights[i].Reset();
 }
 
@@ -1359,30 +1262,22 @@ void Scene::AddLocalLight(const LightEmitter *le, const vObject *vo)
 }
 
 // ===========================================================================================
-// FOUR THINGS CHANGE HERE, and three of them recur throughout the rest of this
-// file, so they are spelled out once:
+// Three conversions here recur through the rest of the file:
 //
-//   GetDesc() ON A SURFACE becomes VulkanTexture::Desc(), the record the
-//   client kept when it created the image. A VkImage answers no questions
-//   about itself; see VulkanTypes.h.
+//   GetDesc() on a surface becomes VulkanTexture::Desc(), the record the
+//   client kept when it created the image; a VkImage answers no questions
+//   about itself.
 //
-//   D3DXMatrixOrthoOffCenterLH becomes VMAT_OrthoOffCenterLH -- written out in
-//   VulkanUtil.cpp, because D3DX was a utility library and Vulkan ships no
-//   counterpart. Its note records the one handedness difference that is left
-//   uncorrected and why.
-//
-//   PushRenderTarget/PopRenderTargets keep their names and their places. They
-//   are the client's own render-target stack (VulkanClient.h), and what
-//   changes is underneath them: the push now begins a render pass through
-//   VulkanDevice::BeginOffscreen rather than calling SetRenderTarget. The
-//   reference's own comment -- "Must setup render target before calling
+//   PushRenderTarget/PopRenderTargets keep their names and their places, but
+//   the push now begins a render pass rather than calling SetRenderTarget.
+//   The reference's own comment -- "Must setup render target before calling
 //   Setup()" -- becomes a hard requirement rather than good practice, because
 //   Setup() builds a pipeline and a pipeline is tied to a render pass.
 //
-//   pDevice->DrawPrimitiveUP becomes ShaderClass::DrawUP. Vulkan has no
-//   draw-from-memory call; see VulkanUtil.h. THE COUNT CHANGES MEANING: D3D9
-//   took a PRIMITIVE count and, for a point list, one point is one primitive,
-//   so nGlares happens to be both. It is spelled as a vertex count here.
+//   pDevice->DrawPrimitiveUP becomes ShaderClass::DrawUP; Vulkan has no
+//   draw-from-memory call. D3D9 took a primitive count and, for a point list,
+//   one point is one primitive, so nGlares happens to be both; it is spelled
+//   as a vertex count here.
 //
 void Scene::ComputeLocalLightsVisibility()
 {
@@ -1454,26 +1349,17 @@ void Scene::ComputeLocalLightsVisibility()
 
 
 // ===========================================================================================
-// THIS FUNCTION HAS NO COUNTERPART AND CANNOT HAVE ONE.
+// This function has no counterpart and cannot have one. Every line of it was a
+// SetRenderState -- fill mode, stencil, colour write mask, depth test and
+// write, alpha test and blend, blend op and factors, cull mode -- and in D3D9
+// those are global, sticky device state, so a routine that puts them back to a
+// known configuration is meaningful.
 //
-// Every line of it is a SetRenderState: fill mode, stencil, colour write mask,
-// depth test and write, alpha test and blend, blend op and factors, cull mode.
-// In D3D9 those are DEVICE STATE -- global, sticky, and settable at any time --
-// so a routine that puts them all back to a known configuration is meaningful,
-// and the client calls it after anything that might have left the device
-// somewhere unexpected.
-//
-// IN VULKAN NONE OF THEM IS DEVICE STATE. Every one is baked into a
-// VkPipeline at creation time and applies only while that pipeline is bound;
-// the next bind replaces the lot. There is no global configuration to recall,
-// nothing persists between draws, and a pipeline built with the wrong blend
-// cannot be corrected afterwards -- which is exactly why the render states the
-// reference sets between BeginPass and a draw became PassOverride instead.
-//
-// So the function stays, because ~20 call sites in this file and in
-// VulkanClient.cpp call it and each of those calls is a statement about where
-// the reference thought the device might be dirty, which is worth keeping
-// visible. It does nothing, and that is correct rather than unimplemented.
+// In Vulkan none of them is device state: every one is baked into a VkPipeline
+// at creation and applies only while that pipeline is bound, and the next bind
+// replaces the lot. The body is therefore empty, which is correct rather than
+// unimplemented; the ~20 call sites are kept because each says where the
+// reference thought the device might be dirty.
 //
 void Scene::RecallDefaultState()
 {
@@ -1481,29 +1367,22 @@ void Scene::RecallDefaultState()
 
 
 // ===========================================================================================
-// THE MAIN SCENE, and the four recurring conversions in it:
+// Three recurring conversions in the main scene:
 //
 //   pDevice->Clear(0, NULL, D3DCLEAR_TARGET|_ZBUFFER|_STENCIL, c, z, s)
-//   becomes VulkanDevice::ClearFrame(colour, depth, stencil, c, z, s) --
-//   vkCmdClearAttachments, which is the only Vulkan call that clears what is
-//   BOUND rather than a whole image, and the only one legal inside a render
-//   pass. See VulkanFrame.h; the distinction is the same one VulkanPad3.cpp's
-//   Clear() records.
+//   becomes ClearFrame(colour, depth, stencil, c, z, s) --
+//   vkCmdClearAttachments, the only Vulkan call that clears what is bound
+//   rather than a whole image, and the only one legal inside a render pass.
 //
-//   pDevice->SetRenderState(D3DRS_CULLMODE, ...) around the celestial sphere
-//   HAS NO COUNTERPART AND NEEDS NONE. It was device state, sticky across
-//   draws; the cull mode is baked into every pipeline here, and CelSphere's
-//   own passes carry theirs. Both the set and the restore disappear -- the
-//   same finding as Surfmgr2.cpp's, and Mesh.cpp's.
+//   SetRenderState(D3DRS_CULLMODE, ...) around the celestial sphere has no
+//   counterpart and needs none: the cull mode is baked into every pipeline
+//   here, and CelSphere's own passes carry theirs. Both the set and the
+//   restore disappear.
 //
-//   pDevice->SetRenderState(D3DRS_FILLMODE, D3DFILL_WIREFRAME) is the ONE
-//   piece of global fill state that still has to act globally, because it is
-//   a debug switch applied to the whole frame. It becomes
-//   VulkanDevice::SetPolygonMode, which both pipeline builders read and both
-//   pipeline caches key on.
-//
-//   vFocus->GetObjectA() is Object(), and GetBoundingSpherePosDX() is
-//   GetBoundingSpherePosF(). Findings 34 and VObject.h's note 1.
+//   SetRenderState(D3DRS_FILLMODE, D3DFILL_WIREFRAME) is the one piece of
+//   global fill state that still has to act globally, because it is a debug
+//   switch applied to the whole frame. It becomes SetPolygonMode, which both
+//   pipeline builders read and both pipeline caches key on.
 //
 void Scene::RenderMainScene()
 {
@@ -1535,9 +1414,6 @@ void Scene::RenderMainScene()
 
 	if (vFocus == NULL) return;
 
-	// Was LPDIRECT3DSURFACE9. gc->GetBackBuffer() already returns the client's
-	// own image rather than a surface interface -- see VulkanClient.h's note 5
-	// -- so the declaration is the only change.
 	VulkanTexture *pBackBuffer;
 
 	if (pOffscreenTarget) pBackBuffer = pOffscreenTarget;
@@ -1575,8 +1451,7 @@ void Scene::RenderMainScene()
 			if (camCurrent == CustomCams.cend()) camCurrent = CustomCams.cbegin();
 
 			// `OBJHANDLE hVessel = vFocus->GetObjectA();` stood here and is
-			// never read -- finding 35's family. The call has no side effect
-			// (it returns a member), so it goes with the variable.
+			// never read; the call returns a member, so it goes with it.
 
 			vObject *vO = GetVisObject((*camCurrent)->hVessel);
 			double maxd = min(500e3, GetCameraAltitude() + 15e3);
@@ -1724,10 +1599,6 @@ void Scene::RenderMainScene()
 	if (DebugControls::IsActive()) {
 		pDevice->ClearFrame(true, true, true, 0, 1.0f, 0);
 		DWORD flags = *(DWORD*)gc->GetConfigParam(CFGPRM_GETDEBUGFLAGS);
-		// D3DFILL_WIREFRAME / D3DFILL_SOLID. See the note on this function:
-		// this is the one D3DRS_ in the client that still acts on every draw
-		// that follows, so it becomes a device flag both pipeline builders
-		// read rather than a PassOverride.
 		if (flags&DBG_FLAGS_WIREFRAME) pDevice->SetPolygonMode(VK_POLYGON_MODE_LINE);
 		else						   pDevice->SetPolygonMode(VK_POLYGON_MODE_FILL);
 	}
@@ -1754,14 +1625,11 @@ void Scene::RenderMainScene()
 	// -------------------------------------------------------------------------------------------------------
 
 	// SetRenderState(D3DRS_CULLMODE, D3DCULL_CW) stood here and the matching
-	// D3DCULL_CCW below. Neither has a counterpart -- see the note on this
-	// function.
+	// D3DCULL_CCW below; neither has a counterpart.
 
 	vPlanet *vPl = GetCameraProxyVisual();
 	// vPl is assigned and never read, here and in the Windows original. Kept
-	// rather than deleted -- deleting it would be a change to the author's
-	// code rather than a conversion -- and silenced because GCC warns where
-	// MSVC does not. Same treatment as bQuality in RenderBlurredMap.
+	// rather than deleted, and silenced because GCC warns where MSVC does not.
 	(void)vPl;
 
 	// -------------------------------------------------------------------------------------------------------
@@ -1798,10 +1666,8 @@ void Scene::RenderMainScene()
 
 	int shadow_lod = -1;
 	// shadow_lod is assigned below and never read, here and in the Windows
-	// original -- the value that is used comes from a SECOND, inner
-	// shadow_lod declared later in this function. Kept rather than deleted,
-	// and silenced because GCC warns where MSVC does not. Same treatment as
-	// bQuality in RenderBlurredMap.
+	// original: the value that is used comes from a second, inner shadow_lod
+	// declared later in this function.
 	(void)shadow_lod;
 	float bouble_rad = 10.0f;		// Terrain shadow mapping coverage
 
@@ -2242,8 +2108,8 @@ void Scene::RenderMainScene()
 	// render the internal parts of the focus object in a separate render pass
 	// -------------------------------------------------------------------------------------------------------
 
-	// Whether the internal pass runs at all, and why not when it does not.
-	// Reported for the first few frames only. Diagnostic only; env-gated.
+	// Diagnostic: whether the internal pass runs at all, and why not when it
+	// does not.
 	static const bool bTraceVC = (getenv("ORBITER_VK_TRACE_VC") != NULL);
 	if (bTraceVC) {
 		static int nRep = 0;
@@ -2276,8 +2142,8 @@ void Scene::RenderMainScene()
 		OBJHANDLE hFocus = oapiGetFocusObject();
 		SetCameraFrustumLimits(znear, oapiGetSize(hFocus)*2.0);
 
-		// The frustum the virtual cockpit is actually drawn with, and the
-		// depth row of the matrix it produced. Diagnostic only; env-gated.
+		// Diagnostic: the frustum the virtual cockpit is drawn with, and the
+		// depth row of the matrix it produced.
 		if (bTraceVC) {
 			static int nRep = 0;
 			if (nRep < 4) {
@@ -2294,8 +2160,7 @@ void Scene::RenderMainScene()
 	}
 
 	// D3DFILL_SOLID, putting back what the wireframe debug flag above may have
-	// set. It is the one D3DRS_ in this file that still has a counterpart to
-	// restore, because it is genuinely global; see the note on this function.
+	// set -- the one render state in this file that is still global.
 	pDevice->SetPolygonMode(VK_POLYGON_MODE_FILL);
 
 
@@ -2318,12 +2183,10 @@ void Scene::RenderMainScene()
 
 		int iGensPerFrame = pLightBlur->FindDefine("PassCount");
 
-		// GetDesc() on two surfaces; the client's own record instead.
 		const VulkanImageDesc &blur = psgBuffer[GBUF_BLUR]->Desc();
 
 		// `D3DXVECTOR2 scr` was computed from the colour buffer's size and is
-		// never read -- finding 35's family. Its query goes with it; only sbf
-		// reaches a shader.
+		// never read, so its GetDesc() goes with it; only sbf reaches a shader.
 		FVECTOR2 sbf = FVECTOR2(1.0f / float(blur.Width), 1.0f / float(blur.Height));
 
 
@@ -2334,13 +2197,9 @@ void Scene::RenderMainScene()
 			float fThr = float(Config->GFXThreshold);
 			float fGam = float(Config->GFXGamma);
 
-			// Grap a copy of a backbuffer.
-			//
-			// StretchRect(src, NULL, dst, NULL, D3DTEXF_POINT) ->
-			// BlitTexture(dst, NULL, src, NULL, false). NOTE THE ARGUMENT
-			// ORDER: StretchRect named the SOURCE first and this names the
-			// DESTINATION first, matching memcpy and the two-argument form.
-			// D3DTEXF_POINT is bLinear = false. See VulkanFrame.h.
+			// Grap a copy of a backbuffer. StretchRect named the source first
+			// and BlitTexture names the destination first, matching memcpy;
+			// D3DTEXF_POINT is the false.
 			pDevice->BlitTexture(psgBuffer[GBUF_COLOR], NULL, pOffscreenTarget, NULL, false);
 
 			pLightBlur->SetFloat("vSB", &sbf, sizeof(FVECTOR2));
@@ -2410,10 +2269,10 @@ void Scene::RenderMainScene()
 		if (pGDIOverlay->IsOK())
 		{
 			gc->bGDIClear = true; // Must clear background before continuing drawing into overlay
-			// D3DXCOLOR's DWORD constructor reads 0xAARRGGBB; FVECTOR4's reads
-			// 0xAABBGGRR. FCOLOR_ARGB is the one that means what this line
-			// means -- see VulkanUtil.h. Getting it backwards would make the
-			// colour key a different colour and the overlay opaque.
+			// D3DXCOLOR's DWORD constructor reads 0xAARRGGBB and FVECTOR4's
+			// reads 0xAABBGGRR, so FCOLOR_ARGB is the spelling that means this.
+			// Backwards would make the colour key a different colour and leave
+			// the overlay opaque.
 			FVECTOR4 clr = FCOLOR_ARGB(0x4080F0); // RGB ColorKey
 			pGDIOverlay->SetTextureNative("tSrc", ptgBuffer[GBUF_GDI], IPF_POINT | IPF_CLAMP);
 			pGDIOverlay->SetFloat("vColorKey", &clr, sizeof(clr));
@@ -2556,8 +2415,6 @@ void Scene::RenderMainScene()
 		pSketch->SetBlendState(Sketchpad::COPY);
 		int x = 0, y = ViewH();
 
-		// `pTab->GetLevelDesc(0, &desc)` asked the runtime for level 0's size,
-		// which IS the texture's own size. Width()/Height() are that record.
 		VulkanTexture *pTab = vP->GetScatterTable(RAY_LAND);
 		if (pTab) {
 			pSketch->StretchRectNative(pTab, NULL, ptr(_R(0, y - int(pTab->Height()), int(pTab->Width()), y)));
@@ -2649,10 +2506,6 @@ void Scene::RenderVesselMarker(vVessel *vV, VulkanPad *pSketch)
 // ===========================================================================================
 // Lens flare code (SolarLiner)
 //
-// D3DXVec4Transform(&out, &v, pM) is oapi::mul(v, M) -- DrawAPI.h's own
-// row-vector multiply, which returns its result. Same convention, no
-// transpose: see VulkanUtil.h's note on VMAT_MatrixMultiply.
-//
 Scene::SUNVISPARAMS Scene::GetSunScreenVisualState()
 {
 	SUNVISPARAMS result = SUNVISPARAMS();
@@ -2665,21 +2518,16 @@ Scene::SUNVISPARAMS Scene::GetSunScreenVisualState()
 	DWORD w, h;
 	oapiGetViewportSize(&w, &h);
 
-	// `const LPD3DXMATRIX pVP` was a const POINTER to a non-const matrix and
-	// the getter cast the const away to produce it; see Scene.h.
 	const FMATRIX4 *pVP = GetProjectionViewMatrix();
 	FVECTOR4 sun = FVECTOR4(float(sunGPos.x), float(sunGPos.y), float(sunGPos.z), 1.0f);
 	FVECTOR4 pos = mul(sun, *pVP);
 	result.brightness = saturate(pos.z);
 
 	FVECTOR2 scrPos = FVECTOR2(pos.x, pos.y);
-	// FVECTOR2's operator/= and operator*= take a NON-CONST FVECTOR2&, so
+	// FVECTOR2's operator/= and operator*= take a non-const FVECTOR2&, so
 	// `scrPos /= pos.w` cannot compile: the float has to become an FVECTOR2
-	// first, and a temporary will not bind to a non-const reference under
-	// GCC. Named intermediates, therefore, and the arithmetic is unchanged --
-	// FVECTOR2(q) sets both components to q, so dividing by it is dividing
-	// both by pos.w. Same finding as VectorHelpers.h's abs()/pow(), recorded
-	// there.
+	// first, and a temporary will not bind to a non-const reference. The
+	// arithmetic is unchanged -- FVECTOR2(q) sets both components to q.
 	FVECTOR2 vW(pos.w);
 	FVECTOR2 vHalf(0.5f);
 	scrPos /= vW;
@@ -2705,9 +2553,8 @@ Scene::SUNVISPARAMS Scene::GetSunScreenVisualState()
 		if (result.visible)
 		{
 			FVECTOR4 color = FVECTOR4(surfCol.r*surfCol.a, surfCol.g*surfCol.a, surfCol.b*surfCol.a, 1.0f);
-			// `color += GetSunDiffColor() * (1 - surfCol.a);` -- FVECTOR4 has
-			// += against a FLOAT only, so the vector form is spelled out.
-			// Same finding as Mesh.cpp's ProcessColor.
+			// FVECTOR4 has += against a float only, so `color += ...` is
+			// spelled out.
 			color = color + GetSunDiffColor() * (1.0f - surfCol.a);
 
 			result.color = color;
@@ -2724,8 +2571,7 @@ Scene::SUNVISPARAMS Scene::GetSunScreenVisualState()
 // ===========================================================================================
 // Lens flare code (SolarLiner)
 //
-// Was D3DXCOLOR. The one line that needed more than a rename is the early
-// return: `return GetSun()->Color;` relied on D3DXVECTOR3 converting
+// The early return `return GetSun()->Color;` relied on D3DXVECTOR3 converting
 // implicitly to a D3DXCOLOR with alpha 1. FVECTOR3 has no such conversion to
 // FVECTOR4, so the alpha is written.
 //
@@ -2767,8 +2613,7 @@ FVECTOR4 Scene::GetSunDiffColor()
 	if (alt<0) alt = 0, k = 1e3, size = r;
 
 	// Two statements on one line in the Windows original; split for
-	// -Wmisleading-indentation, exactly as in ComputeNearClipPlane. Formatting
-	// only -- both clamps are unchanged.
+	// -Wmisleading-indentation. Formatting only.
 	if (ac>1.0f) ac = 1.0f;
 	if (ac<-1.0f) ac = -1.0f;
 
@@ -2809,23 +2654,10 @@ FVECTOR4 Scene::GetSunDiffColor()
 
 
 // ===========================================================================================
-// D3DXVECTOR3 becomes FVECTOR3 in the signature, which is the same three
-// floats; D3DXVec3Length becomes length(), which VectorHelpers.h already has.
-//
-// D3DXMatrixOrthoOffCenterRH and D3DXMatrixLookAtRH become VMAT_OrthoOffCenterRH
-// and VMAT_LookAtRH, written out in VulkanUtil.cpp from the D3DX
+// D3DXMatrixOrthoOffCenterRH and D3DXMatrixLookAtRH become
+// VMAT_OrthoOffCenterRH and VMAT_LookAtRH, written out from the D3DX
 // documentation's own definitions -- D3DX is a Direct3D utility library with
-// no Vulkan counterpart, and this is the same treatment every other D3DXMatrix
-// call in the client gets. D3DXMatrixMultiply becomes VMAT_Multiply.
-//
-// ptr(D3DXVECTOR3(0,1,0)) loses its ptr(): the helper existed to take the
-// address of a temporary, which C++ forbids, and VMAT_LookAtRH takes const
-// pointers so a named local is needed instead. Same value, one line longer.
-//
-// THE CLEAR IS THE ONE REAL SUBSTITUTION. pDevice->Clear(0, NULL, TARGET |
-// ZBUFFER, 0, 1.0f, 0) becomes ClearFrame(true, true, false, 0, 1.0f, 0) --
-// vkCmdClearAttachments, which clears the attachments of the pass currently
-// open. See VulkanFrame.h on why that is not the same call as ClearImage.
+// no Vulkan counterpart.
 // ===========================================================================================
 int Scene::RenderShadowMap(FVECTOR3 &pos, FVECTOR3 &ld, float rad, bool bInternal, bool bListExists)
 {
@@ -2874,8 +2706,6 @@ int Scene::RenderShadowMap(FVECTOR3 &pos, FVECTOR3 &ld, float rad, bool bInterna
 			vV->GetMinMaxLightDist(&mnd, &mxd);
 
 			// Compute shadow lod
-			// GetBoundingSpherePosDX() became GetBoundingSpherePosF(); see
-			// the note at the top of VObject.h.
 			FVECTOR3 bspos = vV->GetBoundingSpherePosF();
 			float rs = viewh * rad / (tanap * length(bspos));
 			if (rs > rsmax) rsmax = rs;
@@ -2927,11 +2757,7 @@ int Scene::RenderShadowMap(FVECTOR3 &pos, FVECTOR3 &ld, float rad, bool bInterna
 
 
 // ===========================================================================================
-// D3D9Effect::UpdateEffectCamera becomes VulkanEffect::UpdateEffectCamera --
-// the class was renamed, nothing else. The Clear is the same substitution as
-// in RenderShadowMap above; note that this one clears the STENCIL as well and
-// to 0xFF000000 rather than 0.
-// ===========================================================================================
+//
 void Scene::RenderSecondaryScene(std::set<vVessel*> &RndList, std::set<vVessel*> &LightsList, DWORD flags)
 {
 	_TRACE;
@@ -3022,58 +2848,32 @@ void Scene::RenderSecondaryScene(std::set<vVessel*> &RndList, std::set<vVessel*>
 
 
 // ===========================================================================================
-// The two cube-map idioms in this function and the next are the same pair
-// everywhere they appear, so they are argued once here.
+// The two cube-map idioms here and in the next function:
 //
-//   D3DXCreateCubeTexture(pDev, size, mips, D3DUSAGE_RENDERTARGET, fmt,
-//                         D3DPOOL_DEFAULT, &pCube)
-// becomes
-//   pDev->CreateTextureCube(size, mips, fmt, usage)
+//   D3DXCreateCubeTexture becomes CreateTextureCube. A cube map is not a
+//   separate interface: it is a 2D image with six array layers and
+//   CUBE_COMPATIBLE, viewed as VIEW_TYPE_CUBE. D3DFMT_X8R8G8B8 becomes
+//   B8G8R8A8_UNORM -- there is no X8 form, so the same 32 bits are declared
+//   with their alpha meaningful and the shaders do not read it.
 //
-// A cube map is not a separate interface here: it is a VK_IMAGE_TYPE_2D image
-// with six array layers and CUBE_COMPATIBLE, viewed as VIEW_TYPE_CUBE. See
-// VulkanFrame.h. D3DPOOL_DEFAULT has no counterpart -- there is one pool --
-// and D3DUSAGE_RENDERTARGET becomes COLOR_ATTACHMENT_BIT in the usage flags,
-// where SAMPLED and the two TRANSFER bits are added because these images are
-// also read by a shader and blitted between.
+//   GetCubeMapSurface(face, mip) becomes CreateFaceView(pCube, face, mip).
+//   The face order carries over unchanged (+X, -X, +Y, -Y, +Z, -Z from zero
+//   in both), but the lifetime does not: GetCubeMapSurface handed back a
+//   reference on an existing object, where CreateFaceView makes a new
+//   VkImageView that shares the parent's image and has to be destroyed.
 //
-//   pCube->GetCubeMapSurface(D3DCUBEMAP_FACES(i), mip, &pSrf) ... SAFE_RELEASE
-// becomes
-//   pSrf = pDevice->CreateFaceView(pCube, i, mip) ... DestroyTexture(pSrf)
-//
-// The face ORDER carries over unchanged: D3D9 numbers +X, -X, +Y, -Y, +Z, -Z
-// from zero and so does Vulkan's array-layer order for a cube. What does not
-// carry over is the lifetime: GetCubeMapSurface handed back a reference on an
-// existing object, where CreateFaceView makes a NEW VkImageView that shares
-// the parent's image and has to be destroyed. SAFE_RELEASE therefore becomes
-// DestroyTexture, which is a real destruction rather than a decrement -- and
-// it is correct here precisely because nothing else holds this view.
-//
-// D3DFMT_X8R8G8B8 becomes VK_FORMAT_B8G8R8A8_UNORM. There is no X8 form in
-// Vulkan: "the alpha byte is present but ignored" was a D3D9 distinction the
-// runtime made and Vulkan does not, so the same 32 bits are declared with
-// their alpha meaningful and the shaders simply do not read it.
-//
-// StretchRect(src, NULL, dst, NULL, D3DTEXF_POINT) becomes
-// BlitTexture(dst, NULL, src, NULL, false). NOTE THE ARGUMENT ORDER: it names
-// the DESTINATION first, matching memcpy; every converted StretchRect swaps
-// its first two pairs. D3DTEXF_POINT is the false in the last argument.
-//
-// ONE CORRECTION, TWICE. The Windows error paths inside the two face loops --
-// `if (!pBlur->Execute(true)) { LogErr(...); return false; }` -- leave pSrf
-// held. On Windows that leaks one COM reference on a surface whose texture is
-// still alive, which the next Release eventually reclaims. Here pSrf is a
-// VkImageView this function CREATED and nothing else holds, so the same code
-// leaks the view outright, every frame the blur fails. The destroy is added on
-// those two paths; nothing else about them changes.
+// That lifetime difference is a correction, twice. The Windows error paths
+// inside the two face loops -- `if (!pBlur->Execute(true)) { LogErr(...);
+// return false; }` -- leave pSrf held, which on Windows leaks one COM
+// reference the next Release reclaims. Here pSrf is a view this function
+// created and nothing else holds, so the same code leaks it outright, every
+// frame the blur fails. The destroy is added on those two paths.
 // ===========================================================================================
 bool Scene::RenderBlurredMap(VulkanDevice *pDev, VulkanTexture *pSrc)
 {
 	bool bQuality = true;
-	// bQuality is set and never read, here and in the Windows original. It is
-	// kept rather than deleted because deleting it would be a change to the
-	// author's code rather than a conversion, and silenced because GCC warns
-	// where MSVC does not.
+	// bQuality is set and never read, here and in the Windows original. Kept
+	// rather than deleted, and silenced because GCC warns where MSVC does not.
 	(void)bQuality;
 
 	if (!pSrc) return false;
@@ -3134,9 +2934,6 @@ bool Scene::RenderBlurredMap(VulkanDevice *pDev, VulkanTexture *pSrc)
 		for (DWORD i = 0; i < 6; i++) {
 
 			EnvMapDirection(i, &dir, &up);
-			// D3DXVec3Cross followed by D3DXVec3Normalize. VectorHelpers.h has
-			// both as expressions, so the two out-parameter calls become one
-			// assignment each.
 			cp = cross(up, dir);
 			cp = unit(cp);
 
@@ -3193,28 +2990,9 @@ bool Scene::RenderBlurredMap(VulkanDevice *pDev, VulkanTexture *pSrc)
 
 
 // ===========================================================================================
-// Same two cube-map idioms as RenderBlurredMap above, plus three more:
-//
-//   D3DXCreateTexture(pDev, w, h, mips, D3DUSAGE_RENDERTARGET, fmt,
-//                     D3DPOOL_DEFAULT, &pTex)
-// becomes pDev->CreateTexture(w, h, mips, fmt, usage) -- the same collapse of
-// pool and usage as the cube form.
-//
-//   D3DFMT_A16B16G16R16F becomes VK_FORMAT_R16G16B16A16_SFLOAT. THE CHANNEL
-//   ORDER IS REVERSED IN THE NAME AND IDENTICAL IN MEMORY: D3D9 named a
-//   format from the most significant byte down, Vulkan names it from the
-//   first byte up. A16B16G16R16F is R first in memory, which is what
-//   R16G16B16A16_SFLOAT says.
-//
-//   pOut->GetSurfaceLevel(0, &pOuts) becomes pOuts = pOut. A VulkanTexture
-//   already IS the thing a render target attachment is built from, and mip 0
-//   is what CreateMipView(pOut, 0) would hand back -- a second object
-//   describing the same image. See VulkanSurface.h on why GetSurface() and
-//   GetTexture() are the same image here.
-//
-// D3DXVECTOR2 becomes FVECTOR2, and ptr(D3DXVECTOR2(...)) loses its ptr() for
-// the same reason it did in RenderShadowMap: a named local instead of the
-// address of a temporary.
+// Same two cube-map idioms as RenderBlurredMap above. pOut->GetSurfaceLevel(0,
+// &pOuts) becomes pOuts = pOut: a VulkanTexture already is the thing a render
+// target attachment is built from.
 // ===========================================================================================
 bool Scene::IntegrateIrradiance(vVessel *vV, VulkanTexture *pSrc, VulkanTexture *pOut)
 {
@@ -3268,8 +3046,8 @@ bool Scene::IntegrateIrradiance(vVessel *vV, VulkanTexture *pSrc, VulkanTexture 
 	VulkanTexture *pSrf = NULL;
 	VulkanTexture *pTgt = NULL;
 	// pTmp2 and pTmp3 were GetSurfaceLevel(0) of pIrradTemp2 and pIrradTemp3.
-	// Mip 0 of an image IS the image here, so the two extra objects and the
-	// two releases at the end of the function go away with them.
+	// Mip 0 of an image is the image here, so the two extra objects and the
+	// two releases at the end of the function go with them.
 	VulkanTexture *pTmp2 = pIrradTemp2;
 	VulkanTexture *pTmp3 = pIrradTemp3;
 
@@ -3294,7 +3072,7 @@ bool Scene::IntegrateIrradiance(vVessel *vV, VulkanTexture *pSrc, VulkanTexture 
 		if (!pIrradiance->Execute(true)) {
 			LogErr("pIrradiance Execute Failed");
 			// Same correction as RenderBlurredMap's: the Windows path leaves
-			// both faces held, which here leaks two VkImageViews outright.
+			// both faces held, which here leaks two views outright.
 			if (pTgt) pDevice->DestroyTexture(pTgt);
 			if (pSrf) pDevice->DestroyTexture(pSrf);
 			return false;
@@ -3353,10 +3131,9 @@ bool Scene::IntegrateIrradiance(vVessel *vV, VulkanTexture *pSrc, VulkanTexture 
 	}
 
 	// The three SAFE_RELEASE calls that stood here released pTmp2, pTmp3 and
-	// pOuts -- three GetSurfaceLevel(0) references. None of the three is a
-	// separate object any more, so there is nothing to release: pTmp2 is
-	// pIrradTemp2, pTmp3 is pIrradTemp3 and pOuts is the caller's pOut.
-	// Destroying any of them here would destroy the image itself.
+	// pOuts, three GetSurfaceLevel(0) references. None is a separate object
+	// any more -- pTmp2 is pIrradTemp2, pTmp3 is pIrradTemp3 and pOuts is the
+	// caller's pOut -- so destroying any of them would destroy the image.
 
 	return true;
 }
@@ -3373,29 +3150,21 @@ void Scene::ClearOmitFlags()
 
 
 // ===========================================================================================
-// gc->GetBackBuffer() returns a VulkanTexture directly -- it is the ATTACHMENT
-// PROXY the client keeps for the core's colour attachment, which is why its
-// GetDesc() becomes Desc() and there is no surface object in between. See
-// VulkanDevice::CreateAttachmentProxy.
+// This function cannot do what it did. gc->GetBackBuffer() returns an
+// attachment proxy that holds no VkImage: the swapchain images belong to the
+// core and the client is never handed one, so StretchRect into the back buffer
+// has nothing to blit into. The Windows function drew the six cube faces
+// straight onto the frame buffer as a debugging aid, outside any render pass,
+// which D3D9 allowed and Vulkan does not -- the swapchain image is inside the
+// core's render pass for the whole frame, and vkCmdBlitImage is illegal there.
 //
-// AND THAT PROXY IS WHY THIS FUNCTION CANNOT DO WHAT IT DID. The proxy holds
-// no VkImage: the swapchain images belong to UIHost.cpp and the client is
-// never handed one. StretchRect into the back buffer therefore has no
-// counterpart -- there is nothing to blit into. The Windows function drew the
-// six cube faces straight onto the frame buffer as a debugging aid, outside
-// any render pass, which is a thing D3D9 allowed and Vulkan does not: the
-// swapchain image is inside the core's render pass for the whole frame, and
-// vkCmdBlitImage is illegal there.
+// The body is kept so the six destination rectangles are not lost, and the
+// blit each iteration ended with is refused by name rather than silently
+// dropped. A working version belongs in the Sketchpad, which can draw into the
+// open pass.
 //
-// The body is kept, computing the same six destination rectangles from the
-// back buffer's own extent, so that the geometry is not lost; the blit that
-// each iteration ended with is refused by name rather than silently dropped.
-// A working version of this belongs in the Sketchpad, which can draw into the
-// open pass -- see VulkanPad2.cpp's CopyRect.
-//
-// The uninitialised-x/y warning the Windows switch produces (case 6+ leaves
-// both indeterminate) is answered by initialising them, which is a correction
-// GCC insists on and MSVC did not.
+// x and y are initialised: the Windows switch leaves both indeterminate for
+// case 6 and up, which GCC insists on and MSVC did not.
 // ===========================================================================================
 void Scene::VisualizeCubeMap(VulkanTexture *pCube, int mip)
 {
@@ -3429,9 +3198,8 @@ void Scene::VisualizeCubeMap(VulkanTexture *pCube, int mip)
 		dr.bottom = y+h;
 		dr.right = x+h;
 
-		// StretchRect(pSrf, NULL, pBack, &dr, D3DTEXF_POINT) HAS NO
-		// COUNTERPART. pBack is an attachment proxy with no VkImage; see the
-		// note above.
+		// StretchRect(pSrf, NULL, pBack, &dr, D3DTEXF_POINT) has no
+		// counterpart; see the note above.
 		(void)dr;
 
 		if (pSrf) { pDevice->DestroyTexture(pSrf); pSrf = NULL; }
@@ -3441,11 +3209,8 @@ void Scene::VisualizeCubeMap(VulkanTexture *pCube, int mip)
 
 
 // ===========================================================================================
-// SetRenderState(D3DRS_STENCILENABLE, FALSE) HAS NO COUNTERPART. The stencil
-// test is pipeline state in Vulkan, chosen when the VkPipeline is built, so
-// there is no device flag to put back after RenderGroundShadow -- the shadow
-// pipelines enable it and every other pipeline in the client leaves it off.
-// This is the same finding as Scene::RecallDefaultState's; see the note there.
+// SetRenderState(D3DRS_STENCILENABLE, FALSE) has no counterpart: stencil is
+// pipeline state, so there is no device flag to put back.
 // ===========================================================================================
 void Scene::RenderVesselShadows (OBJHANDLE hPlanet, float depth) const
 {
@@ -3469,15 +3234,7 @@ void Scene::RenderVesselShadows (OBJHANDLE hPlanet, float depth) const
 
 
 // ===========================================================================================
-// ptr(D3DXVECTOR4(...)) becomes a named FVECTOR4, for the same reason it did
-// in RenderShadowMap; LPD3DXMATRIX(pWorld) becomes pWorld, because
-// VulkanMesh::RenderSimplified already takes an FMATRIX4 and the cast existed
-// only to reinterpret one as the other.
 //
-// HR() is dropped from the four FX calls. VulkanEffectFile's setters return
-// bool rather than HRESULT -- there is no HRESULT here -- and they log their
-// own failures, which is what HR() did.
-// ===========================================================================================
 void Scene::RenderMesh(DEVMESHHANDLE hMesh, const oapi::FMATRIX4 *pWorld)
 {
 	VulkanMesh *pMesh = (VulkanMesh *)hMesh;
@@ -3506,12 +3263,10 @@ void Scene::RenderMesh(DEVMESHHANDLE hMesh, const oapi::FMATRIX4 *pWorld)
 
 
 // ===========================================================================================
-// D3DXVec3Transform(&homog, &pos, pVP) becomes homog = mul(FVECTOR4(pos, 1),
-// *pVP). The two are the same arithmetic: D3DXVec3Transform extends the
-// vector to (x,y,z,1), multiplies by the matrix as a ROW vector and keeps all
-// four components -- which is exactly oapi::mul in DrawAPI.h, and the reason
-// it is mul rather than TransformCoord is that TransformCoord divides by w
-// and throws it away, where both functions below need w themselves.
+// D3DXVec3Transform extended the vector to (x,y,z,1), multiplied by the matrix
+// as a row vector and kept all four components, which is what oapi::mul does.
+// It is mul rather than TransformCoord because TransformCoord divides by w and
+// throws it away, and both functions below need w themselves.
 // ===========================================================================================
 bool Scene::WorldToScreenSpace(const VECTOR3 &wpos, oapi::IVECTOR2 *pt, FMATRIX4 *pVP, float clip)
 {
@@ -3597,9 +3352,7 @@ void Scene::DeleteVessel(OBJHANDLE hVessel)
 
 
 // ===========================================================================================
-// D3D9ParticleStream became VulkanParticleStream. Nothing else here touches
-// the API: this is array bookkeeping.
-// ===========================================================================================
+//
 void Scene::AddParticleStream (class VulkanParticleStream *_pstream)
 {
 
@@ -3633,11 +3386,10 @@ void Scene::DelParticleStream (DWORD idx)
 }
 
 // ===========================================================================================
-// oapiCreateFont/oapiReleaseFont are core calls, not Direct3D ones, so this
-// converts unchanged. "Arial" stays: the Linux font lookup in
-// VulkanTextMgr.cpp resolves family names through fontconfig, which answers
-// "Arial" with the installed metric-compatible substitute exactly as it does
-// for every other Windows family name the client asks for.
+// "Arial" stays: the Linux font lookup resolves family names through
+// fontconfig, which answers it with the installed metric-compatible
+// substitute, as it does for every other Windows family name the client asks
+// for.
 // ===========================================================================================
 void Scene::InitGDIResources ()
 {
@@ -3711,10 +3463,9 @@ void Scene::PopCamera()
 }
 
 // ===========================================================================================
-// FMATRIX4(GetProjectionViewMatrix()) becomes *GetProjectionViewMatrix(). The
-// Windows expression relied on FMATRIX4's constructor from a D3DXMATRIX*,
-// which exists only under _WIN32 in DrawAPI.h; the matrix is already an
-// FMATRIX4 here, so the conversion is a dereference.
+// FMATRIX4(GetProjectionViewMatrix()) relied on FMATRIX4's constructor from a
+// D3DXMATRIX*, which exists only under _WIN32 in DrawAPI.h; the matrix is
+// already an FMATRIX4 here, so the conversion is a dereference.
 // ===========================================================================================
 FMATRIX4 Scene::PushCameraFrustumLimits(float nearlimit, float farlimit)
 {
@@ -3757,13 +3508,8 @@ DWORD Scene::GetRenderPass() const
 
 
 // ===========================================================================================
-// Camera.mProj._11 becomes Camera.mProj.m11 throughout the rest of this file.
-// The two names are the SAME FIELD -- FMATRIX4 is a union whose _11 view
-// exists only under _WIN32 (DrawAPI.h), so the m-form is the one that
-// compiles everywhere. Same storage, same value, no reordering.
-//
-// D3DXVec3Normalize(&v, &v) becomes v = unit(v), which VectorHelpers.h has as
-// an expression.
+// Camera.mProj._11 becomes Camera.mProj.m11 throughout the rest of this file:
+// the same field, since FMATRIX4's _11 view exists only under _WIN32.
 // ===========================================================================================
 FVECTOR3 Scene::GetPickingRay(short xpos, short ypos)
 {
@@ -3778,8 +3524,6 @@ FVECTOR3 Scene::GetPickingRay(short xpos, short ypos)
 //
 TILEPICK Scene::PickSurface(short xpos, short ypos)
 {
-	// (void*): TILEPICK holds VECTOR3s, so GCC will not memset it without the
-	// cast (-Wclass-memaccess) where MSVC does. The zero is what is wanted.
 	TILEPICK tp; memset((void*)&tp, 0, sizeof(TILEPICK));
 	vPlanet *vp = GetCameraProxyVisual();
 	if (!vp) return tp;
@@ -3819,10 +3563,7 @@ VulkanPick Scene::PickScene(short xpos, short ypos)
 }
 
 // ===========================================================================================
-// ptr(GetPickingRay(...)) becomes a named local: ptr() existed to take the
-// address of a temporary, which C++ forbids, and VulkanMesh::Pick takes a
-// const FVECTOR3*.
-// ===========================================================================================
+//
 VulkanPick Scene::PickMesh(DEVMESHHANDLE hMesh, const FMATRIX4 *pW, short xpos, short ypos)
 {
 	VulkanMesh *pMesh = (VulkanMesh *)hMesh;
@@ -3831,10 +3572,7 @@ VulkanPick Scene::PickMesh(DEVMESHHANDLE hMesh, const FMATRIX4 *pW, short xpos, 
 }
 
 // ===========================================================================================
-// ZeroMemory becomes memset. The Linux windows.h shim defines ZeroMemory, so
-// the name would compile, but the client spells the same thing memset
-// everywhere else it is not carrying a Win32 idiom.
-// ===========================================================================================
+//
 void Scene::GetAdjProjViewMatrix(FMATRIX4 *pMP, float znear, float zfar)
 {
 	float tanap = tan(Camera.aperture);
@@ -3847,9 +3585,8 @@ void Scene::GetAdjProjViewMatrix(FMATRIX4 *pMP, float znear, float zfar)
 
 
 // ===========================================================================================
-// D3DXMatrixMultiply becomes VMAT_MatrixMultiply and D3D9Effect becomes
-// VulkanEffect; the projection matrix itself is unchanged, including its
-// left-handed 0..1 depth range, because Vulkan clip space uses the same range.
+// The projection matrix itself is unchanged, including its left-handed 0..1
+// depth range, because Vulkan clip space uses the same range.
 // ===========================================================================================
 void Scene::SetCameraAperture(float ap, float as)
 {
@@ -3899,11 +3636,7 @@ bool Scene::IsProxyMesh()
 
 
 // ===========================================================================================
-// _VD3DX(v) becomes _V(v). Both spell "this three-float vector as a VECTOR3";
-// the Windows name said which library the source type came from, and it does
-// not come from there any more. See the conversion helpers in VulkanUtil.h,
-// which keep the same shape for the same reason.
-// ===========================================================================================
+//
 bool Scene::CameraPan(VECTOR3 pan, double speed)
 {
 	DWORD camMode = *(DWORD *)gc->GetConfigParam(CFGPRM_GETCAMERAMODE);
@@ -3924,14 +3657,7 @@ bool Scene::CameraPan(VECTOR3 pan, double speed)
 
 
 // ===========================================================================================
-// D3DXMatrixIdentity becomes VMAT_Identity and D3DMAT_SetRotation becomes
-// VMAT_SetRotation -- the same two functions under the client's own prefix,
-// which is what every D3DMAT_ helper in D3D9Util.cpp became.
 //
-// The comment about "D3D single-precision format" is left as the author wrote
-// it. It describes why render space is camera-centred, which is a property of
-// 32-bit floats rather than of Direct3D, and is just as true here.
-// ===========================================================================================
 bool Scene::UpdateCameraFromOrbiter(DWORD dwPass)
 {
 	MATRIX3 grot;
@@ -3981,9 +3707,7 @@ bool Scene::UpdateCameraFromOrbiter(DWORD dwPass)
 
 
 // ===========================================================================================
-// D3DXVEC(v) becomes FVEC(v) -- "this VECTOR3 as three floats" -- for the same
-// reason _VD3DX became _V above.
-// ===========================================================================================
+//
 bool Scene::SetupInternalCamera(FMATRIX4 *mNew, VECTOR3 *gpos, double apr, double asp)
 {
 
@@ -4114,13 +3838,7 @@ void Scene::DeleteAllCustomCameras()
 }
 
 // ===========================================================================================
-// memset(pv, 0, sizeof(CAMREC)) gets a (void*) cast: CAMREC holds a MATRIX3
-// and a VECTOR3 and is therefore not trivially copyable to GCC's eye, which
-// warns (-Wclass-memaccess) where MSVC does not. THE ZERO IS STILL WHAT IS
-// WANTED and a constructor would not be a substitute -- the fields are
-// assigned immediately below and the memset exists to clear the ones that are
-// not. Same treatment, same reasoning, as the nine sites in Mesh.cpp.
-// ===========================================================================================
+//
 CAMERAHANDLE Scene::SetupCustomCamera(CAMERAHANDLE hCamera, OBJHANDLE hVessel, MATRIX3 &mRot, VECTOR3 &pos, double fov, SURFHANDLE hSurf, DWORD flags)
 {
 	CAMREC *pv = NULL;
@@ -4211,12 +3929,7 @@ void Scene::RenderLabelsForCustomCamera()
 
 
 // ===========================================================================================
-// GetSurface() and GetDepthStencil() both hand back a VulkanTexture now; see
-// VulkanSurface.h on why the two D3D9 surface kinds are one image here.
 //
-// The three D3DXMatrix calls become their VMAT_ counterparts, as everywhere
-// else in this file.
-// ===========================================================================================
 void Scene::RenderCustomCameraView(CAMREC *cCur)
 {
 	VESSEL *pVes = oapiGetVesselInterface(cCur->hVessel);
@@ -4311,20 +4024,15 @@ void Scene::RenderGlares()
 	{
 		static SMVERTEX Vertex[4] = { {-1, -1, 0, 0, 0}, {-1, 1, 0, 0, 1}, {1, 1, 0, 1, 1}, {1, -1, 0, 1, 0} };
 		static WORD cIndex[6] = { 0, 2, 1, 0, 3, 2 };
-		// D3DXMATRIX in the constant struct becomes FMATRIX4; the layout is
-		// the same sixteen floats. Note that FMATRIX4 is alignas(16) where
-		// D3DXMATRIX was not -- it is first in the struct, so nothing shifts,
-		// but the struct's own alignment rises to 16. That matters only to
-		// the GLSL block it is copied into, which declares the same fields in
-		// the same order.
+		// FMATRIX4 is alignas(16) where D3DXMATRIX was not. It is first in the
+		// struct, so nothing shifts, but the struct's own alignment rises to
+		// 16; that matters only to the GLSL block it is copied into, which
+		// declares the same fields in the same order.
 		VulkanImageDesc desc; FVECTOR2 pt;
 		struct { FMATRIX4 mVP; float4 Pos, Color; float GPUId, Alpha, Blend; } Const;
 
 		Const.Color = FVECTOR4(1, 1, 1, 1);
 		VMAT_OrthoOffCenterLH(&Const.mVP, 0.0f, (float)viewW, (float)viewH, 0.0f, 0.0f, 1.0f);
-		// pLocalResultsSL->GetDesc(&desc) becomes desc = ...->Desc(). And note
-		// that pLocalResultsSL and pLocalResults are ONE IMAGE here, not a
-		// surface and its texture -- see the note in the destructor.
 		desc = pLocalResultsSL->Desc();
 
 		pRenderGlares->ClearTextures();
@@ -4369,10 +4077,8 @@ void Scene::RenderGlares()
 
 				pRenderGlares->SetVSConstants("Const", &Const, sizeof(Const));
 				pRenderGlares->SetPSConstants("Const", &Const, sizeof(Const));
-				// DrawIndexedPrimitiveUP becomes ShaderClass::DrawUP, which
-				// copies through a scratch buffer -- there is no "draw from
-				// this pointer in my memory" in Vulkan. THE LAST COUNT IS
-				// INDICES, not primitives: 2 triangles is 6.
+				// DrawUP's last count is indices, not primitives: 2 triangles
+				// is 6.
 				pRenderGlares->DrawUP(Vertex, 4, sizeof(SMVERTEX), cIndex, 6);
 			}
 		}
@@ -4383,8 +4089,6 @@ void Scene::RenderGlares()
 			pRenderGlares->UpdateTextures();
 
 			// Render glares for local lights
-			// int(nLights): nLights is a DWORD and i an int; the cast is the
-			// same one-word answer to -Wsign-compare as elsewhere in this file.
 			for (int i = 0; i < int(nLights); ++i) {
 				int GPUId = Lights[i].GPUId;
 				if (GPUId >= 0) {
@@ -4425,9 +4129,7 @@ bool Scene::IsVisibleInCamera(const FVECTOR3 *pCnt, float radius)
 }
 
 // ===========================================================================================
-// D3DMAT_VectorMatrixMultiply becomes VMAT_VectorMatrixMultiply -- the same
-// helper under the client's own prefix, and the same one that divides by w.
-// ===========================================================================================
+//
 bool Scene::CameraDirection2Viewport(const VECTOR3 &dir, int &x, int &y)
 {
 	FVECTOR3 homog;
@@ -4455,11 +4157,8 @@ bool Scene::CameraDirection2Viewport(const VECTOR3 &dir, int &x, int &y)
 
 
 // ===========================================================================================
-// SAFE_RELEASE(FX) becomes SAFE_DELETE(FX). An ID3DXEffect was reference
-// counted; VulkanEffectFile is a plain heap object this class owns and made,
-// so the release becomes a delete. Nothing in Vulkan is reference counted --
-// see VulkanFrame.h on why SAFE_RELEASE has no counterpart anywhere in the
-// converted client.
+// SAFE_RELEASE(FX) becomes SAFE_DELETE(FX): an ID3DXEffect was reference
+// counted, while VulkanEffectFile is a plain heap object this class owns.
 // ===========================================================================================
 void Scene::GlobalExit()
 {
@@ -4467,25 +4166,15 @@ void Scene::GlobalExit()
 }
 
 // ===========================================================================================
-// D3D9TechInit becomes VulkanTechInit, and the effect it loads is
-// SceneTech.glsl beside SceneTech.tech rather than SceneTech.fx.
-//
-// D3DXCreateEffectFromFile HAS NO COUNTERPART, and neither does the
+// D3DXCreateEffectFromFile has no counterpart, and neither does the
 // ID3DXBuffer of errors it filled. An .fx file is a Direct3D concept: it
-// carried the shaders AND the technique/pass declarations AND the render
-// states in one file, and D3DX compiled the lot. Vulkan has no such object,
-// so VulkanEffectFile::Load reads the GLSL and a .tech table beside it -- see
-// VulkanEffect.h. The two-branch error/warning inspection of the D3DX error
-// buffer goes with it: glslang's log is written to Orbiter.log by
-// CompileShaderStage itself, at the point of failure, with the file and entry
-// point named, which is strictly more than the buffer said.
-//
-// The MessageBoxA on the error branch is kept -- the Linux shim provides it,
-// and this failure is one the user has to see.
-//
-// THE SIGNATURE CHANGES FROM LPDIRECT3DDEVICE9 TO VulkanDevice*, which is
-// what every TechInit in the client takes now, and the 'folder' argument
-// still names the module directory: callers pass "VulkanClient".
+// carried the shaders, the technique/pass declarations and the render states
+// in one file, and D3DX compiled the lot. VulkanEffectFile::Load reads the
+// GLSL and a .tech table beside it instead. The two-branch error/warning
+// inspection of the D3DX error buffer goes with it, because glslang's log is
+// written to Orbiter.log at the point of failure with the file and entry point
+// named. The MessageBoxA on the error branch is kept: this failure is one the
+// user has to see.
 // ===========================================================================================
 void Scene::VulkanTechInit(VulkanDevice *pDev, const char *folder)
 {

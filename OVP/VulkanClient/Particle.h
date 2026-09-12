@@ -5,21 +5,6 @@
 //				 2012-2016 Jarmo Nikkanen
 // ==============================================================
 
-// CONVERTED FROM OVP/D3D9Client/Particle.h, read end to end (160 lines).
-//
-// Exhaust and re-entry particle streams. Types only:
-//
-//   D3D9Effect          -> VulkanEffect
-//   oapi::VulkanClient    -> oapi::VulkanClient
-//   VulkanParticleStream  -> VulkanParticleStream
-//   LPDIRECT3DDEVICE9   -> VulkanDevice*
-//   LPDIRECT3DTEXTURE9  -> VulkanTexture*
-//   D3DXMATRIX          -> FMATRIX4
-//   D3DCOLORVALUE       -> COLOUR4
-//
-// The particle list, the level and atmosphere mappings and the coordinate
-// builders name no graphics type and are untouched.
-
 #ifndef __PARTICLE_H
 #define __PARTICLE_H
 

@@ -1,9 +1,8 @@
 // The shim's HANDLE object: its lifetime, the last-error store, and the Win32
 // file and directory-enumeration API that hands handles out.
 //
-// See Handles.h for why this is separate from Platform.cpp. Nothing here
-// depends on anything outside libc and pthreads, so a standalone utility can
-// link this translation unit on its own.
+// Nothing here depends on anything outside libc and pthreads, so a standalone
+// utility can link this translation unit on its own. See Handles.h.
 
 #include <windows.h>
 #include "Handles.h"
@@ -106,9 +105,9 @@ extern "C" BOOL CloseHandle(HANDLE obj)
 // Files
 //
 // The Win32 file API in the shape texpack uses it: open for reading, ask the
-// size, read the whole thing, close. The share mode, the security attributes
-// and the template handle have no counterpart here and are ignored, which is
-// what they amount to for a single-process tool reading its own files.
+// size, read the whole thing, close. The share mode, security attributes and
+// template handle are ignored -- they have no counterpart here, and amount to
+// nothing for a single-process tool reading its own files.
 // ===========================================================================
 
 extern "C" {
@@ -118,8 +117,8 @@ HANDLE CreateFileA(LPCSTR name, DWORD access, DWORD, void *,
 {
     if (!name) { orb_SetLastError(87); return INVALID_HANDLE_VALUE; }
 
-    // Access maps onto the open mode. Win32 allows neither bit set, meaning
-    // "query attributes only"; O_RDONLY is the closest and is harmless.
+    // Win32 allows neither access bit set, meaning "query attributes only";
+    // O_RDONLY is the closest equivalent and is harmless.
     int flags;
     const bool wantRead  = (access & GENERIC_READ)  != 0;
     const bool wantWrite = (access & GENERIC_WRITE) != 0;
@@ -127,8 +126,6 @@ HANDLE CreateFileA(LPCSTR name, DWORD access, DWORD, void *,
     else if (wantWrite)             flags = O_WRONLY;
     else                            flags = O_RDONLY;
 
-    // The creation disposition. Win32 names five; each is a combination of
-    // O_CREAT, O_EXCL and O_TRUNC.
     switch (disposition) {
     case CREATE_NEW:        flags |= O_CREAT | O_EXCL;  break;
     case CREATE_ALWAYS:     flags |= O_CREAT | O_TRUNC; break;
@@ -158,12 +155,11 @@ BOOL ReadFile(HANDLE obj, LPVOID buf, DWORD toRead, LPDWORD read, void *)
         return FALSE;
     }
 
-    // READ UNTIL IT IS ALL READ. A single ::read may return fewer bytes than
-    // asked for and still be a success; ReadFile on a file does not do that,
-    // and its callers do not loop -- texpack asks for the whole file in one
-    // call and treats a short count as a truncated file and exits. Only end
-    // of file stops the loop short, which is the one case Windows reports the
-    // same way.
+    // Loop until it is all read. A single ::read may return fewer bytes than
+    // asked for and still be a success; ReadFile on a file does not, and its
+    // callers do not loop -- texpack asks for the whole file in one call and
+    // treats a short count as truncation. Only end of file stops the loop short,
+    // which is the one case Windows reports the same way.
     char *p = (char *)buf;
     DWORD done = 0;
     while (done < toRead) {
@@ -203,23 +199,21 @@ BOOL GetFileSizeEx(HANDLE obj, PLARGE_INTEGER size)
 // ===========================================================================
 // Directory enumeration
 //
-// FindFirstFile takes a PATH WITH A WILDCARD IN IT -- "Surf/04/000001/*.dds"
-// -- not a directory, so the argument is split at its last separator and the
-// tail is matched against each entry with fnmatch. Two details of the Win32
-// behaviour are reproduced rather than tidied away:
+// FindFirstFile takes a path with a wildcard in it -- "Surf/04/000001/*.dds" --
+// not a directory, so the argument is split at its last separator and the tail
+// is matched against each entry with fnmatch. Two Win32 behaviours are
+// reproduced rather than tidied away:
 //
-//   * MATCHING IS CASE-INSENSITIVE. NTFS is, ext4 is not, and the callers
-//     write the pattern in whatever case the format uses -- texpack asks for
-//     "*.dds" against tiles that may be named .DDS. FNM_CASEFOLD is what
-//     keeps a tree packed on Windows and unpacked here finding its own files.
+//   * Matching is case-insensitive. NTFS is, ext4 is not, and callers write the
+//     pattern in whatever case the format uses -- texpack asks for "*.dds"
+//     against tiles that may be named .DDS -- so FNM_CASEFOLD is what keeps a
+//     tree packed on Windows and unpacked here finding its own files.
 //
-//   * "." AND ".." ARE RETURNED. Windows lists them for a "*" pattern and
-//     callers are written knowing it: texpack's level scan accepts a name
-//     only if it is six digits long, which rejects both. Skipping them here
-//     would be a silent behaviour change for any caller that counts entries.
-//
-// fnmatch does not set FNM_PERIOD, so "*" matches a leading dot, which is
-// what makes the second point work.
+//   * "." and ".." are returned, as Windows returns them for a "*" pattern, and
+//     callers are written knowing it: texpack's level scan accepts a name only
+//     if it is six digits long, which rejects both. Skipping them would be a
+//     silent behaviour change for any caller that counts entries. FNM_PERIOD is
+//     deliberately not set, so "*" matches a leading dot.
 // ===========================================================================
 
 namespace {
@@ -250,9 +244,8 @@ BOOL advanceFind(OrbHandle *h, LPWIN32_FIND_DATAA data)
         errno = 0;
         const struct dirent *e = readdir(d);
         if (!e) {
-            // 18 is ERROR_NO_MORE_FILES, which is what FindNextFile sets at
-            // the end of a search and what a caller distinguishing "done"
-            // from "failed" looks for.
+            // 18 is ERROR_NO_MORE_FILES: what a caller distinguishing "done"
+            // from "failed" at the end of a search looks for.
             orb_SetLastError(errno ? orb_Win32ErrorFromErrno(errno) : 18);
             return FALSE;
         }

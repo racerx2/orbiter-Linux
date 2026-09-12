@@ -9,36 +9,8 @@
 // Create meshes for spheres and sphere patches
 // ==============================================================
 //
-// CONVERTED FROM OVP/D3D9Client/Spherepatch.cpp, read end to end (373 lines).
-//
-// THE TWO GENERATORS ARE PURE ARITHMETIC AND CONVERT UNCHANGED. CreateSphere
-// and CreateSpherePatch fill a VERTEX_2TEX array and a WORD index array with
-// trigonometry -- no device, no D3DX, no Win32. Every line of both, including
-// CreateSpherePatch's local frame and its bounding box, is carried over as it
-// stands. The only edits inside them are D3DVECTOR -> FVECTOR3 and
-// D3DVAL -> FVAL, which are the two names VulkanUtil.h gives the same things.
-//
-// What actually changes is MapVertices, and one line of it:
-//
-//   Lock(D3DLOCK_DISCARD) / Unlock become Map() / Unmap(). Same protocol,
-//   Vulkan name -- see VulkanBuffer in VulkanFrame.h.
-//
-//   D3DXComputeBoundingSphere HAS NO VULKAN COUNTERPART, because it never
-//   had a Direct3D one either: it is a D3DX UTILITY that walks a vertex array
-//   on the CPU. It is written out below, and its definition is transcribed
-//   from the D3DX documentation rather than guessed -- the centre is the
-//   midpoint of the axis-aligned extents, NOT the centroid, and the radius is
-//   the largest distance from that midpoint. Getting that wrong would produce
-//   a sphere that is plausible, slightly too small, and culls tiles that are
-//   actually visible.
-//
-//   D3DXVec3Length in ComputeSphere, likewise: sqrt of the dot product.
-//
-// The `#include "TileMgr2.h"` of the Windows file is spelled Tilemgr2.h here.
-// The file on disk has always been Tilemgr2.h; NTFS did not care and ext4
-// does. Nothing in this file uses it -- VBMESH's TileManager2Base* parameter
-// is unused, and the class is forward-declared in the header -- but it is
-// kept because dropping an include is not a conversion.
+// The Windows file spells its include "TileMgr2.h"; the file on disk has
+// always been Tilemgr2.h. NTFS did not care and ext4 does.
 // ==============================================================
 
 #include "Spherepatch.h"
@@ -50,12 +22,8 @@ static float TEX2_MULTIPLIER = 4.0f; // microtexture multiplier
 // ==============================================================
 // struct VBMESH
 
-// BOTH lists are reordered to the declaration order -- pVB, pIB, vtx, idx,
-// nv, nf, nv_cur, nf_cur, bsRad, bBox. Members are initialised in DECLARATION
-// order whatever the list says, and these wrote pIB before pVB, idx before
-// vtx, and bBox before nv_cur/nf_cur. Every value is a constant, so nothing
-// observable changes; this is the same finding already recorded against
-// Objmgr, ScatterParams and TreeFileHeader.
+// Both initialiser lists reordered to declaration order (-Wreorder). Every
+// value is a constant, so nothing observable changes.
 VBMESH::VBMESH (class TileManager2Base *pmgr)
 	: pVB(NULL)
 	, pIB(NULL)
@@ -96,10 +64,8 @@ VBMESH::~VBMESH ()
 
 void VBMESH::ComputeSphere()
 {
-	// Was D3DXVECTOR3 arithmetic and D3DXVec3Length. FVECTOR3 has the same
-	// three floats; the length is written out because D3DXVec3Length is a
-	// D3DX utility entry point, not a device call, and there is nothing to
-	// call it on.
+	// D3DXVec3Length is a D3DX utility entry point with no counterpart, so the
+	// length is written out.
 	bsCnt = FVECTOR3(float(Box[0].x + Box[7].x), float(Box[0].y + Box[7].y), float(Box[0].z + Box[7].z)) * 0.5f;
 	const FVECTOR3 half = FVECTOR3(float(Box[0].x - Box[7].x), float(Box[0].y - Box[7].y), float(Box[0].z - Box[7].z)) * 0.5f;
 	bsRad = sqrt(half.x*half.x + half.y*half.y + half.z*half.z);
@@ -107,19 +73,13 @@ void VBMESH::ComputeSphere()
 
 
 // ==============================================================
-// D3DXComputeBoundingSphere, written out.
-//
-// Its definition, from the D3DX documentation: the centre is the MIDPOINT OF
-// THE AXIS-ALIGNED EXTENTS -- (min + max) * 0.5 per axis, not the average of
-// the points -- and the radius is the greatest distance from that centre to
-// any point. The two differ whenever the vertices are not evenly spread, and
-// a sphere patch's are not.
-//
-// The signature drops D3DX's stride and pointer-to-first-float: the only
-// caller passes a VERTEX_2TEX array and sizeof(VERTEX_2TEX). It returns void
-// where D3DX returned an HRESULT, because the only failure D3DX reported was
-// a NULL argument, and HR() around it would have been checking this file's
-// own arithmetic.
+// D3DXComputeBoundingSphere, written out: a D3DX CPU utility with no Vulkan
+// counterpart. Its centre is the midpoint of the axis-aligned extents,
+// (min + max) * 0.5 per axis, not the average of the points, and the radius is
+// the greatest distance from that centre to any point. The two differ whenever
+// the vertices are not evenly spread, and a sphere patch's are not; using the
+// centroid gives a plausible, slightly too small sphere that culls tiles which
+// are actually visible.
 //
 static void ComputeBoundingSphere (const VERTEX_2TEX *pVtx, DWORD nVtx, FVECTOR3 *pCentre, float *pRadius)
 {
@@ -173,18 +133,12 @@ void VBMESH::MapVertices(VulkanDevice *pDev, DWORD MemFlag)
 
 	if (vtx) {
 
-		// Was HR(D3DXComputeBoundingSphere((const D3DXVECTOR3*)&vtx->x, nv,
-		// sizeof(VERTEX_2TEX), &bsCnt, &bsRad)) -- the cast and the stride
-		// existed only because D3DX took a raw float pointer and had to be
-		// told how to walk it. See ComputeBoundingSphere above.
 		ComputeBoundingSphere(vtx, nv, &bsCnt, &bsRad);
 
 		if (pVB) {
-			// Lock(0, 0, &p, D3DLOCK_DISCARD) -> Map(). DISCARD said "I am
-			// overwriting all of it, do not stall waiting for the previous
-			// contents" -- these buffers are host-visible (see Vtxmgr in
-			// VulkanCatalog.h), so the pointer is the memory itself and
-			// there is nothing to discard.
+			// D3DLOCK_DISCARD has no equivalent and needs none: these buffers
+			// are host-visible, so Map() returns the memory itself and there
+			// is no previous content to stall on.
 			if ((pVBuffer = (VERTEX_2TEX *)pVB->Map()) != NULL) {
 				memcpy(pVBuffer, vtx, nv*sizeof(VERTEX_2TEX));
 				pVB->Unmap();
@@ -248,8 +202,6 @@ void CreateSphere (VulkanDevice *pDev, VBMESH &mesh, DWORD nrings, bool hemisphe
             FLOAT fDAngX0 = x*fDAng - (FLOAT)PI;  // subtract Pi to wrap at +-180 deg
 			if (hemisphere && which_half) fDAngX0 += (FLOAT)PI;
 
-			// Was D3DVECTOR. FVECTOR3 is the same three floats and is what
-			// VERTEX_2TEX's constructor takes.
 			FVECTOR3 v = {r0*(FLOAT)cos(fDAngX0), y0, r0*(FLOAT)sin(fDAngX0)};
 			FLOAT tu = a*(FLOAT)x + du;
 			//FLOAT tu = x/(FLOAT)x1;
@@ -357,9 +309,9 @@ void CreateSpherePatch (VulkanDevice *pDev, VBMESH &mesh, int nlng, int nlat, in
 	VECTOR3 pref = {0.5*(clat0*clng1 + clat0*clng0), slat0, 0.5*(clat0*slng1 + clat0*slng0)}; // origin
 	VECTOR3 tpmin, tpmax; 
 
-	// dx and dy are read below only when shift_origin is set, which is the
-	// same condition that writes them -- GCC cannot see that and warns, so
-	// they are initialised. The Windows build left them indeterminate.
+	// Read below only when shift_origin is set, which is the condition that
+	// writes them; GCC cannot see that and warns. The Windows build left them
+	// indeterminate.
 	float dx = 0.0f, dy = 0.0f;
 	if (shift_origin) {
 		dx = (float)clat0;

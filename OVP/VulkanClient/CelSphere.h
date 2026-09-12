@@ -5,31 +5,13 @@
 // Copyright (C) 2006-2026 Martin Schweiger
 // ==============================================================
 //
-// CONVERTED FROM OVP/D3D9Client/CelSphere.h, read end to end (192 lines).
+// A D3DXHANDLE was one type for both techniques and parameters, which is how a
+// technique handle could be passed to SetVector and produce silence. It splits
+// here into TECHHANDLE and HANDLE; see VulkanEffect.h.
 //
-// The background celestial sphere: stars, constellations, grids and their
-// labels. Every method survives; the changes are types and one name.
-//
-//   ID3DXEffect*             -> VulkanEffectFile*
-//   D3DXHANDLE               -> TECHHANDLE for the three TECHNIQUES
-//                               (s_eStar, s_eLine, s_eLabel) and HANDLE for
-//                               the two PARAMETERS (s_eColor, s_eWVP). A
-//                               D3DXHANDLE was one type for both, which is
-//                               how a technique handle could be passed to
-//                               SetVector and produce silence; see
-//                               VulkanEffect.h.
-//   LPDIRECT3DDEVICE9        -> VulkanDevice*
-//   LPDIRECT3DVERTEXBUFFER9  -> VulkanBuffer*
-//   LPDIRECT3DINDEXBUFFER9   -> VulkanBuffer*   (Vulkan has one buffer type;
-//                               what a buffer IS comes from its usage flag
-//                               and from which bind call it is given to)
-//   D3DXMATRIX               -> FMATRIX4
-//   oapi::D3D9Client         -> oapi::VulkanClient
-//   D3D9TechInit             -> VulkanTechInit  (matching VulkanPad and the
-//                               rest of the client)
-//
-// maxNumVertices IS THE ONE FIELD WHOSE MEANING CHANGES, and it is worth
-// reading the note on it below before touching the star renderer.
+// Vulkan has one buffer type: what a buffer is comes from its usage flag and
+// from which bind call it is given to, so both vertex and index buffers are
+// VulkanBuffer.
 // ==============================================================
 
 #ifndef __VULKANCELSPHERE_H
@@ -38,9 +20,8 @@
 #include "CelSphereAPI.h"
 #include "VulkanClient.h"
 #include "VulkanUtil.h"
-// ADDED. On Windows ID3DXEffect arrived through <d3dx9.h>, which D3D9Client.h
-// pulled in for everyone. VulkanEffectFile is this client's own type and has
-// its own header, so the file that uses it says so.
+// ID3DXEffect arrived through <d3dx9.h>, which D3D9Client.h pulled in for
+// everyone; VulkanEffectFile has its own header.
 #include "VulkanEffect.h"
 
 
@@ -196,26 +177,14 @@ private:
 
 	/// \brief The chunk size the star vertex buffers are split into.
 	///
-	///        WAS GetHardwareCaps()->MaxPrimitiveCount -- a REAL D3D9 HARDWARE
-	///        LIMIT on how many primitives one DrawPrimitive call could
-	///        submit (65535 on the cards that made this code necessary,
-	///        millions on later ones). The comment in RenderStars still says
-	///        "some graphics cards have a limit in the vertex list size", and
-	///        on D3D9 that was true.
-	///
-	///        VULKAN HAS NO SUCH LIMIT. vkCmdDraw's vertexCount is a uint32_t
-	///        with no corresponding VkPhysicalDeviceLimits entry, and
-	///        VkPhysicalDeviceProperties -- which GetHardwareCaps() now
-	///        returns -- has nothing that means this. So there is nothing to
-	///        read it from, and the chunking is no longer required.
-	///
-	///        The chunking is KEPT, because removing it would restructure
-	///        InitStars, ClearStars and RenderStars, and the number is now a
-	///        buffer-granularity choice rather than a hardware one. It is set
-	///        large enough that any real star database fits in one buffer,
-	///        which is exactly what happened on a modern D3D9 card. Change
-	///        this and the render loop still works; it will just allocate and
-	///        draw more buffers.
+	///        Was GetHardwareCaps()->MaxPrimitiveCount, a real D3D9 limit on
+	///        how many primitives one DrawPrimitive call could submit (65535
+	///        on the cards that made this code necessary). Vulkan has no
+	///        equivalent -- vkCmdDraw's vertexCount is a uint32_t with no
+	///        matching VkPhysicalDeviceLimits entry -- so the chunking is now
+	///        a buffer-granularity choice, set large enough that any real star
+	///        database fits in one buffer. A smaller value still renders
+	///        correctly; it just allocates and draws more buffers.
 	static const UINT MAX_STAR_CHUNK = 1u << 20;
 
 	UINT maxNumVertices;            ///< number of vertices to use for one chunk at star-drawing
@@ -235,8 +204,6 @@ private:
 	FMATRIX4 m_transformCelestial;   ///< rotation for celestial grid rendering
 	double m_mjdPrecessionChecked;
 
-	// TECHHANDLE for the three techniques, HANDLE for the two parameters.
-	// See the file header.
 	static VulkanEffectFile *s_FX;
 	static TECHHANDLE s_eStar;
 	static TECHHANDLE s_eLine;
@@ -246,15 +213,14 @@ private:
 
 	/// \brief The grid-label texture parameter, `gTex0` in SceneTech.fx.
 	///
-	///        NEW HANDLE, NOT A NEW IDEA. On Windows RenderGridLabels binds
-	///        the label texture with pDev->SetTexture(0, ...) -- straight to
-	///        DEVICE SAMPLER SLOT 0, going around the effect, which works
-	///        only because SceneTech.fx's `sampler Tex0S : register(s0)`
-	///        happens to be that same slot. There is no numbered device
-	///        sampler slot in Vulkan: a texture reaches a shader through a
-	///        descriptor set that BeginPass writes from the effect's own
-	///        recorded bindings. So the bind goes through the effect
-	///        parameter it was always shadowing, and this is its handle.
+	///        On Windows RenderGridLabels binds the label texture with
+	///        pDev->SetTexture(0, ...) -- straight to device sampler slot 0,
+	///        around the effect, which works only because SceneTech.fx's
+	///        `sampler Tex0S : register(s0)` is that same slot. Vulkan has no
+	///        numbered device sampler slot: a texture reaches a shader through
+	///        a descriptor set BeginPass writes from the effect's own recorded
+	///        bindings, so the bind goes through the effect parameter it was
+	///        always shadowing.
 	static HANDLE s_eTex0;
 };
 

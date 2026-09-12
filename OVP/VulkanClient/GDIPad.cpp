@@ -4,36 +4,6 @@
 // Dual licensed under GPL v3 and LGPL v3
 // Copyright (C) 2006-2026 Martin Schweiger
 // ==============================================================
-//
-// CONVERTED FROM OVP/D3D9Client/GDIPad.cpp, read end to end (306 lines).
-//
-// THE GDI SKETCHPAD, AND IT STAYS A GDI SKETCHPAD. Every method is a Win32
-// GDI call -- SelectObject, TextOut, MoveToEx, Rectangle, PolyPolyline -- and
-// the shim implements all of them (Src/Orbiter/Linux/Gdi.cpp). Not one
-// Direct3D call appears in the file. So the conversion is three renames of
-// the pad's own resource classes:
-//
-//   D3D9PadFont / D3D9PadPen / D3D9PadBrush -> VulkanPadFont / ...Pen /
-//   ...Brush. Those are the objects clbkCreateFont and friends return, and
-//   this file reaches into them for the raw HFONT / HPEN / HBRUSH.
-//
-// WORTH KNOWING: on Linux `Gdi.cpp` is a DISPLAY LIST RECORDER, not a
-// rasteriser -- TextOutA appends a DrawCmd and orbiter_ReplayDC turns the
-// list into ImGui draw commands. These calls therefore still produce a
-// picture; what they do NOT do is leave pixels in a bitmap that something
-// else can read back. That distinction is why VulkanTextMgr had to be
-// rebuilt on stb_truetype and this file did not have to change at all.
-//
-// UTF8ToCP1252 IS THE ONE FUNCTION WHOSE BEHAVIOUR CHANGES, and for the
-// reason recorded as finding 18: the Windows version is named for CP1252 and
-// converts to 28591 (ISO-8859-1), so the twenty-seven printable characters
-// CP1252 puts in 0x80-0x9F -- the smart quotes, the dashes, the ellipsis, the
-// bullet, the euro sign -- are substituted with '?'. This is the same
-// conversion VulkanPad.cpp carries, written out because the two Win32 NLS
-// calls it was built from (MultiByteToWideChar / WideCharToMultiByte) have no
-// counterpart here. The two copies are duplicated exactly as the Windows
-// source duplicates them.
-// ==============================================================
 
 #include "GDIPad.h"
 #include "VulkanPad.h"
@@ -46,6 +16,13 @@
 using namespace oapi;
 
 
+// The same conversion VulkanPad.cpp carries, spelled out because the two Win32
+// NLS calls it was built from (MultiByteToWideChar / WideCharToMultiByte) have
+// no counterpart here. It also corrects the Windows version, which is named for
+// CP1252 but converts to code page 28591 (ISO-8859-1): the twenty-seven
+// printable characters CP1252 puts in 0x80-0x9F -- smart quotes, dashes,
+// ellipsis, bullet, euro sign -- came out as '?'. The two copies stay
+// duplicated exactly as the Windows source duplicates them.
 static std::string UTF8ToCP1252(const char *utf8, int ulen)
 {
 	if (!utf8) return std::string();

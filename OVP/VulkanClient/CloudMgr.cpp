@@ -12,24 +12,11 @@
 // LOD (level-of-detail) algorithm for patch resolution.
 // ==============================================================
 //
-// CONVERTED FROM OVP/D3D9Client/CloudMgr.cpp, read end to end (191 lines).
-//
-// The same file as SurfMgr.cpp with a different technique, and it takes the
-// same four changes -- see that file's header for each in full:
-//
-//   FX->CommitChanges() has no counterpart, so every draw closes and reopens
-//   the pass; SetStreamSource/SetIndices/DrawIndexedPrimitive become the
-//   three vkCmd calls with a primitive count turned into an index count;
-//   SetVertexDeclaration and the topology move to before Begin(); and
-//   D3DMATERIAL9/D3D9Sun become MATERIAL/VulkanSun field for field, with
-//   D3DMATERIAL9's capitalised members (.Diffuse, .Ambient, .Power) spelled
-//   as MATERIAL's (.diffuse, .ambient, .power).
-//
-// One thing to notice while reading: RenderTile uses `pDev` without declaring
-// it, where the sibling functions declare a local. That is D3D9Effect's
-// STATIC pDev, inherited through TileManager. It is VulkanEffect::pDev here
-// and resolves the same way; the local is added anyway so the two paths read
-// alike and the recording check has something to test.
+// FX->CommitChanges() has no counterpart -- a descriptor set is written at
+// BeginPass, not re-sent mid-pass -- so every per-tile draw closes and reopens
+// the pass instead. D3DMATERIAL9 and D3D9Sun become MATERIAL and VulkanSun
+// field for field, with D3DMATERIAL9's capitalised members (.Diffuse,
+// .Ambient, .Power) spelled as MATERIAL's (.diffuse, .ambient, .power).
 // ==============================================================
 
 #include "CloudMgr.h"
@@ -83,8 +70,6 @@ void CloudManager::Render(VulkanDevice *dev, FMATRIX4 &wmat, double scale, int l
 	LoadData();
 	if (bNoTextures) return;
 	
-	// Was D3DMATERIAL9: four D3DCOLORVALUE and a float, which MATERIAL is
-	// field for field, so the braced initialiser carries over as written.
 	MATERIAL def_mat = {{1,1,1,1},{1,1,1,1},{1,1,1,1},{0,0,0,1},0};
 
 	FX->SetTechnique(eCloudTech);
@@ -115,8 +100,6 @@ void CloudManager::RenderShadow(VulkanDevice *dev, FMATRIX4 &wmat, double scale,
 	if (bNoTextures) return;
 
 	MATERIAL cloudmat = {{0,0,0,1},{0,0,0,1},{0,0,0,0},{0,0,0,0},0};
-	// D3DMATERIAL9's members are capitalised; MATERIAL's are not. Same two
-	// fields.
 	cloudmat.diffuse.a = cloudmat.ambient.a = shadowalpha;
 
 	FX->SetTechnique(eCloudShadow);
@@ -153,7 +136,7 @@ void CloudManager::RenderSimple(int level, int npatch, TILEDESC *tile, FMATRIX4 
 	VkCommandBuffer cmd = pDevice->GetCommandBuffer();
 
 	// Was pDev->SetVertexDeclaration(pPatchVertexDecl). Both of these are
-	// pipeline state and must be declared before BeginPass builds it.
+	// pipeline state and have to be declared before BeginPass builds it.
 	FX->SetVertexDecl(pPatchVertexDecl);
 	FX->SetTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
 
@@ -167,11 +150,9 @@ void CloudManager::RenderSimple(int level, int npatch, TILEDESC *tile, FMATRIX4 
 		FX->SetTexture(eTex0, tile[idx].tex);
 
 		// FX->CommitChanges() stood here; the pass opens after the per-patch
-		// texture is set, because BeginPass is what writes the descriptor.
-		//
-		// The cull comes through the override because vPlanet sets
-		// D3DRS_CULLMODE on the device around this call -- see
-		// TileManager::cullMode. CULL_PASS leaves the technique's own.
+		// texture is set, because BeginPass is what writes the descriptor. The
+		// cull comes through the override because vPlanet set D3DRS_CULLMODE
+		// as device state around this call; CULL_PASS leaves the technique's.
 		VulkanEffectFile::PassOverride ovr;
 		ovr.cullMode = cullMode;
 		if (!FX->BeginPassEx(0, &ovr)) continue;
@@ -180,7 +161,7 @@ void CloudManager::RenderSimple(int level, int npatch, TILEDESC *tile, FMATRIX4 
 		VkDeviceSize offset = 0;
 		vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &offset);
 		vkCmdBindIndexBuffer(cmd, mesh.pIB->Buffer(), 0, VK_INDEX_TYPE_UINT16);
-		// mesh.nf TRIANGLES -> 3*mesh.nf indices.
+		// mesh.nf triangles -> 3*mesh.nf indices.
 		vkCmdDrawIndexed(cmd, mesh.nf * 3, 1, 0, 0, 0);
 
 		FX->EndPass();
@@ -198,8 +179,8 @@ void CloudManager::InitRenderTile()
 	FX->SetFloat(eTime, float(fmod(oapiGetSimTime(),60.0)));
 	UINT numPasses = 0;
 	FX->Begin(&numPasses, 0);
-	// The BeginPass(0) that stood here has moved into RenderTile; see
-	// SurfMgr.cpp's InitRenderTile for the reason.
+	// The BeginPass(0) that stood here has moved into RenderTile, which now
+	// opens and closes a pass per tile.
 }
 
 void CloudManager::EndRenderTile()
@@ -227,12 +208,11 @@ void CloudManager::RenderTile (int lvl, int hemisp, int ilat, int nlat, int ilng
 	FX->SetTexture(eTex0, tex);	  // Diffuse Texture
 
 	// FX->CommitChanges() stood here. The Windows function reached for the
-	// inherited static `pDev` for the three device calls below; this names it
-	// locally so the recording check has something to test.
+	// inherited static `pDev`; this names it locally so the recording check
+	// has something to test.
 	VulkanDevice *pDevice = VulkanEffect::pDev;
 	if (!pDevice || !pDevice->IsRecording() || !mesh.pVB || !mesh.pIB) return;
-	// See RenderSimple above: the cull travels on the manager because
-	// vPlanet set it as device state around the call.
+	// See RenderSimple above for the cull override.
 	VulkanEffectFile::PassOverride ovr;
 	ovr.cullMode = cullMode;
 	if (!FX->BeginPassEx(0, &ovr)) return;

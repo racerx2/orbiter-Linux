@@ -12,26 +12,6 @@
 // Manage compressed and packed tile trees for planetary surface
 // and cloud layers.
 // --------------------------------------------------------------
-//
-// CONVERTED FROM OVP/D3D9Client/ZTreeMgr.cpp, read end to end (219 lines).
-//
-// NO GRAPHICS API APPEARS IN THIS FILE ON EITHER PLATFORM. It is a file
-// reader: a header, a table of contents, an fseek and oapiInflate. Every
-// Microsoft spelling it uses -- MAKEFOURCC, lstrlen, strcpy_s, sprintf_s,
-// fopen_s, _fseeki64, MAX_PATH -- the shim already supplies, and each one
-// compiles unchanged.
-//
-// Two things change:
-//
-//   THE PATH SEPARATOR IN OpenArchive. This is the fourth instance in the
-//   port of one defect class -- a Windows-spelled path handed to a POSIX
-//   open -- and it is the only change here that is forced by the platform.
-//   See the function.
-//
-//   Three -Wreorder initialiser lists, in TreeFileHeader and TreeTOC. Bugs
-//   in the Windows source of the same kind as Objmgr's and ScatterParams';
-//   see the constructors.
-// --------------------------------------------------------------
 
 #include "ZTreeMgr.h"
 #include "OrbiterAPI.h"
@@ -39,12 +19,8 @@
 // =======================================================================
 // File header for compressed tree files
 
-// The list is reordered to the declaration order -- magic, size, flags,
-// dataOfs, dataLength, nodeCount -- because a member is initialised in
-// DECLARATION order regardless of how the list is written, and dataOfs
-// appeared before flags while nodeCount appeared before dataLength. Every
-// value here is a constant, so nothing observable changes; it is written
-// correctly because the next reader should not have to check.
+// Initialiser list reordered to declaration order (-Wreorder). Every value
+// is a constant, so nothing observable changes.
 TreeFileHeader::TreeFileHeader () :
 	magic(MAKEFOURCC('T','X',1,0)),
 	size(sizeof(TreeFileHeader)),
@@ -83,8 +59,7 @@ bool TreeFileHeader::fread (FILE *f)
 // =======================================================================
 // Tree table of contents
 
-// Declaration order is tree, ntree, ntreebuf, totlength. Same reordering,
-// same reason as TreeFileHeader above.
+// Same -Wreorder fix as TreeFileHeader above.
 TreeTOC::TreeTOC () :
 	tree(NULL),
 	ntree(0),	ntreebuf(0), totlength(0)
@@ -153,20 +128,11 @@ bool ZTreeMgr::OpenArchive ()
 {
 	const char *name[6] = { "Surf", "Mask", "Elev", "Elev_mod", "Label", "Cloud" };
 	char fname[MAX_PATH];
-	// Was "%s\\Archive\\%s.tree". A backslash is a LEGAL FILENAME CHARACTER
-	// on Linux, so the Windows spelling does not fail as a bad path -- it
-	// asks for one file literally named `Earth\Archive\Surf.tree`, which
-	// does not exist, and fopen_s reports the same "not found" that a planet
-	// with no tile archive gives. That is the whole defect class recorded in
-	// the porting notes: the miss is indistinguishable from the
-	// normal answer, and it surfaces far away as a planet that renders at
-	// base resolution and never sharpens.
-	//
-	// A forward slash is the only spelling that opens the file. Case is NOT
-	// resolved here: `Archive` and the six layer names are the directory
-	// names Orbiter itself ships, and Config::ResolveConfigPath -- the one
-	// place that walks components case-insensitively -- is a file-static in
-	// Config.cpp and not reachable from a client.
+	// Was "%s\\Archive\\%s.tree". A backslash is a legal filename character on
+	// Linux, so the Windows spelling is not a bad path -- it asks for a file
+	// literally named `Earth\Archive\Surf.tree` and gets the same "not found"
+	// a planet with no archive gives. The miss is silent, and shows up far
+	// away as a planet that never sharpens past base resolution.
 	sprintf_s (fname, MAX_PATH, "%s/Archive/%s.tree", path, name[layer]);
 	if (fopen_s(&treef, fname, "rb")) {
 		return false;

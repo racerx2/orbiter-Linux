@@ -1,23 +1,19 @@
 // Windows Imaging Component implementation, and resource loading.
 //
-// Src/Orbiter/GraphicsAPI.cpp uses WIC to decode images into HBITMAPs and to
-// encode screenshots. WIC is COM and Windows-only, but what it does is
-// ordinary: decode, scale, convert pixel format, encode. That is implemented
-// here over stb_image, which ImGui already vendors, so no new dependency is
-// introduced.
+// GraphicsAPI.cpp uses WIC to decode images into HBITMAPs and to encode
+// screenshots. WIC is COM and Windows-only, but what it does is ordinary:
+// decode, scale, convert pixel format, encode. That is implemented here over
+// stb_image, which ImGui already vendors.
 //
-// PIXEL FORMAT
-//   Orbiter asks for GUID_WICPixelFormat24bppBGR or 32bppBGR -- Windows' BGR
-//   byte order, which is also the order a DIB expects. stb_image decodes to
-//   RGB(A), so the channel swap happens during conversion. Getting this
-//   backwards produces images that look plausible with red and blue exchanged,
-//   which is the kind of bug that survives a casual glance.
+// Orbiter asks for GUID_WICPixelFormat24bppBGR or 32bppBGR -- Windows' BGR
+// byte order, which is also the order a DIB expects. stb_image decodes to
+// RGB(A), so the channel swap happens during conversion. Getting it backwards
+// produces images that look plausible with red and blue exchanged.
 //
-// RESOURCES
-//   FindResource/LoadResource/LockResource read from the table rc2cpp.py
-//   generates. Only bitmaps are looked up this way in this tree, and the
-//   converter does not currently carry bitmap payloads, so a lookup reports
-//   "not found" rather than returning a bogus pointer.
+// FindResource/LoadResource/LockResource read from the table rc2cpp.py
+// generates. Only bitmaps are looked up this way in this tree, and the
+// converter does not currently carry bitmap payloads, so a lookup reports
+// "not found" rather than returning a bogus pointer.
 
 #include <windows.h>
 #include <wincodec.h>
@@ -40,8 +36,7 @@
 namespace {
 
 // Converts a wide filename to narrow. The tree's paths are ASCII, so this is
-// exact; WideCharToMultiByte is used rather than a hand loop so the behaviour
-// matches the rest of the shim.
+// exact.
 std::string narrow(LPCWSTR w)
 {
     if (!w) return {};
@@ -69,19 +64,11 @@ struct Image {
 
 // Area-average resample, separable, one axis at a time.
 //
-// THIS USED TO BE NEAREST-NEIGHBOUR, on the stated grounds that "for the icon
-// and banner sizes this tree scales, the difference is not visible". That was
-// true of the only two callers at the time. It stopped being true the moment
-// the splash screen started coming through here: Splash.jpg is a 1920x1200
-// photograph scaled to the viewport -- 1.2x up on a 2560x1440 monitor, down on
-// anything smaller -- and nearest-neighbour on a photograph at a non-integer
-// ratio is visibly stepped along every edge in the image.
-//
-// The reference does not do this by hand. It passes D3DX_FILTER_LINEAR to
-// D3DXLoadSurfaceFromFileInMemory, and GraphicsClient::ReadImageFromDecoder --
-// the path this file serves -- asks for WICBitmapInterpolationModeFant. Fant
-// IS an area-average filter, so implementing one here is what makes this shim
-// agree with the API it stands in for, not an embellishment on it.
+// GraphicsClient::ReadImageFromDecoder -- the path this file serves -- asks
+// for WICBitmapInterpolationModeFant, and Fant is an area-average filter, so
+// an area average is what the API contract calls for. It matters: the splash
+// screen is a 1920x1200 photograph scaled to the viewport at a non-integer
+// ratio, and nearest-neighbour on that is visibly stepped along every edge.
 //
 // One rule covers both directions. The destination pixel i covers the source
 // interval [i*scale, (i+1)*scale); each source sample contributes in
@@ -124,9 +111,7 @@ void resampleAxis(const std::vector<float> &src, int srcW, int srcH,
     }
 }
 
-// Transpose, so the vertical pass can reuse resampleAxis unchanged. A second
-// loop nest over rows would be the same arithmetic written twice, and the two
-// would drift.
+// Transpose, so the vertical pass can reuse resampleAxis unchanged.
 void transposePlanar(const std::vector<float> &src, int w, int h,
                      std::vector<float> &dst)
 {
@@ -149,10 +134,9 @@ Image resample(const Image &src, int w, int h)
 
     // Float throughout: the accumulator has to hold a weighted sum, and
     // rounding each intermediate back to 8 bits would show as banding on the
-    // second pass.
-    // Each buffer is released as soon as the next pass has consumed it. At
-    // splash-screen sizes one of these is forty megabytes, and holding all
-    // four at once for no reason would be a hundred and fifty.
+    // second pass. Each buffer is released as soon as the next pass has
+    // consumed it -- at splash-screen sizes one of these is forty megabytes,
+    // and holding all four at once would be a hundred and fifty.
     auto release = [](std::vector<float> &v) { std::vector<float>().swap(v); };
 
     std::vector<float> a((size_t)src.width * src.height * 4);
@@ -182,29 +166,17 @@ Image resample(const Image &src, int w, int h)
 // Interface implementations
 // ---------------------------------------------------------------------------
 
-// Reach the pixels behind any IWICBitmapSource this file hands out.
-//
-// EVERY DECODE CHAIN IN THIS TREE ENDS UP GOING THROUGH THIS, and it is where
-// the splash screen was being lost. GraphicsClient::ReadImageFromDecoder
-// builds the chain
+// Reach the pixels behind any IWICBitmapSource this file hands out. Every
+// decode chain in this tree goes through it -- GraphicsClient's is
 //
 //     FrameDecode  ->  FormatConverter  ->  Scaler  ->  CopyPixels
 //
-// and Scaler::Initialize used to test for BitmapSource, FrameDecode and
-// Scaler -- but NOT FormatConverter, which is what it is always actually
-// given. So it returned E_NOINTERFACE, left its own image empty, and the
-// CopyPixels that followed wrote nothing into the DIB CreateDIBSection had
-// just zeroed. The caller got a correctly sized, entirely BLACK bitmap and no
-// error anywhere: ReadImageFromDecoder checks none of the four HRESULTs.
-//
-// It had never shown because the only two callers were an unused
-// ShowDefaultSplash and a couple of small icons. The splash screen is the
-// first thing to depend on it, and "the picture is black" is exactly what it
-// looked like.
-//
-// One function rather than a cast chain repeated in each Initialize: a fifth
-// source type would otherwise have to be remembered in two places, which is
-// how this happened in the first place.
+// and a source type missing from the list below makes the stage that received
+// it return E_NOINTERFACE with an empty image, after which CopyPixels writes
+// nothing into the DIB CreateDIBSection just zeroed. The caller gets a
+// correctly sized, entirely black bitmap and no error anywhere, because
+// ReadImageFromDecoder checks none of the four HRESULTs. Hence one function
+// rather than a cast chain repeated in each Initialize.
 struct BitmapSource;
 struct FrameDecode;
 struct Scaler;
@@ -227,14 +199,10 @@ struct BitmapSource : IWICBitmapSource {
     HRESULT CopyPixels(const WICRect *, UINT stride, UINT bufSize,
                        BYTE *buf) override
     {
-        // SAY SO, rather than only returning a code nobody reads.
-        //
-        // GraphicsClient::ReadImageFromDecoder checks none of the four
-        // HRESULTs in its chain, so an empty source here used to leave the
-        // caller's freshly-zeroed DIB untouched and hand back a perfectly
-        // sized black picture. That is the shape of the Scaler/FormatConverter
-        // bug described by imageOf, and it took a screenshot to find. One line
-        // on stderr makes the next one a sentence instead.
+        // Said out loud rather than only returned as a code nobody reads:
+        // ReadImageFromDecoder ignores the HRESULT, so an empty source here
+        // leaves the caller's freshly-zeroed DIB untouched and hands back a
+        // perfectly sized black picture.
         if (!image.valid())
             fprintf(stderr, "Orbiter: WIC CopyPixels from an empty source -- "
                             "the decode chain did not produce an image\n");
@@ -378,8 +346,6 @@ struct FormatConverter : IWICFormatConverter {
     }
 };
 
-// Declared above the structs that use it; see the note there for what it is
-// for and what its absence cost.
 const Image *imageOf(IWICBitmapSource *src)
 {
     if (auto *bs = dynamic_cast<BitmapSource *>(src))       return &bs->image;
@@ -462,24 +428,13 @@ struct FrameEncode : IWICBitmapFrameEncode {
 // ---------------------------------------------------------------------------
 // The encoder options bag.
 //
-// WIC hands the caller an IPropertyBag2 from CreateNewFrame and
-// GraphicsAPI.cpp writes "ImageQuality" into it before Initialize:
+// WIC hands the caller an IPropertyBag2 from CreateNewFrame, and
+// GraphicsAPI.cpp writes "ImageQuality" into it before Initialize -- so it has
+// to be a real object, not a null pointer the caller would Write through.
 //
-//     option.pstrName = L"ImageQuality";
-//     varValue.vt = VT_R4;  varValue.fltVal = quality;
-//     pPropertybag->Write(1, &option, &varValue);
-//
-// This used to hand out a NULL pointer, on the note that the writes would be
-// "absorbed by the stub IPropertyBag2 below" -- there was no stub, and that
-// Write was therefore a call through a null vtable. It never fired because
-// nothing in this port had yet reached WriteImageDataToFile with real pixels;
-// the moment the back-buffer readback started working, the exit screenshot
-// segfaulted in Orbiter::PreCloseSession.
-//
-// So the bag is real, and it carries the value rather than discarding it:
-// WIC's ImageQuality is 0..1 and stb_image_write's JPEG quality is 1..100,
-// which is the same number scaled. Orbiter asks for 0.7 for the exit
-// screenshot; the writer used to be hard-coded to 90 regardless.
+// The value is carried rather than discarded: WIC's ImageQuality is 0..1 and
+// stb_image_write's JPEG quality is 1..100, the same number scaled. Orbiter
+// asks for 0.7 for the exit screenshot.
 // ---------------------------------------------------------------------------
 struct PropertyBag : IPropertyBag2 {
     FrameEncode *frame = nullptr;
@@ -533,9 +488,8 @@ struct Encoder : IWICBitmapEncoder {
         frame->target = &path;
         frame->format = format;
         *out = frame;
-        // Encoder options are a property bag on Windows, and the caller WRITES
-        // to it -- so it has to be a real object. See PropertyBag above for
-        // what handing back NULL here cost.
+        // Encoder options are a property bag on Windows, and the caller writes
+        // to it, so it has to be a real object.
         if (opts) {
             PropertyBag *bag = new PropertyBag();
             bag->frame    = frame;
@@ -561,7 +515,7 @@ HRESULT FrameEncode::Commit()
         ok = stbi_write_png(p.c_str(), image.width, image.height, 4,
                             image.rgba.data(), image.width * 4);
     else if (format == &GUID_ContainerFormatJpeg) {
-        // WIC's ImageQuality is 0..1; stb's is 1..100. See PropertyBag.
+        // WIC's ImageQuality is 0..1; stb's is 1..100.
         int q = (int)(quality * 100.0f + 0.5f);
         if (q < 1) q = 1;
         if (q > 100) q = 100;
@@ -726,15 +680,11 @@ HANDLE FindResourceA(HMODULE, LPCSTR name, LPCSTR type)
 {
     // Resource ids arrive packed into the pointer by MAKEINTRESOURCE.
     //
-    // THE TYPE IS CONSULTED, and it has to be. This used to ignore it, on the
-    // stated grounds that "ids are unique across types in this tree". They are
-    // not: resource.h defines
-    //     #define IDI_FINGER2   292
-    //     #define IDR_IMAGE1    292
-    // which is legal on Windows because a resource is keyed by (type, id).
-    // Ignoring the type made FindResource(IDR_IMAGE1, "IMAGE") return whichever
-    // of the two came first in the table -- so the splash screen would have
-    // been handed a finger cursor.
+    // The type has to be consulted: ids are not unique across types, because
+    // on Windows a resource is keyed by (type, id). resource.h defines both
+    // IDI_FINGER2 and IDR_IMAGE1 as 292, so a type-blind lookup for the image
+    // would return whichever came first in the table -- a finger cursor where
+    // the splash screen should be.
     //
     // A named (non-integer) type is passed through as the string; Orbiter uses
     // "TEXT" and "IMAGE" that way.

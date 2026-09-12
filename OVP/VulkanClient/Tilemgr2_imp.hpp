@@ -9,34 +9,17 @@
 // Rendering of planetary surfaces using texture tiles at
 // variable resolutions (new version).
 // =======================================================================
-//
-// CONVERTED FROM OVP/D3D9Client/Tilemgr2_imp.hpp, read end to end (429
-// lines).
-//
-// The quadtree walk. Six template members of TileManager2Base and four of
-// TileManager2, and NOT ONE OF THEM TOUCHES A GRAPHICS API -- they decide
-// which tiles are visible, at what resolution, and in what order, and then
-// call tile->Render(). So the whole file converts with two renames:
-//
-//   MATRIX4toD3DMATRIX -> MATRIX4toFMATRIX4. The client's own helper, named
-//   for its destination type, which is an FMATRIX4 now.
-//
-//   D3D9Pad -> VulkanPad, in RenderNodeLabels.
-//
-// `bFreeze` / `bFreezeRenderAll` are globals declared in VulkanClient.h, as
-// they were in D3D9Client.h; they arrive through Tilemgr2.h.
-// =======================================================================
 
 #ifndef __TILEMGR2_IMP_HPP
 #define __TILEMGR2_IMP_HPP
 
 #include "Tilemgr2.h"
-// ADDED. ProcessNode and RenderNode call scene->GetRenderPass(),
-// GetTanAp() and compare against RENDERPASS_MAINSCENE, all of which need the
-// COMPLETE Scene -- Tilemgr2.h only forward-declares it (`inline class Scene
-// *GetScene() const`). On Windows the chain D3D9Pad.h -> D3D9Client.h brought
-// Scene.h in for every includer; VulkanPad.h does not, so the file that uses
-// it says so.
+// Scene.h is named here because ProcessNode and RenderNode call
+// scene->GetRenderPass() and GetTanAp() and compare against
+// RENDERPASS_MAINSCENE, all of which need the complete Scene -- Tilemgr2.h
+// only forward-declares it (`inline class Scene *GetScene() const`). On
+// Windows the chain D3D9Pad.h -> D3D9Client.h brought Scene.h in for every
+// includer; VulkanPad.h does not.
 #include "Scene.h"
 #include "DebugControls.h"
 
@@ -154,19 +137,19 @@ void TileManager2Base::ProcessNode (QuadTreeNode<TileType> *node)
 	// Override TileDeletion for forced elevated rendering of asteroids/comets/small moons
 	if (ElevMode == eElevMode::ForcedElevated) bNoRelease = true;
 
-	// BUG IN THE WINDOWS SOURCE, carried over rather than fixed: bNoRelease
-	// is computed here and NEVER READ -- not in this function and not
+	// A bug in the Windows source, carried over rather than fixed: bNoRelease
+	// is computed here and never read -- not in this function and not
 	// anywhere else. The place it was evidently meant for is the
 	// `if (bDelete) node->DelChildren();` at the end of this function, which
 	// is exactly the "tile deletion" the comment above says it overrides.
-	// So forced-elevated rendering of asteroids and small moons does NOT
+	// So forced-elevated rendering of asteroids and small moons does not
 	// currently keep its subtiles alive.
 	//
 	// Left as written because supplying the missing condition would change
 	// what the client draws, which is a behaviour decision and not part of a
 	// platform conversion. The cast is here only because MSVC's C4189 is off
 	// by default and GCC's -Wunused-but-set-variable is inside -Wall, and it
-	// fires at INSTANTIATION -- which is why this file passed its own check
+	// fires at instantiation -- which is why this file passed its own check
 	// and only reported once Cloudmgr2.cpp instantiated the template.
 	(void)bNoRelease;
 

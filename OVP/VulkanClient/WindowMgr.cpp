@@ -21,39 +21,16 @@
 
 
 //
-// CONVERTED FROM OVP/D3D9Client/WindowMgr.cpp, read end to end (1826 lines).
+// The gcGUI docking sidebar: window classes, dialogs, GDI painting, mouse
+// dragging and a config parser. It named no D3D9 type, so the conversion is
+// include renames, the g_client type, and one bug fix:
 //
-// THERE IS NO DIRECT3D IN THIS FILE AT ALL. It is the gcGUI docking sidebar:
-// window classes, dialogs, GDI painting, mouse dragging and a configuration
-// parser. <d3d9.h> and <d3dx9.h> were included and never used -- the file
-// names no D3D9 type, no D3DX entry point and no device. So the conversion is
-// three include renames, one type rename on g_client, and one real bug fix:
-//
-//  1. FIVE sscanf_s CALLS PASS BUFFER SIZES, AND THAT IS A WILD STORE HERE.
-//     The shim maps sscanf_s to sscanf (windows.h:1938, which explains this
-//     exact hazard at length): MSVC's sscanf_s takes a size argument after
-//     every %s, %c and %[ conversion, and plain sscanf does not. A size is
-//     harmless only when its conversion is the LAST one in the format. Two of
-//     these are not:
-//
-//         sscanf_s(cbuf, "FONT_MAIN \"%[^\"]\" %d %d", cfg.fnt_main, 32,
-//                  &cfg.txt_main_size, &cfg.txt_main_weight)
-//
-//     forwards as sscanf with 32 standing where the first %d's pointer should
-//     be, so it writes an int through the address 32 and the last field is
-//     never filled. Same shape as finding 8's BuildDate(). All five are
-//     rewritten to plain sscanf, and the sizes come back as FIELD WIDTHS in
-//     the format -- which is the part that must not be lost, because sscanf
-//     ignores the size argument and would otherwise write past a char[32].
-//
-//  2. "WindowsX.h" -> "windowsx.h". The file on disk is lower case; invisible
-//     on NTFS, a hard error on ext4. Same class as MeshMgr.cpp's "Meshmgr.h".
-//
-// NOT CONVERTED, because none of it needed converting: every RegisterClass,
-// CreateWindowEx, BitBlt, TransparentBlt, GetPixel/SetPixel, TrackMouseEvent
-// and BeginPaint below. They are Win32, not Direct3D, and the standing rule
-// for this conversion is that Win32 GDI and windowing are the shim's business.
-// What that costs is recorded beside GetPixel in Src/Orbiter/Linux/Gdi.cpp.
+// FIVE sscanf_s CALLS PASS BUFFER SIZES, which is a wild store once the shim
+// maps sscanf_s to sscanf. MSVC's sscanf_s takes a size after every %s, %c and
+// %[; plain sscanf does not, so the size lands where the NEXT conversion's
+// pointer belongs. All five are rewritten to sscanf with the size as a field
+// width, which is the part that must not be lost -- sscanf ignores a size
+// argument and an unbounded %s would write past a char[32].
 // =================================================================================================================================
 
 
@@ -199,11 +176,8 @@ void OpenTestClbk(void *context)
 // Node Implementation
 // ===============================================================================================
 //
-// Declaration order in WindowMgr.h is pApp, pSB, pParent, hBmp, bm, hDlg, ...
-// The Windows list has pApp last, which GCC reports as -Wreorder and MSVC does
-// not. Nothing depends on the order -- none of these initialisers reads
-// another member -- so this is the list rewritten, not the object changed.
-// Finding 25's family.
+// Initialiser list reordered to declaration order (-Wreorder). No initialiser
+// reads another member, so the object is unchanged.
 Node::Node(SideBar *pSB, const char *label, HWND hDlg, DWORD color, Node *pP) :
 	pApp(NULL), pSB(pSB), pParent(pP), hBmp(NULL), hDlg(hDlg), bOpen(true), bClose(false)
 {
@@ -347,9 +321,7 @@ int Node::Paint(HDC hDC, int y)
 	int width = pSB->GetWidth();
 	int x = 0;
 	int wof = 0, hof = 0;
-	// DWORD ck = 0;   -- set and never read. PaintIcon computes its own
-	// colour key. Finding 35's family; commented out in place so the
-	// reference's line stays visible.
+	// DWORD ck = 0;   -- set and never read; PaintIcon computes its own key.
 
 	if (pSB->GetStyle() == gcGUI::DS_FLOAT) x += 1;	
 		
@@ -440,7 +412,7 @@ void Node::PaintIcon(HDC hDC, int x, int y, int id)
 //
 int Node::Spacer(HDC hDC, int y)
 {
-	// WindowManager *pMgr = pSB->GetWM();   -- never read here. Finding 35.
+	// WindowManager *pMgr = pSB->GetWM();   -- never read here.
 
 	if (pParent) if (pParent->bOpen == false) if (pParent->pSB == pSB) return y;
 
@@ -518,10 +490,8 @@ WindowManager::WindowManager(HWND hAppMainWindow, HINSTANCE _hInst, bool bWindow
 
 			// --------------------------------------------------------------------------------------------
 			if (!strncmp(cbuf, "FONT_MAIN", 9)) {
-				// sscanf_s(..., cfg.fnt_main, 32, &size, &weight). See the
-				// file header: the 32 would land where the first %d's pointer
-				// belongs. Plain sscanf, and the 32 becomes the field width
-				// -- fnt_main is char[32], so 31 characters plus the NUL.
+				// The 32 would have landed where the first %d's pointer
+				// belongs; it becomes the field width. fnt_main is char[32].
 				if (sscanf(cbuf, "FONT_MAIN \"%31[^\"]\" %d %d", cfg.fnt_main, &cfg.txt_main_size, &cfg.txt_main_weight) != 3) LogErr("Invalid Line in (%s): %s", path, cbuf);
 				continue;
 			}
@@ -542,12 +512,9 @@ WindowManager::WindowManager(HWND hAppMainWindow, HINSTANCE _hInst, bool bWindow
 			}
 			// --------------------------------------------------------------------------------------------
 			if (!strncmp(cbuf, "MAIN_BMP", 8)) {
-				// These three ARE safe to forward -- the %s is the last
-				// conversion, so the 32 is a genuinely trailing vararg that
-				// sscanf never reaches. They are rewritten anyway, because
-				// "never reaches" also means "never enforces": plain sscanf
-				// with an unbounded %s writes past a char[32] on a long
-				// enough line. The width does what the size argument did.
+				// These three were safe to forward -- the %s is the last
+				// conversion -- but "never reached" also means "never
+				// enforced", so the size becomes a width on all three.
 				if (sscanf(cbuf, "MAIN_BMP %31s", cfg.bmp_main) != 1) LogErr("Invalid Line in (%s): %s", path, cbuf);
 				continue;
 			}
@@ -600,14 +567,10 @@ WindowManager::WindowManager(HWND hAppMainWindow, HINSTANCE _hInst, bool bWindow
 	wc.style = flags | CS_OWNDC | CS_SAVEBITS;
 	wc.lpfnWndProc = SideBarWndProc;
 	wc.hInstance = hInst;
-	// FINDING 44: MAKEINTRESOURCE(IDC_ARROW) IS A DOUBLE WRAP, and the
-	// #pragma warning(disable:4302) that stood here is the evidence -- 4302
-	// is "truncation from pointer to WORD". IDC_ARROW is already
-	// MAKEINTRESOURCE(32512), so wrapping it again casts a const char* back
-	// down to a WORD and up again. It survives on Win32 only because the
-	// pointer's value happens to be 32512 and a pointer is at most 64 bits
-	// wide there too; GCC rejects the narrowing outright rather than warning.
-	// The correct call is the one Win32 documents, and it needs no pragma.
+	// Was MAKEINTRESOURCE(IDC_ARROW), a double wrap -- IDC_ARROW is already
+	// MAKEINTRESOURCE(32512) -- which casts a const char* down to a WORD and
+	// back. The #pragma warning(disable:4302) that stood here was the
+	// evidence. GCC rejects the narrowing rather than warning about it.
 	wc.hCursor = LoadCursorA(NULL, IDC_ARROW);
 	wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
 	wc.lpszClassName = "SideBarWnd";
@@ -618,7 +581,7 @@ WindowManager::WindowManager(HWND hAppMainWindow, HINSTANCE _hInst, bool bWindow
 	wc.style = flags | CS_OWNDC | CS_SAVEBITS | CS_DROPSHADOW;
 	wc.lpfnWndProc = SideBarWndProc;
 	wc.hInstance = hInst;
-	wc.hCursor = LoadCursorA(NULL, IDC_ARROW);	// see finding 44 above
+	wc.hCursor = LoadCursorA(NULL, IDC_ARROW);	// same unwrap as above
 	wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
 	wc.lpszClassName = "Floater";
 
@@ -1068,13 +1031,9 @@ void WindowManager::Drag(int x, int y)
 void WindowManager::MouseMoved(int x, int y)
 {
 	// The whole body is dead: three locals computed from the main window's
-	// client rect and never read, in a function that returns void. Kept
-	// commented rather than deleted, because the function itself is called
-	// from three places and removing the body is a smaller change than
-	// removing the function. Finding 35's family, and the largest instance.
-	//
-	// It also reads r uninitialised when hMainWnd is NULL, which is the same
-	// shape as finding 27.
+	// client rect and never read, in a function returning void. Commented
+	// rather than deleted because the function is still called from three
+	// places. It also reads r uninitialised when hMainWnd is NULL.
 	//
 	// RECT r;
 	// if (hMainWnd) GetClientRect(hMainWnd, &r);
@@ -1553,10 +1512,9 @@ bool SideBar::TryInsert(SideBar *sbIn)
 	wIns.clear();
 
 	int yp = sbIn->GetRect().top - GetRect().top;
-	// int h = sbIn->ComputeLength();  and  int y = rollpos;  -- neither is
-	// read. The CALL is kept, because ComputeLength() is not a query: it
-	// writes sbIn->wndlen, which the scroll clamp in SideBarWndProc reads.
-	// Only the discarded variables go. Finding 35's family.
+	// int h = sbIn->ComputeLength();  and  int y = rollpos;  -- neither read.
+	// The call stays: ComputeLength writes sbIn->wndlen, which the scroll
+	// clamp in SideBarWndProc reads. Only the variables go.
 	(void)sbIn->ComputeLength();
 	
 	Node *pNode = sbIn->GetTopNode();
@@ -1613,7 +1571,6 @@ LRESULT SideBar::SideBarWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPar
 	static int xof, yof;
 	// static bool bUpdate = false;             -- never read
 	// HWND hMain = pMgr->GetMainWindow();      -- never read
-	// Two more of finding 35.
 
 	switch(uMsg) {
 
@@ -1757,10 +1714,8 @@ LRESULT SideBar::SideBarWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPar
 				if (dnNode && dx > 25) {
 					SetCapture(hBar);
 					pMgr->SetOffset(xof, yof);
-					// Was `SideBar* pTgt = pMgr->StartDrag(...)`, and pTgt is
-					// never read. StartDrag detaches the node into a new
-					// sidebar, so the call stays and only the variable goes.
-					// Finding 35's family.
+					// pTgt was never read. StartDrag detaches the node into a
+					// new sidebar, so the call stays and the variable goes.
 					(void)pMgr->StartDrag(dnNode, scp.x, scp.y);
 					dnNode = NULL;
 					dnClose = NULL;

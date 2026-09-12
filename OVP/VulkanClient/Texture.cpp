@@ -11,20 +11,6 @@
 // Methods for loading single (.dds) and multi-texture files (.tex)
 // stored in DXT? format.
 // ==============================================================
-//
-// CONVERTED FROM OVP/D3D9Client/Texture.cpp, read end to end (195 lines).
-//
-// THERE IS NO GRAPHICS API IN THIS FILE, on either platform. LoadTexture
-// already went through NatLoadSurface -- the client's own loader -- and
-// everything else is a linked list and a checksum. So the conversion is two
-// type names in the constructor and the includes.
-//
-// The DDSURFACEDESC2_x64 structure below is DEAD ON BOTH PLATFORMS: it is
-// declared, and nothing in this file or any other reads it. It is kept and
-// converted, because deleting dead code is a decision separate from porting
-// it -- and it is the reason the shim's ddraw.h grew DUMMYUNIONNAMEN, which
-// this structure spells and the shim's own DDSURFACEDESC2 does not.
-// ==============================================================
 
 #include "windows.h"
 #include "Texture.h"
@@ -35,6 +21,10 @@
 using namespace oapi;
 
 
+// Dead on both platforms: declared, and read by nothing here or elsewhere.
+// Kept because removing dead code is a separate decision from porting it. It
+// is also why the shim's ddraw.h had to grow DUMMYUNIONNAMEN, which this
+// structure spells and the shim's own DDSURFACEDESC2 does not.
 #pragma pack(push, 1)
 typedef struct _DDDESC2_x64
 {

@@ -16,54 +16,16 @@
 // IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 // =================================================================================================================================
 //
-// CONVERTED FROM OVP/D3D9Client/VectorHelpers.h. What changed, and why:
+// D3DXVECTOR3/4 become oapi::FVECTOR3/FVECTOR4 -- Orbiter's own SDK types from
+// DrawAPI.h, which DrawAPI.h's own comment describes as compatible with the
+// D3DXVECTOR types. They already define most of the operator helpers this file
+// used to supply, and a second definition of one is an ambiguity error rather
+// than a harmless duplicate, so those helpers are gone rather than renamed.
 //
-//   1. THE D3DXVECTOR HALVES BECAME FVECTOR HALVES. D3DXVECTOR3/4 come from
-//      <d3dx9.h>, which does not exist on Linux. Their replacement is not
-//      invented here -- Orbiter's own SDK already carries oapi::FVECTOR3 and
-//      oapi::FVECTOR4 (Orbitersdk/include/DrawAPI.h:196 and :367), they are
-//      cross-platform, DrawAPI.h's own comment says FVECTOR4 "is compatible
-//      with the D3DXVECTOR4 type", and the Sketchpad API this client
-//      implements is already written in terms of them.
-//
-//   2. MOST OF THE OPERATOR HELPERS DROPPED OUT, because FVECTOR3 and
-//      FVECTOR4 already define them and a second definition is an ambiguity
-//      error, not a harmless duplicate. Read out of DrawAPI.h rather than
-//      assumed:
-//
-//        FVECTOR3 already has  *= /= += -= * / + -  against float AND FVECTOR3
-//        FVECTOR4 already has  *= /= += -= * / + -  against float,
-//                              + and - against FVECTOR4, and unary -
-//
-//      So of the D3DX operator helpers the Windows file carried, exactly ONE
-//      survives: operator*= (FVECTOR4&, const FVECTOR4&). FVECTOR4 has the
-//      float form of *= and no vector form. The others are gone because the
-//      type grew them, not because anything was dropped.
-//
-//   3. _D3DXVECTOR3() BECAME _FVECTOR3(), and the VECTOR3 overload is kept
-//      even though FVECTOR3's own VECTOR3 constructor makes it redundant.
-//      Call sites spell it as a function in a good many places, and a
-//      mechanical rename is a smaller change than rewriting each of them.
-//
-//   4. THE _MSC_VER BLOCK IS GONE. It supplied exp2/log2/log1p for Visual
-//      Studio versions before 2015; <cmath> has all three here. _constexpr_
-//      keeps its name so that nothing which spells it has to change, and is
-//      simply constexpr now.
-//
-//   5. <algorithm> IS INCLUDED EXPLICITLY. The file uses std::max and
-//      std::min; MSVC pulled them in through another header, libstdc++ does
-//      not.
-//
-//   6. abs() ON A FLOAT IS fabsf() HERE, and this is the one place the
-//      conversion changes behaviour rather than spelling. The Windows file
-//      writes abs(a.x) on floats. MSVC resolves that to the floating-point
-//      overload; with libstdc++ a bare ::abs can resolve to the INT overload
-//      from <stdlib.h> and silently truncate 0.5f to 0. Getting it wrong is
-//      invisible -- the vector still comes back with four numbers in it.
-//
-// NOT CONVERTED, because none of it needed converting: the scalar templates
-// and the VECTOR3/VECTOR4 halves. VECTOR3, VECTOR4 and _V() are Orbiter's own
-// and already build on Linux.
+// The _MSC_VER block that supplied exp2/log2/log1p for Visual Studio before
+// 2015 is gone; <cmath> has all three. _constexpr_ keeps its name so that
+// nothing which spells it has to change. <algorithm> is included explicitly
+// for std::max/std::min, which MSVC pulled in through another header.
 // =================================================================================================================================
 
 
@@ -127,8 +89,6 @@ template <typename T> inline _constexpr_ T hermite(T a)
 	
 // VECTOR3 Helpers ==================================================================
 //
-// Unchanged from the Windows file. VECTOR3 and _V() are Orbiter's own.
-//
 inline VECTOR3 &operator+= (VECTOR3 &v, double d)
 {
 	v.x+=d; v.y+=d;	v.z+=d;
@@ -179,7 +139,6 @@ inline VECTOR3 vmin(const VECTOR3 &v, const VECTOR3 &w)
 
 // VECTOR4 Helpers ==================================================================
 //
-// Unchanged from the Windows file.
 //
 inline VECTOR4 &operator+= (VECTOR4 &v, double d)
 {
@@ -268,10 +227,9 @@ inline VECTOR4 vmin(const VECTOR4 &v, const VECTOR4 &w)
 
 // FVECTOR3 Helpers =================================================================
 //
-// Was the D3DXVECTOR3 section. The five operator helpers that stood here --
-// operator* (v,v), operator+ (v,float), operator*= (v,v), operator+= (v,float)
-// -- are gone: FVECTOR3 defines all of them itself (DrawAPI.h:254-336), and
-// redefining one is an ambiguity error rather than a duplicate.
+// Was the D3DXVECTOR3 section. The operator helpers that stood here are gone:
+// FVECTOR3 defines all of them itself, and redefining one is an ambiguity
+// error rather than a duplicate.
 //
 inline FVECTOR3 exp2(const FVECTOR3 &v)
 {
@@ -279,8 +237,8 @@ inline FVECTOR3 exp2(const FVECTOR3 &v)
 }
 
 // Was _D3DXVECTOR3(). FVECTOR3 has a VECTOR3 constructor of its own, so the
-// first of these is redundant on its own terms and is kept only so that the
-// call sites need a rename and not a rewrite.
+// first of these is redundant; kept so the call sites need a rename rather
+// than a rewrite.
 inline FVECTOR3 _FVECTOR3(const VECTOR3 &v)
 {
 	return FVECTOR3(float(v.x), float(v.y), float(v.z));
@@ -306,32 +264,27 @@ inline FVECTOR3 vmin(const FVECTOR3 &v, const FVECTOR3 &w)
 	return FVECTOR3(std::min(v.x, w.x), std::min(v.y, w.y), std::min(v.z, w.z));
 }
 
-// The Windows file's lerp(D3DXVECTOR3,...) is NOT carried over: the SDK
-// already has lerp for FVECTOR2/3/4 (DrawAPI.h:819-833). Because FVECTOR3 is
-// an oapi type, argument-dependent lookup finds the SDK's copy at every call
-// site whether or not the site says so, and a second one in the global
-// namespace is an AMBIGUITY error rather than an override. Found by compiling,
-// not by reading -- which is the whole reason this file gets a syntax check
-// before the next one is started.
+// The Windows file's lerp(D3DXVECTOR3,...) is not carried over: the SDK already
+// has lerp for FVECTOR2/3/4, and because FVECTOR3 is an oapi type,
+// argument-dependent lookup finds it at every call site whether the site says
+// so or not. A second one in the global namespace is an ambiguity error rather
+// than an override.
 
 
 
 // FVECTOR4 Helpers =================================================================
 //
 // Was the D3DXVECTOR4 section. operator- (v,float) and operator+ (v,float) are
-// gone -- FVECTOR4 has both (DrawAPI.h:533-543). operator*= (v,v) STAYS,
-// because FVECTOR4 has only the float form of *= and nothing supplies the
-// per-component one.
+// gone -- FVECTOR4 has both. operator*= (v,v) stays, because FVECTOR4 has only
+// the float form of *= and nothing supplies the per-component one.
 //
-// The three signatures below take a non-const reference exactly as the Windows
-// file did. It is not an oversight worth correcting: a const& would be a
-// widening no call site needs, and keeping the signature identical means a
-// call that compiles there compiles here.
+// The three signatures below keep the Windows file's non-const references, so
+// that a call which compiles there compiles here.
 //
 inline FVECTOR4 abs(FVECTOR4 &a)
 {
-	// fabsf, NOT abs. With libstdc++ a bare abs() on a float can bind to the
-	// int overload out of <stdlib.h> and truncate; MSVC picked the float one.
+	// fabsf, not abs: with libstdc++ a bare abs() on a float can bind to the
+	// int overload from <stdlib.h> and truncate. MSVC picked the float one.
 	return FVECTOR4(fabsf(a.x), fabsf(a.y), fabsf(a.z), fabsf(a.w));
 }
 
@@ -354,30 +307,22 @@ inline FVECTOR4 &operator*= (FVECTOR4 &v, const FVECTOR4 &d)
 
 // D3DXIntersectTri, written out =====================================================
 //
-// ADDED, not converted, for the same reason MatrixInverse below is: D3DX
-// supplied it, Linux has no D3DX, and Orbiter's SDK has no ray/triangle test
-// of any kind. It lives here rather than in the file that needed it first
-// because there are TWO callers -- Tile::Pick in Tilemgr2.cpp and
-// VulkanMesh::Pick in Mesh.cpp -- and a copy per file is how two of them end
-// up disagreeing.
+// Added, not converted: D3DX supplied it and Orbiter's SDK has no ray/triangle
+// test of any kind. It lives in the math header because there are two callers
+// -- Tile::Pick in Tilemgr2.cpp and VulkanMesh::Pick in Mesh.cpp -- and a copy
+// per file is how two of them end up disagreeing.
 //
-// It is Moller-Trumbore, and the OUTPUT CONVENTION is the part that had to be
-// established rather than guessed, because getting it wrong produces a hit at
-// the wrong point rather than no hit at all:
+// Moller-Trumbore. The output convention is the part that matters, because
+// getting it wrong gives a hit at the wrong point rather than no hit at all:
+// u and v are barycentric against the FIRST vertex, so the hit point is
+// p0 + u*(p1-p0) + v*(p2-p0), and dist is in units of the ray direction's own
+// length -- the direction is not normalised by either version. Both callers
+// pin that down: each calls with (_c, _b, _a) and reconstructs the point as
+// _b*u + _a*v + _c*(1-u-v).
 //
-//   u, v are barycentric coordinates against the FIRST vertex, so the hit
-//   point is p0 + u*(p1-p0) + v*(p2-p0).
-//   dist is measured in units of the ray direction's own length; the
-//   direction is NOT normalised by either version.
-//
-// Both callers pin that down: each calls with (_c, _b, _a) and then
-// reconstructs the point as _b*u + _a*v + _c*(1-u-v), which is exactly
-// _c + u*(_b-_c) + v*(_a-_c).
-//
-// This is the two-sided variant -- it accepts a hit from either face. D3DX's
-// is one-sided, but both callers have already established the facing with
-// their own dot product before calling, so on every path that reaches here
-// the two agree.
+// This is the two-sided variant where D3DX's is one-sided, but both callers
+// have already established the facing with their own dot product before
+// calling.
 
 inline bool IntersectTri(const oapi::FVECTOR3 &p0, const oapi::FVECTOR3 &p1, const oapi::FVECTOR3 &p2,
 						 const oapi::FVECTOR3 &org, const oapi::FVECTOR3 &dir,
@@ -410,17 +355,12 @@ inline bool IntersectTri(const oapi::FVECTOR3 &p0, const oapi::FVECTOR3 &p1, con
 }
 
 
-// D3DX MATRIX FUNCTIONS WITH NO SDK COUNTERPART ====================================
+// D3DX matrix functions with no SDK counterpart ====================================
 //
-// ADDED, not converted -- there is nothing in the Windows VectorHelpers.h that
-// corresponds to this. It is here because D3DX supplied it, Linux has no D3DX,
-// and Orbiter's SDK stops short of it: DrawAPI.h has mul, tmul, TransformCoord,
-// TransformNormal, dot, cross, length, normalize and unit, and no inverse of
-// any kind (checked across DrawAPI.h and OrbiterAPI.h before writing this).
-//
-// The client's math header is where it belongs rather than in whichever file
-// needed it first: D3DXMatrixInverse has call sites all over the Windows
-// client, and a copy per file is how two of them end up disagreeing.
+// Added, not converted: D3DXMatrixInverse has call sites all over the Windows
+// client, and Orbiter's SDK stops short of an inverse of any kind -- DrawAPI.h
+// has mul, tmul, TransformCoord, TransformNormal, dot, cross, length,
+// normalize and unit, and nothing else.
 //
 // FMATRIX4 stores its sixteen floats as m11..m44, row by row, and data[16] is
 // the same storage. The algorithm below treats data[i*4+j] as element (i,j),

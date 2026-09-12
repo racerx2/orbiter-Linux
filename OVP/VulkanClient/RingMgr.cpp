@@ -9,37 +9,6 @@
 // ==============================================================
 // class RingManager (implementation)
 // ==============================================================
-//
-// CONVERTED FROM OVP/D3D9Client/RingMgr.cpp, read end to end (199 lines).
-//
-// CreateRing is pure geometry and converts unchanged -- it fills an
-// NTVERTEX/WORD pair and hands it to the mesh constructor, which is the same
-// on both platforms. What changes:
-//
-//   D3DXCreateTextureFromFileExA. D3DX read the DDS header, chose a format
-//   and uploaded every mip level in one call. There is no D3DX here and the
-//   client reads DDS itself, so this becomes: read the file into memory, then
-//   NatCreateTextureFromDDSInMemory (VulkanSurface.cpp). That yields a BARE
-//   VulkanTexture*, which is what D3DXCreateTextureFromFileExA yielded and
-//   what pTex has always been -- so the destructor's release is unchanged in
-//   meaning.
-//
-//   D3DCAPS9::MaxTextureWidth -> VkPhysicalDeviceLimits::maxImageDimension2D.
-//   Same question, the Vulkan spelling of the answer.
-//
-//   D3DXVec3Length, and the D3DXVECTOR3 locals it worked on. FVECTOR3 is the
-//   same three floats; the length is written out because D3DX is a Direct3D
-//   UTILITY library with no Vulkan counterpart.
-//
-//   D3DMAT_FromAxisT -> VMAT_FromAxisT. The client's own helper, renamed.
-//
-//   mWorld._11 / _21 / _31 -> m11 / m21 / m31. The same three elements under
-//   FMATRIX4's naming.
-//
-// A BUG IN THE WINDOWS SOURCE IS FIXED AT THE END OF CreateRing: `grp->Idx`
-// and `grp->Vtx` are allocated with new[] and freed with plain `delete`,
-// which is undefined behaviour. See the note there.
-// ==============================================================
 
 #include "RingMgr.h"
 #include "VulkanCatalog.h"
@@ -72,8 +41,7 @@ RingManager::~RingManager ()
 	DWORD i;
 	for (i = 0; i < 3; i++)	if (mesh[i]) delete mesh[i];
 	for (i = 0; i < ntex; i++) ReleaseTex(tex[i]);
-	// Was pTex->Release(). ReleaseTex is that, under the name the rest of
-	// this file already uses for it.
+	// Was pTex->Release().
 	if (pTex) ReleaseTex(pTex);
 }
 
@@ -102,28 +70,20 @@ DWORD RingManager::LoadTextures ()
 
 	oapiGetObjectName (vp->Object(), fname, ARRAYSIZE(fname));
 
-	// D3DCAPS9::MaxTextureWidth is VkPhysicalDeviceLimits::maxImageDimension2D
-	// -- the same question, and one of the few D3DCAPS9 fields that has an
-	// exact Vulkan counterpart.
+	// D3DCAPS9::MaxTextureWidth is VkPhysicalDeviceLimits::maxImageDimension2D,
+	// one of the few D3DCAPS9 fields with an exact Vulkan counterpart.
 	const VkPhysicalDeviceProperties *caps = gc->GetHardwareCaps();
 
 	int size = max(min((int)caps->limits.maxImageDimension2D, 8192), 2048);
 
 	sprintf_s(temp, ARRAYSIZE(temp), "%s_ring_%d.dds", fname, size);
 
-	// Was:
-	//   D3DXCreateTextureFromFileExA(pDev, path, 0,0, D3DFMT_FROM_FILE, 0,
-	//                                D3DFMT_FROM_FILE, D3DPOOL_DEFAULT,
-	//                                D3DX_DEFAULT, D3DX_DEFAULT, 0,
-	//                                NULL, NULL, &pTex) == S_OK
-	//
-	// One D3DX call that opened the file, read the DDS header, picked a
-	// format ("FROM_FILE"), allocated the texture and uploaded every mip.
-	// There is no D3DX here, so the two halves are separate: read the bytes,
-	// then hand them to the client's own DDS decoder, which is the same one
-	// NatLoadSurface and LoadPlanetTextures use. D3DPOOL_DEFAULT and the two
-	// D3DX_DEFAULT mip/filter arguments have no counterpart -- memory
-	// placement follows the usage flags and no filtering happens on load.
+	// Was one D3DXCreateTextureFromFileExA that opened the file, read the DDS
+	// header, picked a format (D3DFMT_FROM_FILE), allocated the texture and
+	// uploaded every mip. With no D3DX the two halves are separate: read the
+	// bytes, then hand them to the client's own DDS decoder. D3DPOOL_DEFAULT
+	// and the two D3DX_DEFAULT mip/filter arguments have no counterpart --
+	// memory placement follows the usage flags, and nothing filters on load.
 	if (gc->TexturePath(temp, path)) {
 		FILE *f = NULL;
 		if (fopen_s(&f, path, "rb") == 0 && f) {
@@ -150,8 +110,7 @@ DWORD RingManager::LoadTextures ()
 bool RingManager::Render(VulkanDevice *dev, FMATRIX4 &mWorld, bool front)
 {
 	MATRIX3 grot;
-	// D3DXVECTOR3 -> FVECTOR3, and D3DXVec3Length written out. mWorld._11 is
-	// mWorld.m11.
+	// D3DXVec3Length written out; D3DX has no Vulkan counterpart.
 	FVECTOR3 q(mWorld.m11, mWorld.m21, mWorld.m31);
 	float scale = sqrt(q.x*q.x + q.y*q.y + q.z*q.z);
 	
@@ -249,11 +208,10 @@ VulkanMesh *RingManager::CreateRing(double irad, double orad, int nsect)
 
 	VulkanMesh *msh = new VulkanMesh(grp, &mat, NULL);
 
-	// Was `delete grp->Idx; delete grp->Vtx;`. BOTH WERE ALLOCATED WITH
-	// new[], eight lines above, and freeing an array with scalar delete is
-	// undefined behaviour -- for WORD and NTVERTEX it happens to work on the
-	// usual allocators, which is why it has never been noticed. The brackets
-	// are the whole fix and change nothing else.
+	// Was `delete grp->Idx; delete grp->Vtx;`. Both are allocated with new[]
+	// above, and freeing an array with scalar delete is undefined behaviour --
+	// for WORD and NTVERTEX it happens to work on the usual allocators, which
+	// is why it was never noticed. The brackets are the whole fix.
 	delete []grp->Idx;
 	delete []grp->Vtx;
 	delete grp;

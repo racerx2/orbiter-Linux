@@ -4,66 +4,16 @@
 // Copyright (C) 2012-2026 Jarmo Nikkanen
 // ==============================================================
 //
-// CONVERTED FROM OVP/D3D9Client/D3D9Catalog.h, read end to end (368 lines).
+// D3DFORMAT -> VkFormat: both D3DFMT_A8B8G8R8 and D3DFMT_X8B8G8R8 become
+// VK_FORMAT_R8G8B8A8_UNORM. That looks inverted but is not -- Vulkan format
+// names give byte order, D3D names give the packed DWORD, and 0xAABBGGRR is
+// R,G,B,A in memory on a little-endian machine. Getting it backwards swaps red
+// and blue in every surface tile. Vulkan has no X8 variant; a format with
+// unused alpha is the same format with alpha ignored.
 //
-// Four pools -- raw memory, tile textures, tile vertex buffers, tile index
-// buffers -- that hand out recycled objects by size rather than allocating
-// per tile. The pooling logic is generic and crosses unchanged; only the
-// three Alloc/Delete pairs at the bottom actually touch the device.
-//
-// WHAT CHANGED
-//
-//  1. Alloc() CREATES THROUGH VulkanDevice. D3DXCreateTexture,
-//     CreateVertexBuffer and CreateIndexBuffer become CreateTexture and
-//     CreateBuffer -- the same responsibility on the same object. Vulkan
-//     tells a vertex buffer from an index buffer by usage flags rather than
-//     by type, so the two buffer managers differ only in the flag they pass.
-//
-//  2. Delete() IS delete, NOT Release(). The Windows code asserts that the
-//     COM reference count reached zero:
-//
-//         void Delete(T x) { UINT q = x->Release(); assert(q == 0); }
-//
-//     Vulkan objects are not reference counted; the client's wrapper owns its
-//     handles and destroys them in its destructor. There is no count to
-//     assert on, so the assert goes with the refcount rather than being
-//     reproduced as something weaker.
-//
-//  3. D3DFORMAT BECAME VkFormat. The mapping is exact, and the first entry is
-//     the one worth stating because it looks wrong:
-//
-//         D3DFMT_A8B8G8R8 -> VK_FORMAT_R8G8B8A8_UNORM
-//         D3DFMT_X8B8G8R8 -> VK_FORMAT_R8G8B8A8_UNORM  (alpha present, unused)
-//         D3DFMT_DXT1     -> VK_FORMAT_BC1_RGBA_UNORM_BLOCK
-//         D3DFMT_DXT3     -> VK_FORMAT_BC2_UNORM_BLOCK
-//         D3DFMT_DXT5     -> VK_FORMAT_BC3_UNORM_BLOCK
-//
-//     A D3DFMT_A8B8G8R8 pixel is the DWORD 0xAABBGGRR, so its bytes in memory
-//     on a little-endian machine run R,G,B,A -- which is R8G8B8A8, not
-//     A8B8G8R8. Vulkan format names describe BYTE order unless they end in
-//     _PACK32; D3D names describe the packed DWORD. Getting this backwards
-//     swaps red and blue in every surface tile on the planet.
-//
-//     Vulkan has no X8 variant. A format with unused alpha is the same
-//     format with alpha ignored, so both map to R8G8B8A8_UNORM and the
-//     distinction disappears -- which is what it already meant.
-//
-//  4. TWO GCC TWO-PHASE-LOOKUP FIXES, both in the three derived managers.
-//     MSVC parses templates lazily and resolves these at instantiation; GCC
-//     resolves them where written and never searches a dependent base:
-//
-//         Objmgr(pD, n)  ->  Objmgr<T>(pD, n)   (injected-class-name)
-//         pDev           ->  this->pDev         (member of dependent base)
-//
-//  5. Memgr::FreeSize() DID NOT COMPILE, and could not have on either
-//     platform:
-//
-//         for (auto x : Fre) for (auto y : x.second) { es += ...; }
-//
-//     There is no 'es'; the accumulator is 'ec'. A template member is only
-//     compiled when it is instantiated, so this survived because NOTHING IN
-//     THE TREE CALLS FreeSize(). Corrected to 'ec' rather than left as a
-//     trap for the first caller.
+// GCC resolves names in templates where they are written and never searches a
+// dependent base, so the derived managers need Objmgr<T>(pD, n) and this->pDev
+// where MSVC accepted Objmgr(pD, n) and pDev.
 // ==============================================================
 
 #ifndef __VULKANCATALOG_H
@@ -188,8 +138,8 @@ public:
 	{
 		mm.lock();
 		size_t ec = 0;
-		// 'es' in the Windows source. See the file header: never instantiated,
-		// so never compiled, on either platform.
+		// 'es' in the Windows source -- a typo that never had to compile,
+		// because nothing in the tree instantiates FreeSize().
 		for (auto x : Fre) for (auto y : x.second) { (void)y; ec += x.first * sizeof(T); }
 		mm.unlock();
 		return ec;
@@ -207,16 +157,12 @@ class Objmgr
 {
 
 public:
-	// pDev before name: it is declared first (protected, below), and GCC's
-	// -Wreorder reports an initialiser list that does not follow declaration
-	// order. The Windows list reads name(n), pDev(pD); MSVC does not warn.
+	// Initialiser list reordered to declaration order (-Wreorder); MSVC does
+	// not warn.
 	Objmgr(VulkanDevice *pD, std::string n) : pDev(pD), name(n)	{ }
-	// virtual, which the Windows declaration is not. Objmgr is polymorphic --
-	// Delete() and UnitSize() are virtual and are what Texmgr, Vtxmgr and
-	// Idxmgr override -- and VulkanClient.cpp deletes the three derived
-	// managers with SAFE_DELETE. GCC reports the non-virtual destructor under
-	// -Wall (-Wdelete-non-virtual-dtor); MSVC's C4265 is off by default. Same
-	// fix, same argument, as gcConst's and WindowManager's.
+	// Made virtual: the three derived managers are deleted through an Objmgr*
+	// in VulkanClient.cpp. GCC warns (-Wdelete-non-virtual-dtor); MSVC's
+	// C4265 is off by default.
 	virtual ~Objmgr() {
 		Fre.clear();
 		Rsv.clear();
@@ -339,10 +285,9 @@ public:
 	T New(DWORD size, VkFormat Format)
 	{
 		DWORD fmt = 0;
-		// D3DFMT_X8B8G8R8 and D3DFMT_A8B8G8R8 are the same Vulkan format --
-		// the X form only said "alpha unused" -- so the tag that told them
-		// apart is gone and code 1 is unreachable. It is kept so the packed
-		// codes below still line up with the Windows numbering.
+		// Code 1 was D3DFMT_X8B8G8R8, which maps to the same Vulkan format as
+		// A8B8G8R8, so it is now unreachable. Left in the numbering below so
+		// the packed codes still match the Windows values.
 		if (Format == VK_FORMAT_BC1_RGBA_UNORM_BLOCK) fmt = 2;
 		if (Format == VK_FORMAT_BC2_UNORM_BLOCK) fmt = 3;
 		if (Format == VK_FORMAT_BC3_UNORM_BLOCK) fmt = 4;
@@ -376,10 +321,10 @@ protected:
 		return (T)pT;
 	}
 
-	// Was x->Release() with an assert on the count reaching zero. Nothing is
-	// reference counted here, and this cannot be `delete x`: T is only
-	// forward-declared in this header, so deleting it would run no destructor
-	// and leak the image and its memory. See VulkanDevice::DestroyTexture.
+	// Was x->Release() with an assert that the count reached zero; nothing
+	// here is reference counted. It cannot become `delete x` either: T is only
+	// forward-declared in this header, so that would run no destructor and
+	// leak the image and its memory.
 	void Delete(T x) {
 		this->pDev->DestroyTexture(x);
 	}
@@ -401,7 +346,7 @@ protected:
 	T Alloc(DWORD size)
 	{
 		// D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY -> host-visible memory the
-		// tile loader maps and writes. The buffer kind is the usage flag.
+		// tile loader maps and writes; the buffer kind is now a usage flag.
 		VulkanBuffer *pVB = this->pDev->CreateBuffer(size * sizeof(VERTEX_2TEX),
 			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, true);
 		if (!pVB)
@@ -431,10 +376,8 @@ public:
 protected:
 	T Alloc(DWORD size)
 	{
-		// D3DFMT_INDEX16 is not a buffer property in Vulkan: the index type
-		// is given to vkCmdBindIndexBuffer at bind time, so it disappears
-		// from creation and reappears at the draw. The size arithmetic --
-		// three 16-bit indices per triangle -- is unchanged.
+		// D3DFMT_INDEX16 is not a buffer property in Vulkan: the index type is
+		// given to vkCmdBindIndexBuffer at bind time instead.
 		VulkanBuffer *pIB = this->pDev->CreateBuffer(size * sizeof(WORD) * 3,
 			VK_BUFFER_USAGE_INDEX_BUFFER_BIT, true);
 		if (!pIB)

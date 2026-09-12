@@ -5,27 +5,20 @@
 // Those sources are unmodified, so the GDI calls they make have to land
 // somewhere. They land in an ImGui draw list.
 //
-// THE MODEL
-//   A device context here is a recording surface, not a window. BeginPaint
-//   hands out a DC bound to a control; every drawing call appends to that DC's
-//   command list; EndPaint marks it complete. The frame pump then replays the
-//   completed list into the ImGui draw list for that control's rectangle.
+// A device context here is a recording surface, not a window. BeginPaint hands
+// out a DC bound to a control, every drawing call appends to that DC's command
+// list, and the frame pump replays the completed list into the ImGui draw list
+// for that control's rectangle. Recording rather than drawing immediately is
+// what makes this work at all: WM_PAINT arrives when a message is dispatched,
+// and ImGui's draw list is only valid inside a frame.
 //
-//   Recording rather than drawing immediately is what makes this work at all.
-//   WM_PAINT arrives when a message is dispatched, which is not the same
-//   moment as the frame being built -- ImGui's draw list is only valid inside
-//   a frame, so painting straight into it from a message handler would either
-//   be discarded or corrupt the frame.
+// GDI is a state machine: SelectObject installs a pen or brush and every later
+// call uses it implicitly. That state lives on the DC, and each recorded
+// command captures the pen and brush current when it was recorded, because
+// they may be swapped again before the frame is replayed.
 //
-// SELECTED OBJECTS
-//   GDI is a state machine: SelectObject installs a pen or brush and every
-//   later call uses it implicitly. That state lives on the DC here, and each
-//   recorded command captures the pen and brush current at the time it was
-//   recorded, because they may be swapped again before the frame is replayed.
-//
-// COORDINATES
-//   Control-relative pixels, as GDI uses. The frame pump adds the control's
-//   screen origin when it replays.
+// Coordinates are control-relative pixels, as GDI uses. The frame pump adds
+// the control's screen origin when it replays.
 
 #include <windows.h>
 #include <commctrl.h>
@@ -52,7 +45,7 @@ extern "C" HWND orbiter_GetParentWnd(HWND h);
 
 // Declared rather than pulled in from OrbiterAPI.h: that header wants the SDK
 // include chain, and this file is a Win32 shim compiled ahead of it. The
-// signature takes a non-const char* upstream and is matched exactly.
+// non-const char* is upstream's signature.
 void oapiWriteLog(char *line);
 
 #include <vector>
@@ -90,11 +83,9 @@ struct GdiObject {
     // Font
     //
     // Everything CreateFontA is handed is kept, not just the three fields the
-    // recorder itself draws with. GetObject(hFont, sizeof(LOGFONT), &lf) is
-    // part of the API and the graphics client's font manager is built on it:
-    // it rasterises its own glyph atlas from the face, and it can only do
-    // that if it can ask which face. Discarding italic, charset and the rest
-    // made that read-back lossy for no saving.
+    // recorder draws with: GetObject(hFont, sizeof(LOGFONT), &lf) is part of
+    // the API, and the graphics client's font manager rasterises its own glyph
+    // atlas from the face it reads back that way.
     int         fontHeight = 0;       // magnitude, for drawing
     int         fontHeightSigned = 0; // as passed, for GetObject
     int         fontWidth  = 0;
@@ -125,10 +116,8 @@ struct GdiObject {
 
     // Set by SetPixel when it writes `pixels` after that upload has happened,
     // so the next draw re-uploads instead of showing the stale texture.
-    // Nothing here frees the old handle, which is this file's existing model
+    // Nothing here frees the old handle, which is this file's model throughout
     // -- maskedTexture caches one per colour key forever for the same reason.
-    // The only writer is WindowMgr's title-bar recolouring, which runs once
-    // per node and again when an application changes its colour.
     bool pixelsDirty = false;
 
     bool stock = false;   // stock objects must survive DeleteObject
@@ -137,24 +126,10 @@ struct GdiObject {
 // Every allocated GDI object. The handle is the object address; membership in
 // this set is what makes a handle valid.
 // Deliberately never destroyed, for the same reason as g_windowClasses in
-// Win32Dlg.cpp.
-//
-// Modules release their GDI objects from ExitModule, which runs as the
-// process tears down -- ShuttleA does exactly that, via
-// oapiUnregisterCustomControls -> UnregisterPropertyList -> DeleteObject.
-// The order in which a shared object's destructors run relative to this
-// executable's namespace-scope objects is undefined, so with an ordinary
-// global those late DeleteObject calls read a map that has already been
-// destroyed:
-//
-//     heap-use-after-free ... READ of size 8
-//     #3 toObject Gdi.cpp:112
-//     #4 DeleteObject Gdi.cpp:726
-//     #7 ExitModule ShuttleA.cpp:2469
-//
-// Allocating once and never freeing removes the ordering hazard: the map
-// stays valid as long as any code can reach it. The GdiObjects it owns are
-// reclaimed by the kernel at exit along with everything else.
+// Win32Dlg.cpp: modules release their GDI objects from ExitModule, which runs
+// as the process tears down, and with an ordinary global those late
+// DeleteObject calls read a map that has already been destroyed
+// (heap-use-after-free in toObject).
 std::map<GdiObject *, std::unique_ptr<GdiObject>> &gdiObjects()
 {
     static std::map<GdiObject *, std::unique_ptr<GdiObject>> *objects =
@@ -170,18 +145,12 @@ GdiObject *newObject(GdiObject::Kind kind)
     GdiObject *raw = owned.get();
     g_objects.emplace(raw, std::move(owned));
 
-    // A GROWTH ALARM, not a counter.
-    //
-    // Every object here is reached through toObject(), an O(log n) lookup on
-    // this map, and every drawing call makes one. So an unbounded population
-    // is not merely a leak -- it slows all painting, forever, and neither
-    // symptom names its cause.
-    //
-    // A dialog's whole working set is a few dozen pens, brushes and fonts.
-    // Crossing into the thousands means something is allocating per frame,
-    // which is exactly the defect this found: GetSysColorBrush minted a fresh
-    // brush on every call and marked it stock so DeleteObject would refuse to
-    // free it, and Launchpad's WM_DRAWITEM handler calls it once per frame.
+    // A growth alarm, not a counter. Every object is reached through
+    // toObject(), an O(log n) lookup, and every drawing call makes one -- so
+    // an unbounded population is not merely a leak, it slows all painting
+    // forever, and neither symptom names its cause. A dialog's whole working
+    // set is a few dozen pens, brushes and fonts, so crossing into the
+    // thousands means something is allocating per frame.
     static size_t nextReport = 1000;
     if (g_objects.size() >= nextReport) {
         char msg[192];
@@ -256,15 +225,8 @@ struct DrawCmd {
     GdiObject *srcBitmap = nullptr;
 
     // Blit source rectangle, in source-bitmap pixels. Both BitBlt and
-    // TransparentBlt are used in this tree to pick one icon out of a strip:
-    //
-    //   PropertyList::OnPaint  BitBlt(hDC, 2, y+2, 14, 14, hDCmem,
-    //                                 28 + (expanded ? 0 : 14), 0, SRCCOPY)
-    //   gcPropertyTree::PaintIcon
-    //                          TransparentBlt(hBM, x, y+yo, s, s, hSr,
-    //                                         sx, 0, s, s, ck)
-    //
-    // so discarding sx/sy/sw/sh draws the whole strip squashed into the
+    // TransparentBlt are used in this tree to pick one icon out of a strip, so
+    // discarding sx/sy/sw/sh draws the whole strip squashed into the
     // destination rectangle instead of the one glyph that was asked for.
     int srcX = 0, srcY = 0, srcW = 0, srcH = 0;
 
@@ -289,42 +251,17 @@ struct DeviceContext {
     // is never replayed directly.
     HWND owner = nullptr;
 
-    // THE WIN32 DC DEFAULTS, AND THEY ARE LOAD-BEARING.
-    //
-    // A fresh device context arrives with WHITE_BRUSH and BLACK_PEN already
-    // selected. Those are the documented defaults, and drawing code relies on
-    // them: it selects only what it means to CHANGE. DX9ExtMFD's RepaintButton
-    // is exactly that --
-    //
-    //     SelectObject (hDC, GetStockObject (BLACK_PEN));
-    //     Rectangle (hDC, 0, 0, BW, BH);
-    //
-    // -- it names the pen and says nothing about the brush, because the
-    // default already IS the brush it wants: Rectangle fills its interior
-    // with the current brush, so on Windows every one of those buttons has a
-    // WHITE face inside a black border.
-    //
-    // With both null here, captureState left hasFill false (and would have
-    // left hasOutline false for anything that did not name a pen), so the
-    // replay stroked the border and filled nothing. MEASURED, scanning one
-    // row across a button in the DX9 MFD dialog:
-    //
-    //     x=459        #000000   border
-    //     x=460..498   #F0F0F0   interior  <-- the DIALOG FACE showing through
-    //     x=499        #000000   border
-    //     x=500..502   #F0F0F0   dialog face
-    //
-    // -- the button interior was the same #F0F0F0 as the background it sat
-    // on, where Windows draws #FFFFFF, so the buttons read as bare outlines.
-    //
-    // The pen default is the same defect with no symptom yet: a Rectangle or
-    // Ellipse drawn without naming a pen currently has NO outline, where
-    // Windows gives it a black one. Setting it can only move the port toward
-    // the reference -- code that genuinely wants no outline selects NULL_PEN,
-    // which captureState already honours.
-    //
-    // stockObject() is defined above and caches, so this costs one map lookup
-    // per DC.
+    // The Win32 DC defaults, and they are load-bearing. A fresh device context
+    // arrives with WHITE_BRUSH and BLACK_PEN already selected, and drawing
+    // code relies on that: it selects only what it means to change.
+    // DX9ExtMFD's RepaintButton selects BLACK_PEN and calls Rectangle, saying
+    // nothing about the brush, because the default already is the brush it
+    // wants -- so on Windows those buttons have a white face inside a black
+    // border. With both null, captureState leaves hasFill false and the replay
+    // strokes the border and fills nothing: measured across one button row,
+    // the interior was #F0F0F0, the dialog face showing through, where Windows
+    // draws #FFFFFF. Code that genuinely wants neither selects NULL_PEN or
+    // NULL_BRUSH, which captureState honours.
     GdiObject *pen   = stockObject(BLACK_PEN);
     GdiObject *brush = stockObject(WHITE_BRUSH);
     GdiObject *font  = nullptr;
@@ -368,11 +305,8 @@ DeviceContext *newDC()
     return raw;
 }
 
-// Records the DC's clip state onto a command.
-//
-// Clipping in GDI is DC state that applies at the moment of the call, and this
-// DC is replayed later, so it has to travel with the command exactly as the
-// pen and brush do.
+// Records the DC's clip state onto a command: GDI clipping applies at the
+// moment of the call, so it travels with the command as the pen and brush do.
 void captureClip(const DeviceContext *dc, DrawCmd &c)
 {
     c.hasClip      = dc->clipActive;
@@ -396,8 +330,7 @@ void captureState(const DeviceContext *dc, DrawCmd &c)
 }
 
 // COLORREF is 0x00BBGGRR; ImGui's IM_COL32 takes r,g,b,a. Getting this
-// backwards produces plausible-looking but wrong colours, which is worse than
-// an obvious failure.
+// backwards produces plausible-looking but wrong colours.
 inline ImU32 toImGui(COLORREF c)
 {
     return IM_COL32(GetRValue(c), GetGValue(c), GetBValue(c), 255);
@@ -455,13 +388,11 @@ extern "C" void orbiter_ReplayDC(HDC hdc, float originX, float originY)
     ImDrawList *dl = ImGui::GetWindowDrawList();
     if (!dl) return;
 
-    // The DC's own viewport origin is added to the caller's.
-    //
-    // SetViewportOrgEx is how GDI shifts every subsequent primitive, and it is
-    // what Orbiter's MFDs use to draw in their own coordinates rather than the
-    // render target's. Ignoring it drew every instrument at the same place,
-    // stacked on top of each other and jumping as each one set an origin the
-    // replay then discarded.
+    // The DC's own viewport origin is added to the caller's. SetViewportOrgEx
+    // is how GDI shifts every subsequent primitive, and Orbiter's MFDs use it
+    // to draw in their own coordinates rather than the render target's;
+    // ignoring it draws every instrument at the same place, stacked on top of
+    // each other.
     const float ox = originX + (float)dc->originX;
     const float oy = originY + (float)dc->originY;
 
@@ -491,18 +422,16 @@ extern "C" void orbiter_ReplayDC(HDC hdc, float originX, float originY)
     };
 
     for (const DrawCmd &c : dc->commands) {
-        // ExcludeClipRect punches holes in the clip region. ImGui's clip stack
-        // only intersects, so a subtractive region cannot be expressed
-        // directly. What the callers actually use it for is protecting the
-        // rectangles their CHILD controls occupy -- gcPropertyTree excludes
-        // each edit, combo and slider before blitting its back buffer -- and a
-        // command that lies wholly inside such a hole draws nothing at all.
-        // Dropping those commands reproduces the visible result exactly.
+        // ExcludeClipRect punches holes in the clip region, which ImGui's clip
+        // stack cannot express -- it only intersects. Callers use it to
+        // protect the rectangles their child controls occupy, so a command
+        // lying wholly inside such a hole draws nothing, and dropping those
+        // commands reproduces the visible result.
         //
         // A command that only partially overlaps a hole is still drawn whole.
-        // That is the limit of this approach and it is worth knowing: nothing
-        // in this tree straddles an exclusion, because the holes are aligned
-        // to the child rectangles the drawing avoids anyway.
+        // That is the limit of the approach; nothing in this tree straddles an
+        // exclusion, because the holes are aligned to the child rectangles the
+        // drawing avoids anyway.
         if (c.excludeCount) {
             RECT b;
             bool dropped = false;
@@ -556,16 +485,12 @@ extern "C" void orbiter_ReplayDC(HDC hdc, float originX, float originY)
 
         case DrawCmd::Arc:
         case DrawCmd::Pie: {
-            // THE ANGLES ARE COMPUTED IN CONTROL SPACE, not screen space.
-            //
-            // This used to take the difference between the start point (in
-            // control coordinates, as GDI gave it) and `centre` (already
-            // through P(), so in screen coordinates) and then add back
-            // originX/originY to compensate. That cancels the caller's origin
-            // but NOT the DC's own SetViewportOrgEx offset, so any arc drawn
-            // after a viewport origin was set came out at the wrong angles.
-            // Doing the arithmetic entirely in control space needs no
-            // compensation at all and cannot drift.
+            // The angles are computed in control space, not screen space.
+            // Mixing the two -- a start point in control coordinates against a
+            // centre already through P() -- needs the origin added back to
+            // compensate, and that cancels the caller's origin but not the
+            // DC's own SetViewportOrgEx offset, so any arc drawn after a
+            // viewport origin was set comes out at the wrong angles.
             const float cxc = (float)(c.x0 + c.x1) * 0.5f;
             const float cyc = (float)(c.y0 + c.y1) * 0.5f;
 
@@ -576,23 +501,21 @@ extern "C" void orbiter_ReplayDC(HDC hdc, float originX, float originY)
             float a0 = atan2f((float)c.y2 - cyc, (float)c.x2 - cxc);
             float a1 = atan2f((float)c.y3 - cyc, (float)c.x3 - cxc);
 
-            // GDI sweeps COUNTER-CLOCKWISE from the start radial to the end
+            // GDI sweeps counter-clockwise from the start radial to the end
             // radial. ImGui's PathArcTo interpolates from a_min to a_max, and
             // angles here are in a Y-down space where increasing means
-            // clockwise -- so the sweep has to run DOWNWARD. Forcing
-            // a1 <= a0 is what makes a 30-degree wedge draw as 30 degrees
-            // instead of the 330 the other way round.
+            // clockwise -- so the sweep has to run downward. Forcing a1 <= a0
+            // is what makes a 30-degree wedge draw as 30 degrees instead of
+            // the 330 the other way round.
             while (a1 > a0) a1 -= 6.28318530718f;
 
             dl->PathArcTo(centre, r, a0, a1);
 
             if (c.op == DrawCmd::Pie) {
-                // A pie closes through the centre and fills with the brush.
-                // Recorded as a bare Arc before, this drew an unfilled outline
-                // at best and -- with a NULL pen, which the `if (!hasOutline)`
-                // guard rejected outright -- nothing at all. Dragonfly's radar
-                // antenna wedge is a filled Pie under a NULL pen and never
-                // appeared.
+                // A pie closes through the centre and fills with the brush. A
+                // filled Pie under a NULL pen is a real case -- Dragonfly's
+                // radar antenna wedge -- so the fill cannot be gated on
+                // hasOutline.
                 dl->PathLineTo(centre);
                 if (c.hasFill) {
                     std::vector<ImVec2> pts(dl->_Path.Data,
@@ -732,10 +655,10 @@ extern "C" HDC orbiter_GetPaintDC(HWND h)
     return (HDC)dc;
 }
 
-// The same lookup WITHOUT creating one, and without which the frame pump
-// cannot ask "did anything draw into this control?" -- asking with
-// orbiter_GetPaintDC would manufacture an empty DC for every control on every
-// frame and leak one per window that never draws.
+// The same lookup without creating one, so the frame pump can ask "did
+// anything draw into this control?" -- asking with orbiter_GetPaintDC would
+// manufacture an empty DC for every control on every frame and leak one per
+// window that never draws.
 extern "C" HDC orbiter_FindPaintDC(HWND h)
 {
     auto it = g_paintDCs.find(h);
@@ -800,38 +723,21 @@ int orbiter_GetDCBkMode(HDC hdc)
 
 extern "C" {
 
-// THE OTHER HALF OF THE BeginPaint DEFECT BELOW.
+// GetDC is the second way Win32 code draws into a window -- outside WM_PAINT,
+// at the moment something changes -- so like BeginPaint below it must hand
+// back the control's persistent paint DC, or the drawing goes into a context
+// the pump never replays.
 //
-// BeginPaint was returning a throwaway DC and every WM_PAINT handler's drawing
-// was discarded; see the long note there. GetDC is the SECOND way Win32 code
-// draws into a window -- outside WM_PAINT, at the moment something changes --
-// and it had exactly the same fault for exactly the same reason.
+// The commands are kept rather than cleared: a DC from GetDC does not begin a
+// repaint, it draws on top of what the window already shows, and nothing
+// re-issues such a blit because the pump only sends WM_PAINT to controls that
+// paint themselves. InvalidateRect(h, NULL, TRUE) is what erases it, through
+// orbiter_ClearPaintDC. The state is still reset, because a DC handed out by
+// GetDC has the default objects selected whatever the last holder chose.
 //
-// ScnEditor's vessel preview is the case that found it. DrawVesselBmp does
-//
-//     HDC hDC = GetDC (hImgWnd);
-//     ... StretchBlt (hDC, 0, 0, r.right, h, hBmpDC, 0, 0, dx, dy, SRCCOPY);
-//     ReleaseDC (hImgWnd, hDC);
-//
-// on a stock SS_BITMAP static. The blit went into a context the pump never
-// replayed, so the panel stayed empty however well the bitmap loaded.
-//
-// WHY THE COMMANDS ARE KEPT. A DC from GetDC does not begin a repaint: on
-// Windows it draws ON TOP of what the window already shows, and those pixels
-// stay until something erases them. Nothing re-issues this blit -- the tab's
-// WM_PAINT is never sent, because the pump only sends WM_PAINT to controls
-// that paint themselves -- so clearing here, as BeginPaint deliberately does,
-// would erase the picture the caller just drew. InvalidateRect(h, NULL, TRUE)
-// is what erases it, and it does exactly that; see orbiter_ClearPaintDC.
-//
-// The STATE is still reset, because that half of Win32 is true: a DC handed
-// out by GetDC has the default objects selected regardless of what the last
-// holder chose. Only the recorded picture survives.
-//
-// CHILD WINDOWS ONLY. A top-level window has no entry in the pump's control
+// Child windows only: a top-level window has no entry in the pump's control
 // pass, so a persistent DC for one would accumulate commands that are never
-// replayed and never cleared -- DialogWin's caption buttons and the client's
-// GetDC(hRenderWnd) black fill are both that shape. They keep the throwaway.
+// replayed and never cleared. Those keep the throwaway.
 HDC GetDC(HWND h)
 {
     if (h && orbiter_GetParentWnd(h)) {
@@ -870,38 +776,13 @@ int ReleaseDC(HWND, HDC hdc)
 
 HDC BeginPaint(HWND h, LPPAINTSTRUCT ps)
 {
-    // THE CONTROL'S PERSISTENT PAINT DC, not a fresh one -- and this is the
-    // whole of whether a self-painting control is visible at all.
-    //
-    // The pump paints one of these in two steps (UIHost::drawControl):
-    //
-    //     orbiter_SendPaint(h);                       // -> WM_PAINT
-    //     if (HDC dc = orbiter_GetPaintDC(h)) {
-    //         orbiter_ReplayDC(dc, pos.x, pos.y);     // -> ImGui draw list
-    //         orbiter_ResetDC(dc);
-    //     }
-    //
-    // and orbiter_GetPaintDC's own note says why it is persistent: "otherwise
-    // the commands recorded by the handler would belong to a context the pump
-    // never sees". That is precisely what a newDC() here produced. Every
-    // Rectangle, LineTo and TextOut a WM_PAINT handler issued went into a
-    // throwaway DC, the pump replayed the persistent one, and the persistent
-    // one was always empty -- so the control drew nothing, every frame,
-    // forever.
-    //
-    // On Windows there is no difference to notice: BeginPaint returns a DC
-    // onto the window itself and the pixels are already on screen by the time
-    // EndPaint returns. Here the DC is a COMMAND RECORDER and the identity of
-    // the object matters.
-    //
-    // Found through DX9ExtMFD, whose dialog was completely blank while
-    // childdump reported all seventeen children present, visible, enabled and
-    // taking the wndproc branch -- so the controls were there and painting,
-    // and nothing was arriving. It is not specific to that plugin: every
-    // BeginPaint in the tree is a WM_PAINT handler for a custom control class
-    // -- DlgCtrl's gauges (DlgCtrl.cpp:78, :514), its switches
-    // (DlgCtrlSwitch.cpp:34), TerrainToolKit's gcTableView, WindowMgr's side
-    // bar -- and all of them had the same fate.
+    // The control's persistent paint DC, not a fresh one -- and this decides
+    // whether a self-painting control is visible at all. The pump sends
+    // WM_PAINT, then replays whatever orbiter_GetPaintDC holds, so a newDC()
+    // here sends everything a handler issues into a throwaway the pump never
+    // looks at and the control draws nothing, every frame, forever. On Windows
+    // the identity does not matter, because BeginPaint returns a DC onto the
+    // window itself; here the DC is a command recorder.
     //
     // The commands are cleared first because a WM_PAINT redraws the whole
     // update region, which here is always the entire client rect: a handler
@@ -976,14 +857,11 @@ HBRUSH CreateBrushIndirect(const LOGBRUSH *lb)
     return (HBRUSH)o;
 }
 
-// A hatched brush.
-//
-// The hatch pattern is recorded but the fill is rendered solid: the draw-list
-// replay has no pattern-fill primitive, and a hatch drawn as individual lines
-// would need the fill region clipped to the shape being filled, which the
-// command model does not carry. So this is a KNOWN approximation rather than
-// an oversight -- a hatched region appears as a flat one of the same colour.
-// Dragonfly's panel is the only consumer and uses it for shading.
+// A hatched brush. The hatch pattern is recorded but the fill is rendered
+// solid: the draw-list replay has no pattern-fill primitive, and a hatch drawn
+// as individual lines would need the fill region clipped to the shape being
+// filled, which the command model does not carry. A known approximation -- a
+// hatched region appears as a flat one of the same colour.
 HBRUSH CreateHatchBrush(int style, COLORREF colour)
 {
     GdiObject *o = newObject(GdiObject::Brush);
@@ -1016,17 +894,15 @@ HFONT CreateFontA(int height, int width, int escapement, int orientation,
     o->fontPitchAndFamily = (int)pitchAndFamily;
     o->fontFace   = face ? face : "";
 
-    // The SIGN of the height is not recoverable from the magnitude, and
-    // GetObject has to give back what was passed. Kept separately rather than
-    // by storing the signed value, because every drawing path here wants the
-    // magnitude and would otherwise have to remember to take it.
+    // The sign of the height is not recoverable from the magnitude, and
+    // GetObject has to give back what was passed. Kept separately because
+    // every drawing path here wants the magnitude.
     o->fontHeightSigned = height;
     return (HFONT)o;
 }
 
 // The struct form. Win32 has both and they make the same font; this unpacks
-// the fourteen fields and calls the other, which is what GDI does too. Added
-// for OVP/VulkanClient's SplashScreen, which fills a LOGFONTA.
+// the fourteen fields and calls the other, which is what GDI does too.
 HFONT CreateFontIndirectA(const LOGFONTA *lf)
 {
     if (!lf) return nullptr;
@@ -1082,10 +958,8 @@ int GetObjectA(HGDIOBJ obj, int cb, LPVOID buf)
 
     // The font case, which the graphics client's font manager needs: it takes
     // an HFONT and has to find out which face to rasterise, because there is
-    // no GDI here to rasterise it for them. See the LOGFONT note in windows.h.
-    //
-    // Everything CreateFontA was given comes back; the fields it was never
-    // given stay zero, which is the truthful answer rather than a guess.
+    // no GDI here to rasterise it for it. Everything CreateFontA was given
+    // comes back; fields it was never given stay zero.
     if (o->kind == GdiObject::Font && cb >= (int)sizeof(LOGFONT)) {
         LOGFONT *lf = (LOGFONT *)buf;
         memset(lf, 0, sizeof(*lf));
@@ -1128,25 +1002,12 @@ DWORD GetSysColor(int index)
     }
 }
 
-// CACHED PER INDEX, and that is the documented contract rather than an
-// optimisation. Windows returns a SHARED brush that the caller must not
-// delete; a fresh one per call is a different object every time and, marked
-// stock so DeleteObject refuses it, one that nothing can ever free.
-//
-// The caller that made this matter is on the Launchpad's own paint path:
-//
-//     // Launchpad.cpp:406, WM_DRAWITEM for IDC_MNU_PAGECONTAINER
-//     HANDLE hpBrush = SelectObject(hDC, GetSysColorBrush(COLOR_3DFACE));
-//
-// WM_DRAWITEM runs once per frame, so this leaked one GdiObject per frame for
-// as long as the Launchpad was on screen. MEASURED before the fix: 1000 live
-// objects 16 seconds into an idle Launchpad session, about 71 per second --
-// one per frame at the frame rate, exactly as predicted.
-//
-// The cost is not only memory. Every object is reached through toObject(), an
-// O(log n) lookup on that map, and every drawing call makes one -- so the map
-// growing without bound makes all painting progressively slower, with nothing
-// to point at the cause.
+// Cached per index, which is the documented contract rather than an
+// optimisation: Windows returns a shared brush the caller must not delete. A
+// fresh one per call is a different object every time and, marked stock so
+// DeleteObject refuses it, one that nothing can ever free. Launchpad's
+// WM_DRAWITEM handler calls this once per frame: measured at about 71 leaked
+// objects per second on an idle Launchpad, 1000 live after 16 seconds.
 HBRUSH GetSysColorBrush(int index)
 {
     static std::map<int, GdiObject *> sysBrushes;
@@ -1232,13 +1093,8 @@ BOOL Arc(HDC hdc, int left, int top, int right, int bottom,
 }
 
 // A filled pie wedge: the same geometry as Arc, but closed through the centre
-// and filled with the current brush.
-//
-// It was recorded as a plain Arc, with a comment claiming the replay closed
-// the path whenever the command carried a brush. It did not -- the Arc case
-// opened with `if (!c.hasOutline) break;` and only ever stroked. So a Pie
-// drawn with a brush and a NULL pen, which is exactly how Dragonfly's radar
-// antenna wedge is drawn, produced nothing at all.
+// and filled with the current brush. It needs its own opcode -- recorded as a
+// plain Arc, a Pie drawn with a brush and a NULL pen produces nothing at all.
 BOOL Pie(HDC hdc, int left, int top, int right, int bottom,
          int xs, int ys, int xe, int ye)
 {
@@ -1452,12 +1308,9 @@ int FillRect(HDC hdc, const RECT *r, HBRUSH brush)
 }
 
 // Measures a string, and reports how many characters fit within maxExtent.
-//
-// This is the extended form: unlike GetTextExtentPoint32, it takes a width
-// budget and can fill a per-character running-width array. gcPropertyTree
-// passes a budget of 100000 and two nulls, wanting only the total, but the
-// fit count and the width array are filled in when asked for so the function
-// is not silently narrower than its name.
+// Unlike GetTextExtentPoint32 this takes a width budget and can fill a
+// per-character running-width array. Callers here want only the total, but the
+// fit count and the width array are filled in when asked for.
 BOOL GetTextExtentExPointA(HDC hdc, LPCSTR str, int len, int maxExtent,
                            LPINT lpnFit, LPINT alpDx, LPSIZE size)
 {
@@ -1489,10 +1342,8 @@ BOOL GetTextExtentExPointA(HDC hdc, LPCSTR str, int len, int maxExtent,
 
 // Wide-character TextOut. The text is converted to UTF-8 and recorded through
 // the same path as TextOutA, because that is what the font stack consumes.
-//
-// gcPropertyTree reaches this by round-tripping its values through
-// std::wstring_convert specifically so that non-ASCII characters survive --
-// the micro sign in its UNITS formatting is the reason -- so the conversion
+// Callers round-trip through std::wstring_convert precisely so that non-ASCII
+// characters survive -- the micro sign in unit formatting -- so the conversion
 // back has to be a real one and not a truncating cast.
 BOOL TextOutW(HDC hdc, int x, int y, LPCWSTR str, int len)
 {
@@ -1620,33 +1471,17 @@ HBITMAP LoadBitmapA(HINSTANCE, LPCSTR name)
 
 // LoadImage's LR_LOADFROMFILE path: `name` is a filename, not a packed id.
 //
-// WHAT THIS FIXES. ScnEditor's New Vessel tab reads an `ImageBmp` key from
-// each vessel .cfg and loads that file for the preview panel:
+// Falling through to LoadBitmapA instead is not a silent no-op: that accepts
+// only a MAKEINTRESOURCE id and returns an empty bitmap object for anything
+// else -- empty but not null, so a caller's `if (h)` passes, GetObject reports
+// bmWidth 0, and the first caller that scales by the width divides by zero.
+// Windows' LoadImage returns NULL on failure and callers are written against
+// that, so a failed read must return NULL here too.
 //
-//     hVesselBmp = (HBITMAP)LoadImage (ed->InstHandle(), imagename,
-//                                      IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE);
-//
-// The flags argument was discarded and the call fell through to LoadBitmapA,
-// which accepts only a MAKEINTRESOURCE id and returns an EMPTY bitmap object
-// for anything else. Empty but NOT null -- so the caller's `if (hVesselBmp)`
-// passed, GetObject reported bmWidth 0, and DrawVesselBmp's
-//
-//     h = min (imghmax, (int)(r.right*dy)/dx);
-//
-// divided by zero. Every stock vessel ships an ImageBmp, so selecting any of
-// them in the New Vessel list killed the process with SIGFPE.
-//
-// Returning NULL when the file cannot be read is the half that kills the
-// crash on its own: Windows' LoadImage returns NULL on failure and both
-// callers here are written against that (`return (hVesselBmp != NULL)`, and
-// DrawVesselBmp's else branch hides the control).
-//
-// WHY THERE IS LINUX-ONLY CODE HERE. The separator translation and the
-// case-insensitive retry are forced, not embellishment: these paths come from
-// .cfg files shared verbatim with the Windows build --
-// "Images\\Vessels\\Default\\DeltaGlider.bmp" -- and ext4 resolves neither
-// the backslashes nor a case mismatch. Same defect and same remedy as
-// GraphicsClient::TexturePath, deliberately the same shape.
+// The separator translation and the case-insensitive retry are forced: these
+// paths come from .cfg files shared verbatim with the Windows build --
+// "Images\\Vessels\\Default\\DeltaGlider.bmp" -- and ext4 resolves neither the
+// backslashes nor a case mismatch.
 static HBITMAP loadBitmapFile(const char *name)
 {
     if (!name || !*name) return nullptr;
@@ -1842,18 +1677,13 @@ extern "C" int orbiter_GetWindowIconImages(int resId, int max, int *widths,
 }
 
 // ===========================================================================
-// WGL
+// WGL -- reporting failure, deliberately and consistently.
 //
-// Reporting failure, deliberately and consistently.
-//
-// There is no GL surface behind a DC here -- the renderer is Vulkan and a DC
-// is a command recorder, not a drawable. Dragonfly's instrument panel probes
-// for a pixel format and only builds its GL path if it gets one, so returning
-// zero makes it fall back cleanly. Returning a fake format and a null context
-// would let it proceed and then draw into nothing, which is far harder to
-// diagnose than an honest refusal.
-//
-// This is the seam to implement against when a graphics client exists.
+// There is no GL surface behind a DC here: the renderer is Vulkan and a DC is
+// a command recorder, not a drawable. A caller that probes for a pixel format
+// and only builds its GL path if it gets one falls back cleanly on a zero.
+// Returning a fake format and a null context would let it proceed and then
+// draw into nothing, which is far harder to diagnose.
 // ===========================================================================
 
 int ChoosePixelFormat(HDC, const PIXELFORMATDESCRIPTOR *) { return 0; }
@@ -1892,33 +1722,13 @@ struct ImageList {
 };
 
 // ===========================================================================
-// ALLOCATED ONCE AND NEVER FREED, and that is deliberate. This is the same
-// static-destruction-order fault Win32Dlg.cpp's windowClasses() already
-// solves, in the same way, for the same reason -- it simply had not been
-// applied here.
-//
-// This map lives in the EXECUTABLE. The code that empties it lives in a
-// PLUGIN: ScnEditor's destructor calls ImageList_Destroy from ExitModule,
-// which the dynamic loader runs from _dl_fini during exit(). Whether this
-// map is still alive at that moment is not defined by anything --
-//
-//     exit(0)  ->  __run_exit_handlers  ->  _dl_fini
-//       ->  orb_module_detach  ->  ExitLib  ->  ExitModule
-//       ->  ScnEditor::~ScnEditor  ->  ImageList_Destroy
-//       ->  g_imageLists.erase()   on a map that may already be destroyed
-//
-// -- and the symptom is not a clean crash but
-//     double free or corruption (!prev)
-// raised from inside the allocator, several frames away from the cause.
-//
-// Never destroying it removes the ordering question entirely: the map stays
-// valid for as long as any code can reach it. The "leak" is reclaimed by the
-// kernel at process exit like everything else.
-//
-// This had never fired because nothing in this port had ever reached a clean
-// exit: the render window was created under an unregistered window class, so
-// WM_CLOSE never reached RenderWndProc and CloseSession never ran. Fixing
-// that surfaced this on the first shutdown.
+// Allocated once and never freed, deliberately -- the same
+// static-destruction-order fault Win32Dlg.cpp's windowClasses() solves. This
+// map lives in the executable, but the code that empties it lives in a plugin:
+// ScnEditor calls ImageList_Destroy from ExitModule, which the loader runs
+// from _dl_fini during exit(), and whether this map is still alive then is
+// undefined. The symptom is not a clean crash but "double free or corruption
+// (!prev)" from inside the allocator, frames away from the cause.
 std::map<ImageList *, std::unique_ptr<ImageList>> &imageLists()
 {
     static std::map<ImageList *, std::unique_ptr<ImageList>> *lists =
@@ -1958,10 +1768,9 @@ int ImageList_Add(HIMAGELIST h, HBITMAP image, HBITMAP)
 // Resolves a tree view's image-list entry to a renderer texture.
 //
 // The tree attaches its list with TVM_SETIMAGELIST and then refers to icons by
-// index; the renderer needs a texture and UVs. Each entry is a separate
-// bitmap here rather than a strip, so the UVs are the whole image -- but they
-// are still reported, because the Windows control does use a strip and a
-// future change to match that would only alter these four numbers.
+// index; the renderer needs a texture and UVs. Each entry is a separate bitmap
+// here rather than a strip, so the UVs are the whole image -- reported anyway,
+// because the Windows control does use a strip.
 unsigned long long orbiter_ImageListTexture(HWND tree, int index,
                                             float *u0, float *v0,
                                             float *u1, float *v1)
@@ -2023,10 +1832,8 @@ unsigned long long orbiter_BitmapTexture(int resId, int *width, int *height)
 // ===========================================================================
 // Text metrics, pixels and the viewport origin
 //
-// Added for the graphics client's Sketchpad, which draws the HUD, the MFDs
-// and the panel instruments. All three are ordinary GDI operations; they had
-// no caller until a client existed, which is why they were declared but never
-// implemented.
+// Used by the graphics client's Sketchpad, which draws the HUD, the MFDs and
+// the panel instruments.
 // ===========================================================================
 
 BOOL GetTextMetricsA(HDC hdc, LPTEXTMETRIC tm)
@@ -2067,16 +1874,11 @@ BOOL GetTextMetricsA(HDC hdc, LPTEXTMETRIC tm)
 // The pixel pair.
 //
 // A DC in this file is a display-list recorder, so "the pixel at x,y" only
-// exists when the DC has a BITMAP selected into it -- a memory DC. That is
-// precisely the case Win32 code uses these two for, and the case
-// OVP/VulkanClient's WindowMgr needs: it selects its title-bar graphic into
-// one memory DC and a compatible bitmap into another, then recolours the
-// image a pixel at a time.
-//
-// So both work on the selected bitmap's pixel buffer when there is one. For a
-// screen DC SetPixel keeps recording a one-pixel rectangle, which is the only
-// thing it can do and what it did before, and GetPixel reports CLR_INVALID --
-// Win32's own answer for a point it cannot read.
+// exists when the DC has a bitmap selected into it -- a memory DC, which is
+// precisely what Win32 code uses these two for. Both therefore work on the
+// selected bitmap's pixel buffer when there is one. For a screen DC SetPixel
+// records a one-pixel rectangle, the only thing it can do, and GetPixel
+// reports CLR_INVALID -- Win32's own answer for a point it cannot read.
 //
 // `pixels` is decoded RGBA8, so the byte order is R,G,B,A and a COLORREF is
 // 0x00BBGGRR: the channels are reversed between the two and the conversion
@@ -2151,9 +1953,9 @@ BOOL SetViewportOrgEx(HDC hdc, int x, int y, LPPOINT prev)
     return TRUE;
 }
 
-// The read half of the pair above. GDIPad::GetOrigin is the caller; on
-// Windows it is the only way to ask a DC where its origin was put, because
-// SetViewportOrgEx's `prev` only answers while you are moving it.
+// The read half of the pair above: on Windows it is the only way to ask a DC
+// where its origin was put, because SetViewportOrgEx's `prev` only answers
+// while you are moving it.
 BOOL GetViewportOrgEx(HDC hdc, LPPOINT pt)
 {
     DeviceContext *dc = toDC(hdc);
@@ -2164,15 +1966,12 @@ BOOL GetViewportOrgEx(HDC hdc, LPPOINT pt)
 }
 
 // PolyPolygon and PolyPolyline draw N figures from one flat point array, with
-// a per-figure count array. There is nothing in the recorder that needs to
-// know they arrived together -- each figure is an independent command -- so
-// both are the single-figure call in a loop, which is also exactly what the
-// picture is.
+// a per-figure count array. Nothing in the recorder needs to know they arrived
+// together, so both are the single-figure call in a loop.
 //
-// The two differ in their count array's type, and that is Win32's doing, not
-// a mistake: PolyPolygon takes `const int *` and PolyPolyline takes
-// `const DWORD *`. Both are kept as declared so the call sites do not have to
-// cast.
+// The two differ in their count array's type, and that is Win32's doing, not a
+// mistake: PolyPolygon takes `const int *` and PolyPolyline takes
+// `const DWORD *`. Both are kept as declared so call sites need no cast.
 BOOL PolyPolygon(HDC hdc, const POINT *pts, const int *counts, int nfig)
 {
     DeviceContext *dc = toDC(hdc);
@@ -2199,16 +1998,15 @@ BOOL PolyPolyline(HDC hdc, const POINT *pts, const DWORD *counts, DWORD nfig)
     return ok;
 }
 
-// DrawTextA lays a string out inside a rectangle. GDIPad::TextBox is the only
-// caller in this tree and it always asks for DT_LEFT | DT_NOPREFIX |
-// DT_WORDBREAK -- left aligned, no '&' accelerator handling, wrap at the
-// right edge -- so that is what this does, and the other DT_ flags are
-// accepted and ignored rather than pretended.
+// DrawTextA lays a string out inside a rectangle. The only caller in this tree
+// asks for DT_LEFT | DT_NOPREFIX | DT_WORDBREAK -- left aligned, no '&'
+// accelerator handling, wrap at the right edge -- so that is what this does;
+// the other DT_ flags are accepted and ignored rather than pretended.
 //
-// WORD WRAPPING IS DONE HERE because the recorder has no layout engine: it
-// records TextOut calls at fixed positions. So the string is split into lines
+// Word wrapping is done here because the recorder has no layout engine: it
+// records TextOut calls at fixed positions. The string is split into lines
 // that fit, each line becomes one TextOutA, and the line height comes from
-// GetTextMetricsA -- the same number GDIPad::GetCharSize reports.
+// GetTextMetricsA.
 //
 // The return value is GDI's: the height of the drawn text, or 0 on failure.
 int DrawTextA(HDC hdc, LPCSTR str, int len, LPRECT rc, UINT format)
@@ -2272,22 +2070,16 @@ int DrawTextA(HDC hdc, LPCSTR str, int len, LPRECT rc, UINT format)
 // ===========================================================================
 // Compositing one device context into another
 //
-// This GDI layer RECORDS drawing commands and replays them into the frame; it
-// does not rasterise into a bitmap. That is what makes it fast and what lets
-// Orbiter's dialogs and instruments draw with no software renderer behind
-// them -- but it means BitBlt between two of these device contexts has no
-// pixels to copy.
+// This layer records drawing commands rather than rasterising into a bitmap,
+// so a BitBlt between two of these device contexts has no pixels to copy. That
+// matters because it is how Orbiter composites its 2D output: every MFD draws
+// into its own surface and the panel code blits those onto the main render
+// surface, so with a pixel-copying BitBlt the instruments are drawn correctly
+// into their surfaces and never reach the screen.
 //
-// It matters because that is exactly how Orbiter composites its 2D output:
-// every MFD draws into its own surface, and the panel code blits those
-// surfaces onto the main render surface. With a pixel-copying BitBlt those
-// blits move nothing, and the instruments vanish -- drawn correctly into
-// their surfaces and then never reaching the screen.
-//
-// The equivalent operation for a command recorder is to APPEND the source's
-// commands to the target, translated by the blit offset. The result is
-// identical once replayed, and the source is left intact so it can be
-// composited again next frame.
+// The equivalent for a command recorder is to append the source's commands to
+// the target, translated by the blit offset. The result is identical once
+// replayed, and the source is left intact for the next frame.
 // ===========================================================================
 
 extern "C" void orbiter_AppendDC(HDC dstDC, HDC srcDC, int dx, int dy,

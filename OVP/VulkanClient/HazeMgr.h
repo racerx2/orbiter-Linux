@@ -12,23 +12,6 @@
 // Planetary atmospheric haze rendering
 // Implemented as transparent overlay on planetary disc
 // ==============================================================
-//
-// CONVERTED FROM OVP/D3D9Client/HazeMgr.h, read end to end (118 lines).
-//
-// Two classes: the legacy overlay ring (HazeManager) and the scattering
-// version used with TileManager2 (HazeManager2). Types only:
-//
-//   D3D9Effect               -> VulkanEffect
-//   oapi::D3D9Client         -> oapi::VulkanClient
-//   LPDIRECT3DDEVICE9        -> VulkanDevice*
-//   D3DXMATRIX               -> FMATRIX4
-//   LPDIRECT3DTEXTURE9       -> VulkanTexture*
-//   LPDIRECT3DVERTEXBUFFER9  -> VulkanBuffer*
-//
-// HVERTEX's `DWORD dcol` stays a DWORD: it was already the packed 0xAARRGGBB
-// form, which is what HazeVertexDecl's D3DDECLTYPE_D3DCOLOR element reads and
-// what VK_FORMAT_B8G8R8A8_UNORM reads in its place.
-// ==============================================================
 
 #ifndef __HAZEMGR_H
 #define __HAZEMGR_H
@@ -77,6 +60,9 @@ private:
 	float  hscale; // inner haze ring radius (in planet radii)
 	static WORD Idx[HORIZON_NSEG*2+2];
 	static DWORD nIdx;
+	// dcol stays a DWORD: it was already packed 0xAARRGGBB, which is what the
+	// D3DDECLTYPE_D3DCOLOR element of HazeVertexDecl read and what
+	// VK_FORMAT_B8G8R8A8_UNORM reads in its place.
 	static struct HVERTEX {
 		float x,y,z;
 		DWORD    dcol;

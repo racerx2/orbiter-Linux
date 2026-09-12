@@ -5,34 +5,21 @@
 // descriptions. COM and IE have no native Linux existence, so the control is
 // reimplemented rather than shimmed.
 //
-// The public API is unchanged, so Src/Orbiter/TabScenario.cpp compiles and
-// calls into this file without modification:
+// The public API is unchanged, so TabScenario.cpp calls into this file without
+// modification.
 //
-//     RegisterHtmlCtrl (HINSTANCE, BOOL)
-//     DisplayHTMLPage  (HWND, LPTSTR)
-//     DisplayHTMLStr   (HWND, const char *)
+// What survives: the scenario description pane still shows the text of a
+// scenario's BEGIN_HYPERDESC block, with block-level tags becoming line
+// breaks, character entities decoded, and runs of whitespace collapsed the way
+// a browser would collapse them.
 //
-// WHAT IS PRESERVED
-//   The scenario description pane still shows the text of a scenario's
-//   BEGIN_HYPERDESC block. Markup is converted to readable plain text:
-//   block-level tags become line breaks, character entities are decoded,
-//   and runs of whitespace are collapsed the way a browser would collapse
-//   them. The three call sites keep working and the pane is never blank.
-//
-// WHAT IS LOST
-//   Formatting. Headings, bold, italics, tables and images render as plain
-//   text, and DisplayHTMLPage cannot follow links or load a remote URL --
-//   it reads a local file if the path resolves, and otherwise shows the
-//   location instead of fetching it.
-//
-// WHAT WOULD RESTORE IT
-//   Rendering the description with a real engine. The realistic options are
-//   WebKitGTK (webkit2gtk-4.1, a GtkWidget, which would need a GTK window
-//   alongside the GLFW one) or a small HTML-subset renderer drawing into the
-//   existing ImGui pane. The latter fits the rest of this port better: the
-//   hyperdesc blocks in the stock scenarios use a narrow tag vocabulary
-//   (h1-h3, p, b, i, ul/li, br, a), which is well within what an ImGui
-//   draw-list renderer can handle without pulling in a browser engine.
+// What is lost: formatting. Headings, bold, italics, tables and images render
+// as plain text, and DisplayHTMLPage cannot follow links or load a remote URL
+// -- it reads a local file if the path resolves, and otherwise shows the
+// location instead of fetching it. Restoring formatting means a real engine:
+// WebKitGTK (which would need a GTK window alongside the GLFW one), or a small
+// HTML-subset renderer drawing into the existing ImGui pane. The stock
+// hyperdesc blocks use a narrow vocabulary -- h1-h3, p, b, i, ul/li, br, a.
 
 #include <windows.h>
 
@@ -43,8 +30,8 @@
 
 namespace {
 
-// Tags that should produce a line break when opened or closed, matching how a
-// browser lays out block-level elements.
+// Tags that produce a line break when opened or closed, matching how a browser
+// lays out block-level elements.
 bool isBlockTag(const std::string &tag)
 {
     static const char *block[] = {
@@ -82,7 +69,6 @@ std::string decodeEntity(const std::string &ent)
         } catch (...) { return "&" + ent + ";"; }
         if (code > 0 && code < 128) return std::string(1, (char)code);
         if (code < 256) {
-            // Encode as two-byte UTF-8.
             std::string s;
             s += (char)(0xC0 | (code >> 6));
             s += (char)(0x80 | (code & 0x3F));
@@ -114,7 +100,6 @@ std::string htmlToText(const char *html)
             if (c == '>') {
                 inTag = false;
 
-                // Normalise: strip a leading '/', keep only the tag name.
                 std::string name;
                 size_t i = 0;
                 if (i < tag.size() && tag[i] == '/') ++i;
@@ -161,7 +146,6 @@ std::string htmlToText(const char *html)
         out += c;
     }
 
-    // Trim trailing blank lines.
     while (!out.empty() && (out.back() == '\n' || out.back() == ' '))
         out.pop_back();
 
@@ -217,7 +201,7 @@ long DisplayHTMLPage(HWND hwnd, LPTSTR webPageName)
 }
 
 // Renders an in-memory HTML string. This is the path the scenario browser
-// actually uses: TabScenario.cpp passes the BEGIN_HYPERDESC block here.
+// actually uses, with the BEGIN_HYPERDESC block.
 long WINAPI DisplayHTMLStr(HWND hwnd, const char *string)
 {
     if (!hwnd) return -1;

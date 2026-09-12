@@ -12,67 +12,12 @@
 // LOD (level-of-detail) algorithm for surface patch resolution.
 // ==============================================================
 //
-// CONVERTED FROM OVP/D3D9Client/Surfmgr2.cpp, read end to end (1883 lines).
-//
-// The surface tile itself: elevation files, edge matching between tiles of
-// different levels, and the one render function that feeds the terrain
-// shader. The elevation code -- more than half the file -- is INT16 and float
-// array arithmetic and converts line for line. What changed:
-//
-//  1. TWO SetRenderState CALLS AFTER Setup(), AND THEY ARE NOT THE SAME CASE.
-//
-//     `SetRenderState(D3DRS_CULLMODE, D3DCULL_CCW)` DOES SOMETHING: it turns
-//     back-face culling on for the terrain, so the far side of the planet is
-//     not drawn. ShaderClass built every pipeline with VK_CULL_MODE_NONE, so
-//     dropping the call would draw it. Cull is immutable pipeline state in
-//     Vulkan, so ShaderClass gained `SetCullMode`, which joins its pipeline
-//     cache key -- exactly the addition, and exactly the reasoning, that
-//     `SetTopology` was.
-//
-//     `SetRenderState(D3DRS_MULTISAMPLEANTIALIAS, 0/1)` around the tree walk,
-//     for Config->NoPlanetAA, HAS NO COUNTERPART AND NEEDS NONE. Multisample
-//     state is baked into a VkPipeline (and, more to the point, into the
-//     render pass), and every client pipeline is built against the core's
-//     render pass, which UIHost.cpp creates with one sample. There is nothing
-//     to toggle: planet AA is already off. Core Vulkan has no dynamic
-//     equivalent -- VK_EXT_extended_dynamic_state3's rasterizationSamples is
-//     an extension this client does not require.
-//
-//  2. `D3DCAPS9::MaxTextureRepeat` HAS NO COUNTERPART. It was the largest
-//     texture-coordinate repeat range a card supported; Vulkan imposes no
-//     such limit, because wrapping is done on a float coordinate with no
-//     documented ceiling. `MaxRep` is written here and read nowhere in the
-//     tree, so nothing observes the difference; it is set to the value that
-//     means "no limit" and says so.
-//
-//  3. THE SIX D3DX TEXTURE LOADS in SeekTileTexture become the shared
-//     `LoadDDSFile` (declared in Tilemgr2.h) and
-//     `NatCreateTextureFromDDSInMemory`. Same split as everywhere else: read
-//     the bytes, then decode. `D3DPOOL_DEFAULT` and the two D3DX filter
-//     arguments have no counterpart -- memory placement follows the usage
-//     flags and no filtering happens on load.
-//
-//  4. `overlay->Release()` in DeleteOverlay becomes
-//     `VulkanDevice::DestroyTexture`. It is guarded by `ownoverlay`, so the
-//     tile really is the owner, and vkDestroyImage takes the VkDevice that
-//     made the image.
-//
-//  5. NINE TILE PATHS were Windows paths built for fopen or FileExists --
-//     Surf, Mask, Elev, Elev_mod and Label, in five functions. Same class as
-//     finding 24: a backslash is a legal Linux filename character, so each
-//     asks for one literally-named file, misses, and reports the same "no
-//     data" an absent layer gives. The symptom would be a planet with no
-//     terrain, no night lights and no elevation at all.
-//
-//  6. `(mask - ilat & mask)` IS `((mask - ilat) & mask)`, twice, in
-//     ElevationData. The parentheses are added rather than the warning
-//     suppressed, because that precedence is exactly the thing worth being
-//     explicit about; the value is unchanged.
-//
-// The types are the usual list: D3D9Client -> VulkanClient, D3D9Pad ->
-// VulkanPad, D3D9Light -> VulkanLight, LPDIRECT3DDEVICE9 -> VulkanDevice*,
-// LPDIRECT3DTEXTURE9 -> VulkanTexture*, D3DXVECTOR2/3 -> FVECTOR2/3, and
-// D3DXVec3TransformCoord / D3DXVec3Dot -> oapi::TransformCoord / oapi::dot.
+// Nine tile paths -- Surf, Mask, Elev, Elev_mod and Label, in five functions
+// -- were built with backslashes for fopen or FileExists. A backslash is a
+// legal filename character on Linux, so the Windows spelling is not a bad
+// path: it asks for one literally-named file, misses, and reports the same
+// "no data" an absent layer gives. The symptom would be a planet with no
+// terrain, no night lights and no elevation at all.
 // ==============================================================
 
 #include "Surfmgr2.h"
@@ -89,12 +34,11 @@
 // =======================================================================
 extern void FilterElevationGraphics(OBJHANDLE hPlanet, int lvl, int ilat, int ilng, float *elev);
 
-// The GLSL block that reads this must be layout(scalar), which is what the
-// pack(4) mirrors. `param` is FVECTOR4P rather than float4 (FVECTOR4) for the
-// reason spelled out at FVECTOR4P in VulkanUtil.h: pack(4) lowers a member's
-// alignment but not its TYPE's, so an ORB_ALIGN16 FVECTOR4 at offset 144 --
-// 0 mod 16 here, but 4 mod 16 in the second element of any array of these --
-// gets aligned SSE stores from its constructor and faults. FVECTOR3 is not
+// The GLSL block that reads this must be layout(scalar), which the pack(4)
+// mirrors. `param` is FVECTOR4P rather than FVECTOR4 because pack(4) lowers a
+// member's alignment but not its type's: an ORB_ALIGN16 FVECTOR4 at offset 144
+// is 0 mod 16 here but 4 mod 16 in the second element of any array of these,
+// and its constructor's aligned SSE stores then fault. FVECTOR3 is not
 // over-aligned, so the other four members are unaffected.
 #pragma pack(push, 4)
 struct LightF
@@ -142,8 +86,9 @@ SurfTile::SurfTile (TileManager2Base *_mgr, int _lvl, int _ilat, int _ilng)
 	has_elevfile = false;
 	label = NULL;
 	imicrolvl = 14;	// Water resolution level
-	// Was GetCaps()->MaxTextureRepeat. See point 2 in the file header: there
-	// is no such limit in Vulkan, and nothing reads this.
+	// Was GetCaps()->MaxTextureRepeat, the largest texture-coordinate repeat
+	// range a card supported. Vulkan imposes no such limit, and nothing in
+	// the tree reads this.
 	MaxRep = 0xFFFFFFFF;
 	if (Config->TileMipmaps == 1) bMipmaps = true;
 
@@ -186,7 +131,6 @@ void SurfTile::PreLoad()
 	// Load surface texture
 
 	if (smgr->DoLoadIndividualFiles(0)) { // try loading from individual tile file
-		// "%s\\Surf\\..." on Windows. See point 5 in the file header.
 		sprintf_s(path, MAX_PATH, "%s/Surf/%02d/%06d/%06d.dds", mgr->DataRootDir().c_str(), lvl + 4, ilat, ilng);
 		LoadTextureFile(path, &pSysSrf);
 	}
@@ -206,9 +150,8 @@ void SurfTile::PreLoad()
 		}
 	}
 	
-	// SAFE_RELEASE(pSysSrf) -- the staging copy CreateTexture has just
-	// uploaded from. Nothing is reference counted; the device that made the
-	// image destroys it.
+	// Was SAFE_RELEASE(pSysSrf): nothing is reference counted, so the device
+	// that made the staging image destroys it.
 	if (pSysSrf) { pDev->DestroyTexture(pSysSrf); pSysSrf = nullptr; }
 
 
@@ -277,8 +220,7 @@ INT16 *SurfTile::ReadElevationFile (const char *name, int lvl, int ilat, int iln
 	double tgt_res = mgr->ElevRes();
 
 	char path[MAX_PATH];
-	// `char fname[128]` stood here and nothing writes or reads it -- the log
-	// lines below use the `name` parameter.
+	// `char fname[128]` stood here and nothing writes or reads it.
 	FILE *f;
 	int i;
 
@@ -505,7 +447,8 @@ bool SurfTile::DeleteOverlay(VulkanTexture * pOverlay)
 	if (overlay) {
 		if (pOverlay == overlay) {
 			if (ownoverlay) {
-				// overlay->Release(). See point 4 in the file header.
+				// Was overlay->Release(); vkDestroyImage takes the device that
+				// made the image, and ownoverlay says this tile is the owner.
 				mgr->Dev()->DestroyTexture(overlay);
 				bReturn = true;
 			}
@@ -663,8 +606,8 @@ float *SurfTile::ElevationData () const
 				// compute pixel offset into great-grandparent tile set
 				int nblock = TILE_FILERES/blockRes;
 				int mask = nblock-1;
-				// `mask - ilat & mask` -- '-' binds tighter than '&', so this
-				// is (mask - ilat) & mask. See point 6 in the file header.
+				// `mask - ilat & mask`: '-' binds tighter than '&', so the
+				// parentheses are explicit and the value is unchanged.
 				int ofs = (((mask - ilat) & mask) * TILE_ELEVSTRIDE + (ilng & mask)) * blockRes;
 				ggelev = ancestor->Entry()->elev + ofs;
 			}
@@ -851,7 +794,7 @@ void SurfTile::Render ()
 	vPlanet *vPlanet = mgr->GetPlanet();
 	const Scene *scene = mgr->GetScene();
 	// `const D3D9Client *pClient = mgr->GetClient()` stood here and nothing
-	// reads it -- the two uses below go through mgr->GetClient() directly.
+	// reads it.
 
 	static const double rad0 = sqrt(2.0)*PI05;
 	double sdist, rad;
@@ -890,7 +833,6 @@ void SurfTile::Render ()
 
 	sp->vCloudOff = FVECTOR4(0, 0, 1, 1);
 
-	// D3DXVec3TransformCoord(&bs_pos, &mesh->bsCnt, &mWorld)
 	FVECTOR3 bs_pos = oapi::TransformCoord(mesh->bsCnt, mWorld);
 
 	// ----------------------------------------------------------------------
@@ -1192,10 +1134,8 @@ void SurfTile::Render ()
 
 	pShader->UpdateTextures();
 
-	// SetStreamSource + SetIndices + DrawIndexedPrimitive(TRIANGLELIST, 0, 0,
-	// mesh->nv, 0, mesh->nf). The last argument is a FACE count and
-	// vkCmdDrawIndexed's first is an INDEX count; the stride moved into the
-	// vertex declaration and VK_INDEX_TYPE_UINT16 into the bind.
+	// DrawIndexedPrimitive's last argument was a face count and
+	// vkCmdDrawIndexed's first is an index count.
 	if (pDev->IsRecording() && mesh->pVB && mesh->pIB) {
 		VkCommandBuffer cmd = pDev->GetCommandBuffer();
 		VkBuffer vb = mesh->pVB->Buffer();
@@ -1203,39 +1143,31 @@ void SurfTile::Render ()
 		vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &offset);
 		vkCmdBindIndexBuffer(cmd, mesh->pIB->Buffer(), 0, VK_INDEX_TYPE_UINT16);
 		vkCmdDrawIndexed(cmd, mesh->nf * 3, 1, 0, 0, 0);
-		// DIAGNOSTIC: paint the whole attachment magenta right after a tile
-		// draw. This uses no pipeline, no shader and no transform -- if the
-		// window does not turn magenta, this command buffer is not the one
-		// that reaches the screen, whatever its extent says.
-		// EVERY FRAME, not the first few: a clear issued only in frame 1 is
-		// invisible by the time anyone looks at the window.
+		// Diagnostic: paint the whole attachment magenta right after a tile
+		// draw, using no pipeline, shader or transform. If the window does not
+		// turn magenta, this command buffer is not the one that reaches the
+		// screen, whatever its extent says. Every frame, because a clear
+		// issued only in frame 1 is gone by the time anyone looks.
 		if (getenv("ORBITER_VK_TILE_CLEAR"))
 			pDev->ClearFrame(true, false, false, 0x00FF00FF, 1.0f, 0);
-		// ONLY THE MAIN SCENE. The env-camera pass draws the same tiles into a
+		// Main scene only: the env-camera pass draws the same tiles into a
 		// cube face first, with its own 90-degree square camera, and those
-		// draws are not what reaches the window. Tracing the first draws of a
-		// frame without this filter measures the cube face and calls it the
-		// screen -- which is exactly the mistake that produced the earlier
-		// "every tile is behind the camera" reading.
+		// draws never reach the window. Without this filter the trace measures
+		// the cube face and calls it the screen.
 		if (getenv("ORBITER_VK_TRACE_TILES") && scene->GetRenderPass() == RENDERPASS_MAINSCENE) {
 			static int nDrawn = 0;
 			if (++nDrawn <= 24) {
-				// WHICH TARGET is this draw going into? A tile drawn into an
-				// offscreen pass (shadow map, env map) never reaches the
-				// screen, and looks identical from the CPU side to one that
-				// does. The frame extent is the tell: the core's frame is the
-				// window, an offscreen target is its own size.
+				// Which target is this draw going into? A tile drawn into an
+				// offscreen pass looks identical from the CPU side to one
+				// drawn to the screen. The frame extent is the tell: the
+				// core's frame is the window, an offscreen target its own size.
 				LogErr("TILETRACE surf draw #%d nf=%u nv=%u cmd=%p frame=%ux%u",
 					   nDrawn, (unsigned)mesh->nf, (unsigned)mesh->nv,
 					   (void *)pDev->GetCommandBuffer(),
 					   pDev->GetFrameWidth(), pDev->GetFrameHeight());
-				// The world matrix AS UPLOADED for this tile -- measured at
-				// the draw, not at the manager, because sp is a shared struct
-				// filled per tile.
-				// THE VERTEX DATA ITSELF -- the last input never checked. If
-				// the buffer was never filled, every position is garbage and
-				// every triangle clips away, which looks exactly like "the
-				// draw produces no fragments".
+				// The vertex data itself: if the buffer was never filled,
+				// every position is garbage and every triangle clips away,
+				// which looks exactly like a draw producing no fragments.
 				if (mesh->pVB->IsHostVisible()) {
 					const VERTEX_2TEX *v = (const VERTEX_2TEX *)mesh->pVB->Map();
 					if (v) {
@@ -1249,15 +1181,13 @@ void SurfTile::Render ()
 				}
 				else LogErr("TILETRACE   vertex buffer is device-local, cannot read back");
 
-				// WHERE DOES THE WHOLE MESH LAND? Vertex 0 alone proves
+				// Where does the whole mesh land? Vertex 0 alone proves
 				// nothing: a top-level tile spans a quadrant of the globe, so
-				// its first corner is routinely on the far side and behind the
-				// camera even when the tile is perfectly visible. Sweep every
-				// vertex through the same arithmetic the shader does --
-				// row-vector v*M twice -- and count how many survive the
-				// clip test. Zero over every tile means the geometry never
-				// reaches the rasteriser; a nonzero count means it does and
-				// the fault is downstream.
+				// its first corner is routinely behind the camera even when
+				// the tile is perfectly visible. Sweep every vertex through
+				// the same row-vector arithmetic the shader does and count how
+				// many survive the clip test. Zero over every tile means the
+				// geometry never reaches the rasteriser.
 				if (mesh->pVB->IsHostVisible()) {
 					const VERTEX_2TEX *v = (const VERTEX_2TEX *)mesh->pVB->Map();
 					if (v) {
@@ -1309,10 +1239,9 @@ void SurfTile::Render ()
 		}
 	}
 	else {
-		// THE GUARD IS NEW AND IT MUST NOT BE SILENT. D3D9 drew whatever was
-		// bound; here a tile whose buffers were never created simply does not
-		// appear, with nothing said. Reported once so "the planet is missing"
-		// cannot be mistaken for a shading problem again.
+		// The guard is new and must not be silent: D3D9 drew whatever was
+		// bound, while here a tile whose buffers were never created simply
+		// does not appear, with nothing said.
 		static int nSkipped = 0;
 		if (++nSkipped <= 3)
 			LogErr("SurfTile::Render: no draw -- recording=%d pVB=%p pIB=%p nf=%u",
@@ -1617,10 +1546,11 @@ void TileManager2<SurfTile>::Render (MATRIX4 &dwmat, bool use_zbuf, const vPlane
 	int cfg = vp->GetShaderID();
 
 	pShader->ClearTextures();
-	// SetRenderState(D3DRS_CULLMODE, D3DCULL_CCW) followed Setup() on
-	// Windows. Cull is pipeline state here, so it has to be declared BEFORE
-	// the pipeline is built -- see point 1 in the file header and
-	// ShaderClass::SetCullMode.
+	// SetRenderState(D3DRS_CULLMODE, D3DCULL_CCW) followed Setup() on Windows,
+	// turning back-face culling on so the far side of the planet is not drawn.
+	// ShaderClass builds pipelines with VK_CULL_MODE_NONE, and cull is
+	// immutable pipeline state, so the value has to be declared before Setup
+	// builds the pipeline.
 	pShader->SetCullMode(ShaderClass::CULL_CCW);
 	pShader->Setup(pPatchVertexDecl, bUseZ, 0);
 
@@ -1630,16 +1560,13 @@ void TileManager2<SurfTile>::Render (MATRIX4 &dwmat, bool use_zbuf, const vPlane
 	ConstParams* cp = vp->GetScatterConst();
 
 
-	// The view-projection the tiles are transformed by, printed once. If this
-	// is zeroes or nonsense the geometry collapses and nothing appears, which
-	// is indistinguishable from "not drawn" on screen. Env-gated.
+	// Diagnostic: the view-projection the tiles are transformed by. If it is
+	// zeroes or nonsense the geometry collapses and nothing appears, which is
+	// indistinguishable from "not drawn" on screen. cp->mVP is written once
+	// per frame by vPlanet::UpdateScatter and only for RENDERPASS_MAINSCENE,
+	// so a tile render in a pass that never refreshed it is transformed by a
+	// stale matrix and every triangle lands behind the camera.
 	if (getenv("ORBITER_VK_TRACE_MTX")) {
-		// WHICH PASS, WHICH FRAME, WHICH BODY. cp->mVP is written once per
-		// frame by vPlanet::UpdateScatter, and only for RENDERPASS_MAINSCENE.
-		// If a tile render runs in a pass that never refreshed it, or in a
-		// frame where UpdateScatter bailed out, the tiles are transformed by
-		// a stale matrix and every triangle lands behind the camera. One line
-		// per manager call so the pattern over frames is visible.
 		static int nPass = 0;
 		if (nPass++ < 60) {
 			const FMATRIX4 &q = cp->mVP;
@@ -1720,11 +1647,11 @@ void TileManager2<SurfTile>::Render (MATRIX4 &dwmat, bool use_zbuf, const vPlane
 
 	vp->InitEclipse(pShader);
 
-	// SetRenderState(D3DRS_MULTISAMPLEANTIALIAS, 0) stood here and its
-	// restore stood after the tree walk, both under Config->NoPlanetAA.
-	// Multisample state is baked into the pipeline and into the render pass,
-	// and the core's render pass has one sample -- so there is nothing to
-	// turn off. See point 1 in the file header.
+	// SetRenderState(D3DRS_MULTISAMPLEANTIALIAS, 0) stood here and its restore
+	// after the tree walk, both under Config->NoPlanetAA. Multisample state is
+	// baked into the pipeline and into the render pass, and the core's render
+	// pass has one sample, so there is nothing to turn off. Core Vulkan has no
+	// dynamic equivalent this client could use.
 
 	// ------------------------------------------------------------------
 	// TODO: render full sphere for levels < 4
@@ -1772,12 +1699,11 @@ void TileManager2<SurfTile>::RenderLabels(VulkanPad *skp, oapi::Font **labelfont
 
 // -----------------------------------------------------------------------
 
-// GCC requires an explicit specialisation to be DECLARED before the
-// first use that would otherwise instantiate the primary template.
-// CreateLabels and DeleteLabels below both call SetSubtreeLabels, and
-// its specialisation is defined after them -- which MSVC accepts and
-// GCC reports as "specialization after instantiation". The definitions
-// keep the reference's order; only this declaration is new.
+// GCC requires an explicit specialisation to be declared before the first use
+// that would otherwise instantiate the primary template. CreateLabels and
+// DeleteLabels below both call SetSubtreeLabels, whose specialisation is
+// defined after them; MSVC accepts that, GCC reports "specialization after
+// instantiation". Only this declaration is new.
 template<>
 void TileManager2<SurfTile>::SetSubtreeLabels(QuadTreeNode<SurfTile> *node, bool activate);
 
@@ -1849,7 +1775,6 @@ void TileManager2<SurfTile>::InitHasIndividualFiles()
 		// `char dummy[MAX_PATH]` stood beside path and nothing reads it.
 		char path[MAX_PATH];
 		for (int i = 0; i < int(ARRAYSIZE(name)); ++i) {
-			// "%s\\%s" on Windows. See point 5 in the file header.
 			sprintf_s(path, MAX_PATH, "%s/%s", m_dataRootDir.c_str(), name[i]);
 			hasIndividualFiles[i] = FileExists(path);
 		}
@@ -1916,10 +1841,11 @@ SURFHANDLE TileManager2<SurfTile>::SeekTileTexture(int iLng, int iLat, int level
 		if (flags & gcTileFlags::CACHE)
 		{
 			char path[MAX_PATH];
-			// "%s\\Surf\\..." on Windows. See point 5 in the file header.
 			sprintf_s(path, MAX_PATH, "%s/Surf/%02d/%06d/%06d.dds", m_dataRootDir.c_str(), level + 4, iLat, iLng);
-			// D3DXCreateTextureFromFileEx: open, read the DDS header, choose
-			// a format, allocate, upload. See point 3 in the file header.
+			// D3DXCreateTextureFromFileEx opened, read the DDS header, chose a
+			// format, allocated and uploaded; LoadDDSFile plus the client's own
+			// DDS decoder is that pair. Its two filter arguments have no
+			// counterpart -- no filtering happens on load.
 			pTex = LoadDDSFile(path);
 			bOk = (pTex != NULL);
 		}
@@ -2085,7 +2011,6 @@ float* TileManager2<SurfTile>::BrowseElevationData(int lvl, int ilat, int ilng, 
 		bool ok = false;
 		ELEVFILEHEADER hdr;
 		if (flags & gcTileFlags::CACHE) { // try loading from individual tile file
-			// "%s\\Elev_mod\\..." on Windows. See point 5 in the file header.
 			sprintf_s(fname, ARRAYSIZE(fname), "%s/Elev_mod/%02d/%06d/%06d.elv", CbodyName(), lvl + 4, ilat, ilng);
 			bool found = GetClient()->TexturePath(fname, path);
 			if (found && !fopen_s(&f, path, "rb")) {

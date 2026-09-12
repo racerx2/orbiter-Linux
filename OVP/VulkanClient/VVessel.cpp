@@ -6,62 +6,12 @@
 //				 2010-2019 Jarmo Nikkanen (D3D9Client modification)
 // ==============================================================
 
-//
-// CONVERTED FROM OVP/D3D9Client/VVessel.cpp, read end to end (2034 lines).
-//
-// The vessel visual: meshes, animations, exhaust, beacons, ground shadows,
-// environment and irradiance cube maps, and the debug overlays. Most of it is
-// D3DX vector and matrix arithmetic that becomes the SDK's own, plus the
-// tree-wide type renames. Four things are worth knowing.
-//
-//  1. D3DXCreateCubeTexture HAD NO COUNTERPART AND NOW HAS ONE.
-//     VulkanDevice::CreateTextureCube and CreateFaceView were added for this
-//     file, and the reasoning is in VulkanTypes.h beside
-//     VulkanImageDesc::Layers: D3D9 had a third texture INTERFACE for a cube
-//     map; Vulkan has an image with six ARRAY LAYERS, a
-//     CUBE_COMPATIBLE creation flag and a VK_IMAGE_VIEW_TYPE_CUBE view, which
-//     is not the same thing as a 3D image with depth 6.
-//     GetCubeMapSurface(face, 0) becomes CreateFaceView(pTex, face) -- a view
-//     with baseArrayLayer = face -- and the FACE NUMBERING CARRIES OVER
-//     UNCHANGED, because D3DCUBEMAP_FACE_POSITIVE_X..NEGATIVE_Z are 0..5 and
-//     so is Vulkan's cube layer order.
-//
-//     What that costs: the per-face view has to be DESTROYED rather than
-//     released. SAFE_RELEASE(pSrf) becomes an explicit DestroyTexture, and it
-//     matters more here than usual -- the loop runs six times per vessel per
-//     probe, so a leak would be continuous rather than one-off.
-//
-//  2. THE SHADOW-VOLUME TESTS ARE FOUR FUNCTIONS OF THE SAME THREE LINES,
-//     and all three lines are D3DX. D3DXVec3TransformCoord is
-//     oapi::TransformCoord, D3DXVec3Dot is dot(), D3DXVec3Length is length()
-//     -- the SDK's own, declared in DrawAPI.h, taking and returning values
-//     rather than out-parameters. The `ptr(...)` temporaries that existed only
-//     to hand D3DX an address go with them.
-//
-//  3. RenderGroundShadow BUILDS A PROJECTION MATRIX BY ELEMENT NAME, sixteen
-//     assignments of mProj._11 .. _44. Those spellings exist only under
-//     #ifdef _WIN32 in DrawAPI.h (see VBase.cpp), so every one becomes m11 ..
-//     m44 -- the same storage under the name that is always available.
-//
-//  4. Animate() DOES THE SAME THING in three of its four cases, and the
-//     matrix it builds is read back element by element immediately after.
-//     Same treatment: D3DMAT_ becomes VMAT_, and T._41 becomes T.m41.
-//
-// NOT CONVERTED, because none of it needed converting: the whole animation
-// database (StoreDefaultState / RestoreDefaultState / DeleteDefaultState and
-// AnimateComponent's recursion), which is MGROUP_TRANSFORM bookkeeping in
-// Orbiter's own types; the force-vector overlay's arithmetic; and
-// value_string.
-// ==============================================================
 
 #include <set>
 #include "VVessel.h"
-// NOT IN THE WINDOWS INCLUDE LIST, and it has to be here: this file asks the
-// Scene for the shadow-map parameters, the render pass and the camera on
-// nearly every page. Windows gets the definition transitively through
-// D3D9Client.h; the converted VulkanClient.h only FORWARD-DECLARES Scene, so
-// the file that uses it names it. Same finding as VPlanetAtmo.cpp's and
-// TileMgr.cpp's.
+// Not in the Windows include list, and it has to be here: Windows gets Scene's
+// definition transitively through D3D9Client.h, while VulkanClient.h only
+// forward-declares it.
 #include "Scene.h"
 #include "VPlanet.h"
 #include "MeshMgr.h"
@@ -120,14 +70,10 @@ vVessel::vVessel(OBJHANDLE _hObj, const Scene *scene): vObject (_hObj, scene)
 	pMatMgr = new MatMgr(this, scene->GetClient());
 	for (int i = 0; i < int(ARRAYSIZE(pEnv)); i++) pEnv[i] = NULL;
 
-	// GetClassNameA() -> GetClassName(), eight times in this file.
-	//
-	// FINDING 34 IN REVERSE. VESSEL declares GetClassName(); <windows.h>
+	// GetClassNameA() -> GetClassName(), eight times in this file. <windows.h>
 	// defines GetClassName as a macro for GetClassNameA, so on Windows the
-	// DECLARATION in VesselAPI.h is rewritten to GetClassNameA and a call site
-	// may spell either. Here VesselAPI.h is parsed with no such macro in
-	// scope, so the member keeps the name it was declared with and only the
-	// unsuffixed spelling exists -- which is the name the code means anyway.
+	// declaration in VesselAPI.h is itself rewritten and a call site may spell
+	// either. With no such macro in scope only the unsuffixed name exists.
 	if (strncmp(vessel->GetClassName(), "XR2Ravenstar", 12) == 0) vClass = VCLASS_XR2;
 	if (strncmp(vessel->GetClassName(), "SpaceShuttleUltra", 17) == 0) vClass = VCLASS_ULTRA;
 	if (strncmp(vessel->GetClassName(), "SSU_CentaurGPrime", 17) == 0) vClass = VCLASS_SSU_CENTAUR;
@@ -164,9 +110,8 @@ vVessel::~vVessel ()
 {
 	SAFE_DELETE(pMatMgr);
 
-	// Were SAFE_RELEASE -- COM reference counts. A VulkanTexture carries the
-	// VkDevice that made it and its destructor is the destruction, which is
-	// all DestroyTexture does. Same substitution as TileMgr's ReleaseTex.
+	// Were SAFE_RELEASE, COM reference counts. A VulkanTexture carries the
+	// VkDevice that made it, and DestroyTexture is the destruction.
 	VulkanDevice *pDev = gc->GetDevice();
 	if (pIrrad)  { pDev->DestroyTexture(pIrrad);  pIrrad = NULL; }
 	if (pIrdEnv) { pDev->DestroyTexture(pIrdEnv); pIrdEnv = NULL; }
@@ -405,8 +350,7 @@ void vVessel::InsertMesh(UINT idx)
 	VECTOR3 ofs=_V(0,0,0);
 
 	UINT i;
-	// LPD3DXMATRIX pT = NULL;   -- declared and never used. Finding 35's
-	// family; commented out in place so the reference's line stays visible.
+	// LPD3DXMATRIX pT = NULL;   -- declared and never used.
 
 	if (idx >= nmesh) { // append a new entry to the list
 		MESHREC *tmp = new MESHREC[idx+1];
@@ -437,8 +381,8 @@ void vVessel::InsertMesh(UINT idx)
 		meshlist[idx].mesh = new VulkanMesh(hMesh, *mesh);								// Create new Instance from an existing mesh template
 		meshlist[idx].mesh->SetClass(vClass);
 		meshlist[idx].mesh->SetName(idx);
-	// The assignment is deliberate and the parentheses say so -- finding 26's
-	// family, and -Wparentheses reports it where MSVC's C4706 is off.
+	// The assignment is deliberate and the parentheses say so; -Wparentheses
+	// reports it where MSVC's C4706 is off by default.
 	} else if ((hMesh = vessel->CopyMeshFromTemplate (idx)) != NULL) {	
 		meshlist[idx].mesh = new VulkanMesh(hMesh);										// Create new mesh
 		meshlist[idx].mesh->SetClass(vClass);
@@ -658,17 +602,9 @@ void vVessel::UpdateAnimations (int mshidx)
 
 // ============================================================================================
 //
-// The four functions below are the same three lines four times, and all three
-// were D3DX. Written out once here rather than four times:
-//
-//   D3DXVec3TransformCoord(&bc, ptr(D3DXVECTOR3f4(BBox.bs)), &mWorld)
-//       -> bc = oapi::TransformCoord(FVECTOR3f4(BBox.bs), mWorld)
-//   D3DXVec3Dot(&a, &b)    -> dot(a, b)
-//   D3DXVec3Length(&a)     -> length(a)
-//
-// The SDK's forms take and return VALUES where D3DX took addresses, so the
-// ptr() temporaries -- which existed only to give D3DX an address for a
-// prvalue -- have nothing left to do and go with them.
+// The four functions below are the same three D3DX lines four times. The SDK's
+// forms take and return values where D3DX took addresses, so the ptr()
+// temporaries go with them.
 
 bool vVessel::IsInsideShadows()
 {
@@ -777,10 +713,8 @@ bool vVessel::Render(VulkanDevice *dev, bool internalpass)
 	float s = float(shd->size);
 	float sr = 2.0f * shd->rad / s;
 
-	// HR() wrapped an HRESULT on Windows; the effect's setters return bool
-	// here, so the wrapper goes and the value is tested where it matters. The
-	// setters already log their own failures by parameter name -- see
-	// VulkanEffect.cpp -- which is more than HR() reported.
+	// HR() wrapped an HRESULT; these setters return bool and already log their
+	// own failures by parameter name, which is more than HR() reported.
 	VulkanEffect::FX->SetBool(VulkanEffect::eEnvMapEnable, false);
 	VulkanEffect::FX->SetMatrix(VulkanEffect::eLVP, &shd->mViewProj);
 
@@ -812,8 +746,7 @@ bool vVessel::Render(VulkanDevice *dev, bool internalpass)
 
 
 
-	// Why the virtual cockpit is or is not drawn. Reported for the first few
-	// internal passes only. Diagnostic only; env-gated.
+	// Diagnostic: why the virtual cockpit is or is not drawn.
 	static const bool bTraceVC = (getenv("ORBITER_VK_TRACE_VC") != NULL);
 	if (internalpass && bTraceVC) {
 		static int nRep = 0;
@@ -865,10 +798,9 @@ bool vVessel::Render(VulkanDevice *dev, bool internalpass)
 		const FMATRIX4 *pWT;
 
 		// transform mesh
-		// D3DXMatrixMultiply RETURNED its output pointer, which this line used
-		// as the value of the assignment. VMAT_MatrixMultiply returns void --
-		// it builds into a local and assigns at the end, which is what makes
-		// aliasing safe -- so the address is taken separately.
+		// D3DXMatrixMultiply returned its output pointer, which this line used
+		// as the value of the assignment. VMAT_MatrixMultiply returns void, so
+		// the address is taken separately.
 		if (meshlist[i].trans) { VMAT_MatrixMultiply(&mWT, meshlist[i].trans, &mWorld); pWT = &mWT; }
 		else pWT = &mWorld;
 
@@ -890,9 +822,6 @@ bool vVessel::Render(VulkanDevice *dev, bool internalpass)
 		}
 
 		const FMATRIX4 *pVP = scn->GetProjectionViewMatrix();
-		// The cast is gone rather than renamed: shd->mViewProj is already an
-		// FMATRIX4, and (const LPD3DXMATRIX) only ever cast away the const on
-		// a four-by-four of floats.
 		const FMATRIX4 *pLVP = &shd->mViewProj;
 
 		// Render vessel meshes --------------------------------------------------------------------------
@@ -926,9 +855,8 @@ bool vVessel::Render(VulkanDevice *dev, bool internalpass)
 		if (DebugControls::IsActive()) {
 			if (flags&DBG_FLAGS_SELVISONLY && this != DebugControls::GetVisual()) return true;
 			if (flags&DBG_FLAGS_BOXES && !internalpass) {
-				// D3DXMatrixIdentity RETURNED the matrix it filled, so the
-				// call sat inside the argument list. VMAT_Identity returns
-				// void, so it is hoisted out -- same treatment as VBase.cpp's.
+				// D3DXMatrixIdentity returned the matrix it filled, so the call
+				// sat inside the argument list; VMAT_Identity returns void.
 				FMATRIX4 id;
 				VMAT_Identity(&id);
 				FVECTOR4 boxclr(1.0f, 0.0f, 0.0f, 0.75f);
@@ -1093,7 +1021,7 @@ void vVessel::RenderBeacons(VulkanDevice *dev)
 	DWORD idx = 0;
 	const BEACONLIGHTSPEC *bls = vessel->GetBeacon(idx);
 	if (!bls) return; // nothing to do
-	// bool need_setup = true;   -- set and never read. Finding 35's family.
+	// bool need_setup = true;   -- set and never read.
 	double simt = oapiGetSimTime();
 
 	for (;bls; bls = vessel->GetBeacon(++idx)) {
@@ -1181,11 +1109,10 @@ void vVessel::RenderGroundShadow(VulkanDevice *dev, OBJHANDLE hPlanet, float alp
 	if (arg <= 0.0) return;                 // shadow doesn't intersect with planet surface
 	// double a = -fac1 - sqrt(arg);   and   VECTOR3 shp = sdv*a;
 	//
-	// The projection point is dead: the ONLY line that read shp is the
+	// The projection point is dead: the only line that read shp is the
 	// commented `//double nr0 = dotp(hn, shp);` five lines below, replaced by
-	// `nr0 = float(-alt)`. So `a` fed shp and shp fed nothing. The `arg` guard
-	// above stays -- it is a real early-out, not part of the dead chain.
-	// Finding 35's family; both left in place so the reference still reads.
+	// `nr0 = float(-alt)`. The `arg` guard above stays -- it is a real
+	// early-out, not part of the dead chain.
 
 	MATRIX3 vR;
 	vessel->GetRotationMatrix(vR);
@@ -1203,11 +1130,10 @@ void vVessel::RenderGroundShadow(VulkanDevice *dev, OBJHANDLE hPlanet, float alp
 	
 	// build shadow projection matrix
 	//
-	// The _11 .. _44 spellings exist only under #ifdef _WIN32 in DrawAPI.h --
+	// The _11 .. _44 spellings exist only under #ifdef _WIN32 in DrawAPI.h:
 	// GCC rejects a member with a user-declared constructor inside an
 	// anonymous aggregate, so the union that provides them is Windows-only.
-	// m11 .. m44 are the same sixteen floats in the same order and are always
-	// available. Same substitution as VBase.cpp's mProj._11.
+	// m11 .. m44 are the same sixteen floats in the same order.
 	FMATRIX4 mProj, mProjWorld, mProjWorldShift;
 
 	mProj.m11 = 1.0f - (float)(sdvs.x*hn.x);
@@ -1286,16 +1212,12 @@ bool vVessel::RenderENVMap(VulkanDevice *pDev, DWORD cnt, DWORD flags)
 	// Create a main EnvMap with mipmap chain for blurred maps --------------------------------------------------------------------
 	//
 	if (pEnv[ENVMAP_MAIN] == NULL) {
-		// GetDesc() asked the runtime what the surface is. A VkImage answers
-		// no such question, so the client's own record is read instead --
-		// which is what it was created with. See VulkanTypes.h.
 		const VulkanImageDesc &desc = pEnvDS->Desc();
-		// D3DXCreateCubeTexture(pDev, size, 5, D3DUSAGE_RENDERTARGET,
-		//                       D3DFMT_X8R8G8B8, D3DPOOL_DEFAULT, &pEnv[..]).
-		// The pool is gone (device-local is implied by the usage), the "X8"
-		// distinction is gone with the format, and TRANSFER_SRC is added
-		// because Scene::RenderBlurredMap blits down the mip chain -- which
-		// is what D3D9 would have done for free through the driver.
+		// Was D3DXCreateCubeTexture(pDev, size, 5, D3DUSAGE_RENDERTARGET,
+		// D3DFMT_X8R8G8B8, D3DPOOL_DEFAULT). The pool is implied by the usage
+		// and the "X8" distinction goes with the format; TRANSFER_SRC is added
+		// because Scene::RenderBlurredMap blits down the mip chain, which D3D9
+		// got for free through the driver.
 		pEnv[ENVMAP_MAIN] = pDev->CreateTextureCube(desc.Width, 5, VK_FORMAT_B8G8R8A8_UNORM,
 			VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
 			VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
@@ -1314,8 +1236,7 @@ bool vVessel::RenderENVMap(VulkanDevice *pDev, DWORD cnt, DWORD flags)
 		return true;
 	}
 
-	// double tot_env = D3D9GetTime();  -- set and never read. Finding 35's
-	// family; the rename would have been VulkanGetTime().
+	// double tot_env = D3D9GetTime();  -- set and never read.
 
 
 
@@ -1332,7 +1253,7 @@ bool vVessel::RenderENVMap(VulkanDevice *pDev, DWORD cnt, DWORD flags)
 	if ((eCam->flags&ENVCAM_FOCUS) == 0) RndList.erase(this);
 
 	DWORD nAtc = vessel->AttachmentCount(false);
-	// DWORD nDoc = vessel->DockCount();   -- never read. Finding 35.
+	// DWORD nDoc = vessel->DockCount();   -- never read.
 
 	if (eCam->flags & ENVCAM_OMIT_ATTC) {
 		for (DWORD i=0;i<nAtc;i++) {
@@ -1380,38 +1301,25 @@ bool vVessel::RenderENVMap(VulkanDevice *pDev, DWORD cnt, DWORD flags)
 	FVECTOR3 dir, up;
 	VulkanTexture *pSrf = NULL;
 
-	// THE FACE VIEWS OUTLIVE THE LOOP, and this is finding 45's rule again:
-	// "every SAFE_RELEASE after a hand-off has to be read as 'whose reference
-	// was that', not translated."
-	//
-	// The reference destroys each face surface at the bottom of the loop.
-	// That is safe on Windows because a surface bound as the render target is
-	// held by the device's own COM reference, so the caller's release just
-	// drops its own. Vulkan reference counts nothing: destroying the view
-	// while it is still the offscreen pass's attachment is a use-after-free,
-	// and the framebuffer cache in VulkanFrame.cpp is keyed on view handles,
-	// so it hands the next caller a VkFramebuffer built on a dead one.
-	//
-	// It showed up as the last validation error standing:
-	//
-	//     VUID-vkCmdEndRenderPass-commandBuffer-recording
-	//     ... is now in an invalid state (instead of recording state) because
-	//     the following objects bound to the command buffer were invalidated
-	//     VkImageView ... was destroyed
-	//
-	// and as a segfault inside the driver at PopRenderTargets. So the views
-	// are kept until the pass that uses them has ended, and destroyed
-	// together below -- the same six destructions, moved past the pop.
+	// The face views have to outlive the loop. The reference destroys each face
+	// surface at the bottom of it, which is safe on Windows because a surface
+	// bound as the render target is held by the device's own COM reference.
+	// Vulkan reference counts nothing: destroying the view while it is still
+	// the offscreen pass's attachment is a use-after-free, and the framebuffer
+	// cache in VulkanFrame.cpp is keyed on view handles, so it hands the next
+	// caller a VkFramebuffer built on a dead one. It showed up as
+	// VUID-vkCmdEndRenderPass-commandBuffer-recording ("VkImageView ... was
+	// destroyed") and as a segfault inside the driver at PopRenderTargets. The
+	// same six destructions happen below, after the pass has ended.
 	VulkanTexture *pFaceView[6] = {};
 	int nFaceView = 0;
 
 
 	for (DWORD i=0;i<cnt;i++) {
 
-		// GetCubeMapSurface(D3DCUBEMAP_FACES(eFace), 0, &pSrf) -> a view of
-		// array layer eFace. The face NUMBERING is unchanged: D3D9's
-		// POSITIVE_X..NEGATIVE_Z are 0..5 and so is Vulkan's cube layer order,
-		// which is why EnvMapDirection's switch needs no renumbering either.
+		// GetCubeMapSurface(face, 0) becomes a view of array layer eFace. The
+		// face numbering is unchanged -- POSITIVE_X..NEGATIVE_Z are 0..5 and so
+		// is Vulkan's layer order -- so EnvMapDirection needs no renumbering.
 		pSrf = pDev->CreateFaceView(pEnv[ENVMAP_MAIN], (uint32_t)eFace, 0);
 		if (!pSrf) break;
 
@@ -1419,10 +1327,8 @@ bool vVessel::RenderENVMap(VulkanDevice *pDev, DWORD cnt, DWORD flags)
 
 		EnvMapDirection(eFace, &dir, &up);
 
-		// The three D3DX vector calls become the SDK's own, which return
-		// values rather than filling out-parameters. D3DXMatrixIdentity is
-		// dropped rather than translated: VMAT_FromAxis assigns all sixteen
-		// elements, so clearing them first was already dead work.
+		// D3DXMatrixIdentity is dropped rather than translated: VMAT_FromAxis
+		// assigns all sixteen elements, so clearing them first was dead work.
 		FVECTOR3 cp = normalize(cross(up, dir));
 		VMAT_FromAxis(&mEnv, &cp, &up, &dir);
 
@@ -1430,11 +1336,9 @@ bool vVessel::RenderENVMap(VulkanDevice *pDev, DWORD cnt, DWORD flags)
 		scn->SetupInternalCamera(&mEnv, NULL, 0.7853981634, 1.0);
 		scn->RenderSecondaryScene(RndList, AddLightSrc, flags);
 
-		// Was SAFE_RELEASE here. A face view owns its VkImageView and not the
-		// image, and nothing reference counts it -- but it is STILL THE
-		// ATTACHMENT of the pass that is open right now, so it cannot be
-		// destroyed until after PopRenderTargets(). Held instead; see the note
-		// at pFaceView above.
+		// Was SAFE_RELEASE here. The view is still the attachment of the pass
+		// that is open right now, so it cannot be destroyed until after
+		// PopRenderTargets().
 		if (nFaceView < 6) pFaceView[nFaceView++] = pSrf;
 		pSrf = NULL;
 
@@ -1444,9 +1348,7 @@ bool vVessel::RenderENVMap(VulkanDevice *pDev, DWORD cnt, DWORD flags)
 
 	gc->PopRenderTargets();
 
-	// The pass is closed, so the attachments it referenced can go. Six
-	// destructions per vessel per probe, exactly as the reference does -- only
-	// after the pass rather than inside it.
+	// The pass is closed, so the attachments it referenced can go.
 	for (int f = 0; f < nFaceView; f++) pDev->DestroyTexture(pFaceView[f]);
 
 	scn->PopPass();
@@ -1473,9 +1375,9 @@ bool vVessel::ProbeIrradiance(VulkanDevice *pDev, DWORD cnt, DWORD flags)
 	//
 	if (pIrdEnv == NULL) 
 	{
-		// See RenderENVMap above for the same three substitutions.
-		// D3DFMT_A16B16G16R16F is VK_FORMAT_R16G16B16A16_SFLOAT -- note the
-		// reversed component order in the two NAMES; both are RGBA in memory.
+		// Same substitutions as RenderENVMap above. D3DFMT_A16B16G16R16F is
+		// VK_FORMAT_R16G16B16A16_SFLOAT -- the component order reverses in the
+		// two names only; both are RGBA in memory.
 		const VulkanImageDesc &desc = pIrDS->Desc();
 		pIrdEnv = pDev->CreateTextureCube(desc.Width, 1, VK_FORMAT_R16G16B16A16_SFLOAT,
 			VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
@@ -1484,9 +1386,6 @@ bool vVessel::ProbeIrradiance(VulkanDevice *pDev, DWORD cnt, DWORD flags)
 			LogErr("Failed to create env cubemap for visual %s", _PTR(this));
 			return true;
 		}
-		// D3DXCreateTexture(pDev, 128, 64, 1, D3DUSAGE_RENDERTARGET, ...) --
-		// an ordinary 2D image, so CreateTexture and not the cube form. It is
-		// what Scene::IntegrateIrradiance writes the cube down into.
 		pIrrad = pDev->CreateTexture(128, 64, 1, VK_FORMAT_R16G16B16A16_SFLOAT,
 			VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
 		if (pIrrad == NULL) {
@@ -1514,13 +1413,10 @@ bool vVessel::ProbeIrradiance(VulkanDevice *pDev, DWORD cnt, DWORD flags)
 	RndList.erase(this);
 	AddLightSrc.insert(this);
 
-	// ENVCAMREC *eCam = pMatMgr->GetCamera(0);  and
-	// DWORD nDoc = vessel->DockCount();
-	//
-	// Neither is read in this function -- RenderENVMap above reads eCam's
-	// flags, ProbeIrradiance never does. The CALL is kept because
-	// MatMgr::GetCamera creates the record on first ask, and dropping it here
-	// would change when that happens. Two more of finding 35.
+	// ENVCAMREC *eCam = pMatMgr->GetCamera(0);  and  DWORD nDoc =
+	// vessel->DockCount(); -- neither is read here. The call is kept because
+	// MatMgr::GetCamera creates the record on first ask, and dropping it would
+	// change when that happens.
 	(void)pMatMgr->GetCamera(0);
 
 	DWORD nAtc = vessel->AttachmentCount(false);
@@ -1554,11 +1450,9 @@ bool vVessel::ProbeIrradiance(VulkanDevice *pDev, DWORD cnt, DWORD flags)
 	FVECTOR3 dir, up;
 	VulkanTexture *pSrf = NULL;
 
-	// THE SAME LIFETIME RULE AS RenderENVMap ABOVE, and this is the second
-	// site of it. A face view destroyed inside the loop is still the open
-	// offscreen pass's attachment; the reference's SAFE_RELEASE is safe on
-	// Windows only because the device holds its own COM reference on a bound
-	// render target. Held here and destroyed after PopRenderTargets().
+	// The same lifetime rule as RenderENVMap above: a face view destroyed
+	// inside the loop is still the open pass's attachment. Held here and
+	// destroyed after PopRenderTargets().
 	VulkanTexture *pFaceView[6] = {};
 	int nFaceView = 0;
 
@@ -1612,9 +1506,8 @@ void vVessel::RenderLightCone(FMATRIX4 *pWT)
 
 	if (!em) return;
 
-	// U held GetUmbra() and is never read -- only the PENUMBRA cone is drawn.
-	// The query goes with the variable rather than being kept to be discarded.
-	// Finding 35's family.
+	// U held GetUmbra() and was never read -- only the penumbra cone is drawn
+	// -- so the query goes with the variable.
 	float P = 0.0f, R = 0.0f;
 
 	if (em->GetType() == LightEmitter::LT_SPOT) {
@@ -1630,8 +1523,6 @@ void vVessel::RenderLightCone(FMATRIX4 *pWT)
 	VECTOR3 _D = em->GetDirection();
 
 	if (em->GetType() == LightEmitter::LT_SPOT) {
-		// D3DXVEC(VECTOR3) -> FVEC(VECTOR3), the same narrowing to three
-		// floats under the name that says what it does.
 		FVECTOR3 Main[2];
 		Main[0] = FVEC(_P);
 		Main[1] = FVEC(_P + _D * R);
@@ -1663,9 +1554,8 @@ void vVessel::RenderLightCone(FMATRIX4 *pWT)
 
 // ============================================================================================
 //
-// Was LPDIRECT3DCUBETEXTURE9. See VVessel.h: Vulkan has no cube-map type, so
-// the return type is the same VulkanTexture* every other image is, and "is it
-// a cube" is a property of how it was created.
+// Was LPDIRECT3DCUBETEXTURE9: there is no cube-map type here, and "is it a
+// cube" is a property of how the image was created.
 VulkanTexture *vVessel::GetEnvMap(int idx)
 {
 	if (idx>=0 && idx<4) return pEnv[idx];
@@ -1951,9 +1841,9 @@ void vVessel::RenderReentry(VulkanDevice *dev)
 	normalise(d);
 
 	float x = float(dotp(d, unit(cpos)));
-	// Two statements on one line, the second NOT guarded by the `if`. Braced
-	// so that is visible: -Wmisleading-indentation reports the shape and MSVC
-	// does not. No behaviour change -- pow() ran unconditionally before too.
+	// Two statements on one line, the second not guarded by the `if`. Braced so
+	// that is visible: -Wmisleading-indentation reports the shape and MSVC does
+	// not. pow() ran unconditionally before too.
 	if (x<0) { x=-x; }
 	x=pow(x,0.3f);
 
@@ -1976,7 +1866,7 @@ bool vVessel::GetMinMaxDistance(float *zmin, float *zmax, float *dmin)
 {
 	if (bBSRecompute) UpdateBoundingBox();
 
-	// mTF stood here too, declared and never used. Finding 35's family.
+	// mTF stood here too, declared and never used.
 	FMATRIX4 mWorldView, mWorldViewTrans;
 
 	WORD vismode = MESHVIS_EXTERNAL | MESHVIS_EXTPASS;
@@ -1991,8 +1881,8 @@ bool vVessel::GetMinMaxDistance(float *zmin, float *zmax, float *dmin)
 		if (meshlist[i].vismode&vismode && meshlist[i].mesh) {
 			if (meshlist[i].trans) {
 				VMAT_MatrixMultiply(&mWorldViewTrans, meshlist[i].trans, &mWorldView);
-				// D9ComputeMinMaxDistance LOST ITS DEVICE ARGUMENT: it never
-				// mentioned pDev at all, on either platform. See AABBUtil.h.
+				// D9ComputeMinMaxDistance lost its device argument: its body
+				// never mentioned the device, on either platform.
 				D9ComputeMinMaxDistance(meshlist[i].mesh->GetAABB(), &mWorldViewTrans, &Field, zmin, zmax, dmin);
 			}
 			else {
@@ -2020,7 +1910,7 @@ void vVessel::UpdateBoundingBox()
 
 	for (DWORD i=0;i<nmesh;i++) {
 
-		// D3DXVECTOR3 q,w;   -- declared and never used. Finding 35's family.
+		// D3DXVECTOR3 q,w;   -- declared and never used.
 		if (meshlist[i].mesh==NULL) continue;
 
 		if (meshlist[i].vismode&vismode) {
@@ -2075,7 +1965,6 @@ VulkanPick vVessel::Pick(const FVECTOR3 *vDir)
 	// D3DXMATRIX mWT; LPD3DXMATRIX pWT = NULL;   -- neither is used; the loop
 	// below passes &mWorld and meshlist[i].trans straight to Mesh::Pick. And
 	// `flags` and `displ` are read from the config and never looked at.
-	// Four more of finding 35's family.
 	// DWORD flags = *(DWORD*)gc->GetConfigParam(CFGPRM_GETDEBUGFLAGS);
 	// DWORD displ = *(DWORD*)gc->GetConfigParam(CFGPRM_GETDISPLAYMODE);
 
@@ -2130,10 +2019,7 @@ int vVessel::GetMatrixTransform(gcCore::MatrixId func, DWORD mi, DWORD gi, FMATR
 	if (gi >= pMesh->GetGroupCount()) return -3;
 
 	// The copies were FMATRIX4-sized from a D3DXMATRIX-sized source, which
-	// agreed only because both are sixteen floats. Both sides are FMATRIX4
-	// now, so the source size says so too. memcpy_s is kept rather than turned
-	// into an assignment: pMat is a caller's buffer of stated size, which is
-	// exactly what the bounded form is for.
+	// agreed only because both are sixteen floats.
 	if (func == gcCore::MatrixId::MESH)	memcpy_s(pMat, sizeof(FMATRIX4), ptr(pMesh->GetTransform(-1, false)), sizeof(FMATRIX4));
 	if (func == gcCore::MatrixId::GROUP) memcpy_s(pMat, sizeof(FMATRIX4), ptr(pMesh->GetTransform(gi, false)), sizeof(FMATRIX4));
 
@@ -2174,10 +2060,6 @@ int vVessel::SetMatrixTransform(gcCore::MatrixId func, DWORD mi, DWORD gi, const
 		memcpy_s(meshlist[mi].trans, sizeof(FMATRIX4), pMat, sizeof(FMATRIX4));
 	}
 
-	// The (LPD3DXMATRIX) casts are gone rather than renamed, and they were
-	// doing two things at once: reinterpreting the type AND casting away the
-	// const. VulkanMesh::SetTransform takes a const FMATRIX4*, so neither is
-	// needed any more.
 	if (func == gcCore::MatrixId::MESH) if (!pMesh->SetTransform(-1, pMat)) return -4;
 	if (func == gcCore::MatrixId::GROUP) if (!pMesh->SetTransform(gi, pMat)) return -5;
 
@@ -2206,10 +2088,9 @@ SurfNative * vVessel::defexhausttex = 0;
 // Nonmember helper functions
 
 // These two are oapi::TransformCoord and oapi::TransformNormal written out in
-// DOUBLE precision, which is why they are kept rather than replaced by the SDK
+// double precision, which is why they are kept rather than replaced by the SDK
 // pair: the animation database stores VECTOR3, and rounding every animated
-// vertex through float would accumulate over a session. Only the element names
-// change -- _11 .. _44 to m11 .. m44, the same sixteen floats.
+// vertex through float would accumulate over a session.
 void TransformPoint (VECTOR3 &p, const FMATRIX4 &T)
 {
 	double x = p.x*T.m11 + p.y*T.m21 + p.z*T.m31 + T.m41;
@@ -2243,8 +2124,7 @@ void TransformDirection (VECTOR3 &a, const FMATRIX4 &T, bool normalise)
 #define ARRAY_ELEMS(a) (sizeof(a) / sizeof((a)[0]))
 
 // Was `static inline const int clip(...)`. A top-level const on a returned
-// prvalue means nothing and -Wignored-qualifiers says so; the value is
-// unaffected. Finding 12's family.
+// prvalue means nothing and -Wignored-qualifiers says so.
 static inline int clip(int v, int vMin, int vMax)
 {
 	if      (v < vMin) return vMin;

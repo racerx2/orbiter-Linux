@@ -3,52 +3,18 @@
 // licensed under LGPL v2
 // ===================================================
 //
-// CONVERTED FROM OVP/D3D9Client/D3D9Pad.h, read end to end (891 lines).
+// Two things worth naming here:
 //
-// WHAT THIS FILE IS. The Sketchpad is Orbiter's 2D drawing interface -- MFDs,
-// the HUD, panel instruments and every gcAPI overlay go through it. The
-// Windows implementation is not a GDI wrapper: it builds a vertex queue and
-// draws it with one shader, which is why almost all of it converts unchanged.
-// The drawing ALGORITHMS -- the polygon index builder, the wide-line vertex
-// expansion, the text wrapper -- are arithmetic and are carried over verbatim.
+//   LPDIRECT3DSURFACE9 and LPDIRECT3DTEXTURE9 both become VulkanTexture*,
+//   because a VkImage is both; LPDIRECT3DVERTEXBUFFER9 and
+//   LPDIRECT3DINDEXBUFFER9 both become VulkanBuffer*, for the same reason.
 //
-// WHAT CHANGED, and it is only ever one of four things:
-//
-//   1. D3DX MATH TYPES BECOME THE SDK'S OWN. D3DXMATRIX -> FMATRIX4,
-//      D3DXVECTOR2/3/4 -> FVECTOR2/3/4, D3DXCOLOR -> FVECTOR4. These are not
-//      substitutes: Orbitersdk/include/DrawAPI.h defines FMATRIX4 and
-//      FVECTOR4 with the same element order and the same 16-byte alignment,
-//      the Sketchpad interface this class implements ALREADY takes and
-//      returns them, and D3D9Pad was converting back and forth at its own API
-//      boundary. Dropping D3DX removes the conversion, not a capability.
-//      D3DXCOLORSWAP becomes COLORSWAP, which VulkanUtil.h defines with the
-//      same body.
-//
-//   2. RESOURCE HANDLES BECOME THE CLIENT'S OWN TYPES.
-//      LPDIRECT3DSURFACE9 and LPDIRECT3DTEXTURE9 both become VulkanTexture*,
-//      because a VkImage is both; LPDIRECT3DVERTEXBUFFER9 and
-//      LPDIRECT3DINDEXBUFFER9 both become VulkanBuffer*, for the same reason;
-//      LPDIRECT3DDEVICE9 becomes VulkanDevice*.
-//
-//   3. THE EFFECT HANDLES SPLIT IN TWO. ID3DXEffect becomes VulkanEffectFile,
-//      and of the thirty D3DXHANDLEs below, the TWO that name techniques
-//      (eDrawMesh, eSketch) become TECHHANDLE and the twenty-eight that name
-//      parameters stay HANDLE. See VulkanEffect.h: this split is what makes
-//      "select a pipeline" and "write a uniform" different types, so the bug
-//      D3D9Util.cpp had -- a pixel-shader handle written through the vertex
-//      shader's table -- cannot be spelled.
-//
-//   4. RenderState IS GONE. `RenderState *pRState` was saved and restored
-//      around BeginDrawing/EndDrawing so the pad could leave the device as it
-//      found it. Two reasons it does not convert: Vulkan has no device render
-//      state to save -- what D3D9 set with SetRenderState is immutable
-//      pipeline state, chosen when the pipeline is built -- and the class was
-//      ALREADY INERT ON WINDOWS, because D3D9Frame.cpp creates the device
-//      with D3DCREATE_PUREDEVICE unconditionally and a pure device fails
-//      GetRenderState.
-//
-// D3D9Text is not converted yet; VulkanText is forward-declared here exactly
-// as the shared_ptr needs, and D3D9TextMgr.h -> VulkanTextMgr.h will define it.
+//   `RenderState *pRState` is gone. It was saved and restored around
+//   BeginDrawing/EndDrawing so the pad could leave the device as it found it.
+//   Vulkan has no device render state to save -- what D3D9 set with
+//   SetRenderState is immutable pipeline state -- and the class was already
+//   inert on Windows, because D3D9Frame.cpp creates the device with
+//   D3DCREATE_PUREDEVICE and a pure device fails GetRenderState.
 // ===================================================
 
 #ifndef __VULKANPAD_H
@@ -87,18 +53,10 @@ extern oapi::Pen  *defpen;
 
 #define SKETCHPAD_NONE		0x0000
 #define SKETCHPAD_GDI		0x0001
-// Was SKETCHPAD_DIRECTX. The value is unchanged and so is its meaning -- "the
-// hardware-accelerated pad, not the GDI one" -- but the name said which API,
-// and it is not that API any more.
-#define SKETCHPAD_VULKAN	0x0002
+#define SKETCHPAD_VULKAN	0x0002		// was SKETCHPAD_DIRECTX, same value
 
 // ===============================================================================================
 // Feature Switches			//AARRGGBB
-//
-// These are packed into SkpVtx::fnc and decoded by the shader, one byte per
-// question. They are numbers in a vertex, not D3D9 state, so they convert
-// unchanged -- and the GLSL translation of Sketchpad.fx reads the same bytes
-// out of the same positions.
 //
 // Color source:
 #define SKPSW_FRAGMENT		0x00000000	// Index 2
@@ -141,14 +99,10 @@ struct SkpColor {
 		fclr = FVECTOR4(0, 0, 0, 0);
 	}
 
-	// Was D3DXCOLOR(c), which unpacks 0xAARRGGBB into four floats, followed by
-	// D3DXCOLORSWAP. The unpack is written out, and the reason is a TRAP
-	// worth stating: FVECTOR4 *does* have a DWORD constructor, and it reads
-	// the DWORD as 0xAABBGGRR -- ABGR, not ARGB (DrawAPI.h:424). Writing
-	// `fclr = FVECTOR4(c)` here would compile, look like a simplification,
-	// and silently exchange red and blue. The byte positions below are
-	// D3DXCOLOR's own. See FCOLOR_ARGB in VulkanUtil.h, which is this same
-	// unpack with a name.
+	// Was D3DXCOLOR(c), which unpacks 0xAARRGGBB. Written out because FVECTOR4
+	// also has a DWORD constructor and it reads the DWORD as 0xAABBGGRR --
+	// ABGR, not ARGB. `fclr = FVECTOR4(c)` would compile, look like a
+	// simplification, and silently exchange red and blue.
 	explicit SkpColor (DWORD c) {
 		dclr = c;
 		fclr.a = float((c >> 24) & 0xFF) / 255.0f;
@@ -170,9 +124,8 @@ struct SkpColor {
 
 
 
-// The sketchpad vertex. 36 bytes, and the number matters: it is the stride
-// VulkanUtil.cpp's VDECL(SketchpadDecl, 36) declares and the layout
-// SketchpadDecl's five attributes describe.
+// The sketchpad vertex. 36 bytes is the stride VulkanUtil.cpp's
+// VDECL(SketchpadDecl, 36) declares.
 struct SkpVtx {
 
 	SkpVtx() {
@@ -262,19 +215,15 @@ template <typename Type> int CreatePolyIndexList(const Type *pt, short npt, WORD
 
 
 // ===============================================================================================
-// The three little vector helpers the wide-line code uses.
+// The three vector helpers the wide-line code uses. _FV2 was _DXV2; the other
+// two name operations the Windows code spells with operators on D3DXVECTOR2 --
+// `pt[0] * 2.0 - pt[1]` and `D3DXVec2Length(ptr(np - pp))` -- which FVECTOR2
+// cannot spell the same way, its operator* against a double literal being
+// ambiguous under ISO rules where D3DXVECTOR2's was not. Same arithmetic.
 //
-// _FV2 was _DXV2, producing a D3DXVECTOR2 from either point type. The other
-// two name operations the Windows code spells with operators on
-// D3DXVECTOR2 -- `pt[0] * 2.0 - pt[1]` and `D3DXVec2Length(ptr(np - pp))` --
-// and which FVECTOR2 cannot spell the same way: its operator* against a
-// double literal is ambiguous under ISO rules where D3DXVECTOR2's was not.
-// Same arithmetic, per component, named rather than punctuated.
-//
-// They live in the header because BOTH VulkanPad.cpp's AppendLineVertexList
-// and VulkanPad2.cpp's VulkanPolyLine::Update need them, and duplicating an
-// extrapolation is how two line renderers end up disagreeing about their end
-// caps.
+// In the header because both VulkanPad.cpp's AppendLineVertexList and
+// VulkanPad2.cpp's VulkanPolyLine::Update need them, and duplicating an
+// extrapolation is how two line renderers end up disagreeing about end caps.
 // ===============================================================================================
 
 inline FVECTOR2 _FV2(const IVECTOR2 &pt)
@@ -345,9 +294,6 @@ public:
 	 * \brief Set up global parameters shared by all instances
 	 * \param gc client instance pointer
 	 * \param pDev Vulkan device instance pointer
-	 * \note Was D3D9TechInit(D3D9Client*, LPDIRECT3DDEVICE9). The 'folder'
-	 *   parameter the doc comment described was already gone from the
-	 *   signature in the Windows file.
 	 */
 	static void VulkanTechInit(VulkanClient *gc, VulkanDevice *pDev);
 	static void SinCos(int n, int i);
@@ -681,11 +627,9 @@ public:
 	bool IsStillDrawing() const { return bBeginDraw; }
 	void LoadDefaults();
 
-	// Were LPDIRECT3DTEXTURE9 while the two above were LPDIRECT3DSURFACE9,
-	// and the pair of names -- Rect and RectNative -- existed because of that
-	// split: the plain ones took a SURFHANDLE and the Native ones the texture
-	// underneath it. The texture/surface split is gone, but the SURFHANDLE /
-	// raw-resource split is not, and that is what the names now mark.
+	// The Rect / RectNative pair existed because of the D3D9 texture/surface
+	// split. That split is gone, but the SURFHANDLE / raw-resource one is not,
+	// and that is what the names now mark.
 	void CopyRectNative(VulkanTexture *pSrc, const LPRECT s, int tx, int ty);
 	void StretchRectNative(VulkanTexture *pSrc, const RECT *s, const RECT *t);
 
@@ -743,18 +687,14 @@ private:
 	SkpView			 vmode;
 	Topo			 tCurrent;
 
-	// RenderState *pRState stood here, saved in BeginDrawing and restored in
-	// EndDrawing. See the file header for the two reasons it does not convert
-	// -- and note the second one: it was already inert on Windows.
+	// RenderState *pRState stood here; see the file header.
 
 	WORD vI = 0, iI = 0;
 public:
 	/// \brief Vertices this pad has actually flushed since BeginDrawing.
-	///        Diagnostic only, and public so clbkReleaseSketchpad can report
-	///        it: it is what separates "the core drew nothing into this
-	///        surface" from "it drew and the result was lost". No D3D9
-	///        counterpart -- there was nothing to be uncertain about, because
-	///        a D3D9 draw went straight at the bound render target.
+	///        Public so clbkReleaseSketchpad can report it: it separates "the
+	///        core drew nothing into this surface" from "it drew and the
+	///        result was lost".
 	UINT nFlushedVtx = 0;
 private:
 	mutable FMATRIX4 mVP;
@@ -807,8 +747,6 @@ private:
 	static SkpVtx *Vtx;		// List of vertices
 	static VulkanClient *gc;
 	static VulkanDevice *pDev;
-	// Was LPD3DXVECTOR2 pSinCos[5] -- five pointers to arrays of sin/cos
-	// pairs, one per polygon resolution. FVECTOR2 has the same two floats.
 	static FVECTOR2 *pSinCos[5];
 	static VulkanTexture *pNoise;
 	// -------------------------------------------
@@ -818,9 +756,9 @@ private:
 	//
 	static VulkanEffectFile	*FX;
 
-	// TECHHANDLE, not HANDLE: these two select a pipeline. Every handle below
-	// them names a parameter. See VulkanEffect.h for why the two are
-	// different types now.
+	// TECHHANDLE, not HANDLE: these two select a pipeline where every handle
+	// below them names a parameter. Two types so the one cannot be passed
+	// where the other is wanted.
 	static TECHHANDLE	eDrawMesh;
 	static TECHHANDLE	eSketch;
 
@@ -899,12 +837,9 @@ public:
 	 */
 	~VulkanPadFont ();
 
-	// HFONT is Src/Orbiter/Linux/windows.h's own handle type, not a GDI one.
-	// It stays because the font is still identified by a handle here: the
-	// shim's CreateFontA records a face, a height and a weight, and Gdi.cpp
-	// carries them into the recorded display list. What changed is who
-	// rasterises the glyphs -- see VulkanTextMgr, which does it into a
-	// texture atlas rather than asking USER32 for pixels.
+	// HFONT here is the shim's own handle type, not a GDI one: its CreateFontA
+	// records a face, a height and a weight. VulkanTextMgr rasterises the
+	// glyphs into a texture atlas rather than asking USER32 for pixels.
 	HFONT	GetGDIFont () const;
 	DWORD	GetQuality() const { return Quality; }
 	int		GetTextLength(const char *pText, int len) const;
@@ -985,12 +920,9 @@ class VulkanPolyBase
 {
 	DWORD alloc_id;
 public:
-	// Was alloc_id('POLY') -- a four-character allocation tag. The value is
-	// spelled out because a multi-character literal is IMPLEMENTATION-DEFINED
-	// by the standard: MSVC packs it big-endian, GCC packs it the same way but
-	// warns (-Wmultichar) precisely because nothing requires it to. Writing
-	// the number keeps the tag byte-for-byte identical to the Windows build's
-	// and removes the warning, rather than suppressing it.
+	// Was alloc_id('POLY'). A multi-character literal is
+	// implementation-defined, which is what -Wmultichar warns about; the number
+	// keeps the tag byte-for-byte identical to the Windows build's.
 	static const DWORD ALLOC_ID_POLY = 0x504F4C59;	// 'P','O','L','Y'
 
 					VulkanPolyBase(int _type) : alloc_id(ALLOC_ID_POLY), pOwnerDev(NULL) { type = _type; version = 1; }
@@ -1000,15 +932,12 @@ public:
 
 	/// \brief The primitive topology this object draws with.
 	///
-	///        NEW, AND NOT AN ADDITION TO THE MODEL -- it is a value that
-	///        already existed and had nowhere to live. On Windows each
-	///        subclass passes its own D3DPRIMITIVETYPE to DrawPrimitive at
-	///        draw time: VulkanPolyLine draws a TRIANGLELIST, VulkanTriangle
-	///        draws a LIST, a FAN or a STRIP depending on its style. Vulkan
-	///        bakes the topology into the pipeline, and the pipeline is bound
-	///        by VulkanPad::Flush BEFORE Draw() is reached -- so Flush has to
-	///        be able to ask. Without this the poly objects would all be
-	///        drawn as triangle lists and a fan would come out as garbage.
+	///        On Windows each subclass passed its own D3DPRIMITIVETYPE to
+	///        DrawPrimitive at draw time. Vulkan bakes the topology into the
+	///        pipeline, which VulkanPad::Flush binds before Draw() is reached,
+	///        so Flush has to be able to ask. Without it every poly object
+	///        would be drawn as a triangle list and a fan would come out as
+	///        garbage.
 	virtual VkPrimitiveTopology Topology() const { return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; }
 
 	int version;
@@ -1017,17 +946,13 @@ public:
 protected:
 	/// \brief The device the subclass's buffers were allocated from.
 	///
-	///        NEW, AND NOT AN ADDITION TO THE MODEL -- it is a value the
-	///        Windows code already had and did not have to keep. There
-	///        Release() is SAFE_RELEASE(pVB): a COM reference count, and the
-	///        object never needs to know which device made the buffer.
-	///        Vulkan has no reference counting, and vkDestroyBuffer must be
-	///        given the VkDevice that vkCreateBuffer was called on. Both
-	///        constructors are already handed that device -- D3D9PolyLine's
-	///        and D3D9Triangle's first parameter was LPDIRECT3DDEVICE9 pDev
-	///        -- so they keep it here. The alternative, reaching for
-	///        VulkanPad's static pDev, is both private to VulkanPad and a lie
-	///        about ownership: a poly object outlives any one Sketchpad.
+	///        Windows Release() is SAFE_RELEASE(pVB), a COM reference count,
+	///        and never needs to know which device made the buffer. Vulkan has
+	///        no reference counting, and vkDestroyBuffer must be given the
+	///        VkDevice vkCreateBuffer was called on. Both constructors are
+	///        already handed that device, so they keep it. VulkanPad's static
+	///        pDev would be a lie about ownership -- a poly object outlives any
+	///        one Sketchpad.
 	VulkanDevice *pOwnerDev;
 };
 
@@ -1048,9 +973,6 @@ public:
 private:
 	bool bLoop;
 	WORD nVtx, nPt, nIdx, iI, vI;
-	// Were LPDIRECT3DVERTEXBUFFER9 and LPDIRECT3DINDEXBUFFER9. Vulkan has one
-	// buffer type; which of the two a buffer is comes from the usage flags it
-	// was created with and, at draw time, from which bind call it is given to.
 	VulkanBuffer *pVB; ///< (Local) Vertex buffer pointer
 	VulkanBuffer *pIB;
 };

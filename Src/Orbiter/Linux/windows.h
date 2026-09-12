@@ -1,9 +1,7 @@
 // Linux <windows.h> — the subset Orbiter actually calls.
 //
-// This exists so the launchpad sources (Launchpad.cpp, LpadTab.cpp, Tab*.cpp,
-// OptionsPages.cpp, CustomControls.cpp) compile unmodified on Linux. It is
-// placed first on the include path for non-Windows builds only; the Windows
-// build never sees it and continues to use the real SDK header.
+// This exists so Orbiter's Win32-facing sources compile unmodified on Linux.
+// It is placed first on the include path for non-Windows builds only.
 //
 // Scope is deliberately closed: only declarations the tree references. It is
 // not a general Win32 emulation and is not intended to grow into one. The
@@ -12,7 +10,7 @@
 //
 // Handle types are opaque pointers rather than integers: the implementation
 // stores real C++ objects behind them, and pointer-sized handles keep
-// GetWindowLongPtr/SetWindowLongPtr (40 and 8 call sites) honest on LP64.
+// GetWindowLongPtr/SetWindowLongPtr honest on LP64.
 
 #ifndef ORBITER_LINUX_WINDOWS_H
 #define ORBITER_LINUX_WINDOWS_H
@@ -40,8 +38,7 @@
 #ifdef __cplusplus
 // Config.cpp calls std::find on a std::list and MenuInfoBar.h uses
 // std::unique_ptr. On Windows both arrive transitively through the SDK
-// headers; libstdc++ makes no such guarantee, so they are pulled in here to
-// keep those sources unmodified.
+// headers; libstdc++ makes no such guarantee.
 #include <algorithm>
 #include <memory>
 #define ORB_EXTERN_C extern "C"
@@ -56,9 +53,8 @@
 // ---------------------------------------------------------------------------
 // MSVC C runtime extensions
 //
-// These are Microsoft's underscore-prefixed CRT names, not Win32 API. Sources
-// in this tree call them directly, so they are provided here rather than
-// edited out of the call sites.
+// Microsoft's underscore-prefixed CRT names, not Win32 API. Sources in this
+// tree call them directly.
 // ---------------------------------------------------------------------------
 
 static inline int _strnicmp(const char *a, const char *b, size_t n) {
@@ -76,11 +72,11 @@ static inline int stricmp(const char *a, const char *b) {
     return strcasecmp(a, b);
 }
 
-// _fullpath resolves a relative path to an absolute one. Callers in this tree
-// pass Windows-style paths (meshc passes ".\\"), so separators are translated
-// before resolving; this keeps those call sites unmodified. Unlike realpath,
-// _fullpath does not require the path to exist, so a failed resolve falls back
-// to joining against the working directory rather than returning NULL.
+// _fullpath resolves a relative path to an absolute one. Callers pass
+// Windows-style paths (meshc passes ".\\"), so separators are translated
+// first. Unlike realpath, _fullpath does not require the path to exist, so a
+// failed resolve joins against the working directory rather than returning
+// NULL.
 static inline char *_fullpath(char *absPath, const char *relPath, size_t maxLength) {
     if (!relPath || !absPath || maxLength == 0) return NULL;
 
@@ -120,15 +116,11 @@ typedef uint8_t             BYTE;
 typedef int                 BOOL;
 typedef unsigned int        UINT;
 typedef char                CHAR;
-// PTSTR and PCTSTR belong beside LPTSTR and LPCTSTR and were missing.
-//
 // Win32 spells the same pointer four ways -- LPSTR/PSTR for the ANSI form and
-// LPTSTR/PTSTR for the TCHAR form, which in an ANSI build are the same type --
-// and the shim had three of the four. The graphics client's atmosphere dialog
-// declares `void SetToolTip(int vid, PTSTR pszText)`, verbatim from the
-// reference, and without the typedef that parameter parses as an int: every
-// call site then fails with "invalid conversion from 'char*' to 'int'",
-// pointing at the call rather than at the missing name.
+// LPTSTR/PTSTR for the TCHAR form, which in an ANSI build are the same type.
+// All four have to exist: a parameter declared PTSTR with no such typedef
+// parses as an int, and the errors then point at the call sites rather than at
+// the missing name.
 typedef const char         *LPCSTR, *PCSTR, *LPCTSTR, *PCTSTR;
 typedef char               *LPSTR,  *PSTR,  *LPTSTR,  *PTSTR;
 typedef void               *LPVOID, *PVOID;
@@ -256,14 +248,12 @@ ORB_DECLARE_HANDLE(HANDLE);
 
 // HGDIOBJ is deliberately not an opaque handle. In the real SDK it is void*,
 // which is what lets SelectObject/DeleteObject accept an HPEN, HBRUSH, HFONT
-// or HBITMAP without a cast — a property 26 call sites in DlgCtrl rely on.
+// or HBITMAP without a cast — a property the DlgCtrl call sites rely on.
 typedef void *HGDIOBJ;
 
-// HDC matches GraphicsAPI.h, which already carries a `#ifndef _WIN32` branch
-// declaring it as void*. Upstream made that choice for a non-Windows build, so
-// this header follows it rather than introducing a conflicting handle type;
-// the two declarations must agree or every translation unit including both
-// fails with a conflicting typedef.
+// HDC is void*, matching the `#ifndef _WIN32` branch GraphicsAPI.h already
+// carries. The two declarations must agree or every translation unit
+// including both fails with a conflicting typedef.
 #ifndef ORB_HDC_DEFINED
 #define ORB_HDC_DEFINED
 typedef void *HDC;
@@ -359,11 +349,10 @@ typedef DWORD COLORREF;
 #define WM_MOUSEWHEEL       0x020A
 #define WM_USER             0x0400
 
-// The virtual-key state word carried in a mouse message's wParam.
-//
-// Orbiter's own handlers read only the wheel delta out of it, but the word is
-// passed verbatim to every plugin's clbkProcessMouse, so it has to mean what
-// a plugin written against Win32 expects. Real Win32 values.
+// The virtual-key state word carried in a mouse message's wParam. Orbiter's
+// own handlers read only the wheel delta out of it, but the word is passed
+// verbatim to every plugin's clbkProcessMouse, so it has to mean what a plugin
+// written against Win32 expects.
 #define MK_LBUTTON          0x0001
 #define MK_RBUTTON          0x0002
 #define MK_SHIFT            0x0004
@@ -457,9 +446,11 @@ typedef DWORD COLORREF;
 // ---------------------------------------------------------------------------
 // Control styles
 //
-// These appear in Orbiter.rc's dialog templates. The resource compiler
-// resolves them on Windows; here the build-time converter that reads the .rc
-// resolves them through this header, so the values must be the SDK's.
+// These appear in the .rc dialog templates. The resource compiler resolves
+// them on Windows; here rc2cpp.py resolves them through the C preprocessor
+// against this header, so the values must be the SDK's. A missing #define is
+// not a silently wrong style -- it is UnresolvedSymbol and a failed
+// conversion, which is the right way round.
 // ---------------------------------------------------------------------------
 
 // Button styles
@@ -504,14 +495,6 @@ typedef DWORD COLORREF;
 #define SS_NOPREFIX         0x00000080L
 #define SS_NOTIFY           0x00000100L
 #define SS_CENTERIMAGE      0x00000200L
-// The three static styles between SS_CENTERIMAGE and SS_SUNKEN, added when
-// ScnEditor.rc became the first .rc on this platform other than Orbiter.rc to
-// be converted. rc2cpp.py resolves every style through the C preprocessor
-// against these headers, so a missing #define is not a silently wrong style --
-// it is UnresolvedSymbol and a failed build, which is the right way round.
-// Values from winuser.h; only SS_REALSIZEIMAGE is currently used (IDD_EDITOR's
-// preview control), the neighbours are here because leaving a hole in a
-// bit-flag run is how the next one gets guessed instead of looked up.
 #define SS_RIGHTJUST        0x00000400L
 #define SS_REALSIZEIMAGE    0x00000800L
 #define SS_SUNKEN           0x00001000L
@@ -553,11 +536,6 @@ typedef DWORD COLORREF;
 #define LBS_MULTICOLUMN     0x0200L
 #define LBS_WANTKEYBOARDINPUT 0x0400L
 #define LBS_EXTENDEDSEL     0x0800L
-// The rest of the run, completed for the same reason the SS_ block above was:
-// rc2cpp.py resolves .rc styles through the C preprocessor against these
-// headers, so a gap is a build failure rather than a wrong style -- but only
-// once something uses it, and Orbiter.rc used none of these. ScnEditor.rc's
-// IDD_EDITOR uses LBS_NOSEL. Values from winuser.h.
 #define LBS_DISABLENOSCROLL 0x1000L
 #define LBS_NODATA          0x2000L
 #define LBS_NOSEL           0x4000L
@@ -581,13 +559,7 @@ typedef DWORD COLORREF;
 
 // DS_SHELLFONT is the pair, not a bit of its own -- the SDK spells it exactly
 // this way. It is what the dialog editor writes for "8, MS Shell Dlg", so
-// almost every modern template carries it: ToolKit.rc opens
-//
-//     IDD_TOOLKIT DIALOGEX 0, 0, 200, 320
-//     STYLE DS_SHELLFONT | WS_POPUP | WS_CAPTION | ...
-//
-// and without the definition rc2cpp.py raised UnresolvedSymbol on the first
-// STYLE line and converted none of the module's dialogs.
+// almost every modern template's STYLE line carries it.
 #define DS_SHELLFONT        (DS_SETFONT | DS_FIXEDSYS)
 
 // Up-down, progress and scrollbar styles
@@ -619,12 +591,10 @@ typedef void (CALLBACK *TIMERPROC)(HWND, UINT, UINT_PTR, DWORD);
 // recognises pointers below 0x10000 as ids rather than strings, which is what
 // the real Win32 loader does.
 #define MAKEINTRESOURCE(i) ((LPCSTR)(uintptr_t)((WORD)(i)))
-// The explicitly-ANSI spelling. On Windows MAKEINTRESOURCE is the neuter form
-// that resolves to MAKEINTRESOURCEA or MAKEINTRESOURCEW by UNICODE, and code
-// that pairs it with FindResourceA writes the A form out -- D3D9Client's
-// SplashScreen() does, and it is not the only one. This shim is ANSI-only, so
-// the two are the same macro; the alias exists so that source does not have to
-// be edited to say so.
+// On Windows MAKEINTRESOURCE is the neuter form that resolves to
+// MAKEINTRESOURCEA or MAKEINTRESOURCEW by UNICODE, and code that pairs it with
+// FindResourceA writes the A form out. This shim is ANSI-only, so the two are
+// the same macro.
 #define MAKEINTRESOURCEA(i) MAKEINTRESOURCE(i)
 #define IS_INTRESOURCE(r)  (((uintptr_t)(r)) <= 0xFFFF)
 
@@ -669,14 +639,10 @@ BOOL    GetWindowRect       (HWND, LPRECT);
 BOOL    ClientToScreen      (HWND, LPPOINT);
 BOOL    ScreenToClient      (HWND, LPPOINT);
 BOOL    InvalidateRect      (HWND, const RECT *, BOOL);
-// ValidateRect, added for OVP/VulkanClient's clbkCreateRenderWindow, which
-// calls it once after filling the client area black -- "avoids white flash
-// after splash screen", in the author's words. On Win32 it removes a
-// rectangle from the window's update region so the next WM_PAINT does not
-// redraw it. There is no update region here: Gdi.cpp is a display-list
-// recorder and the core repaints the whole frame every time, so the
-// counterpart is a no-op that returns TRUE. Declared rather than #defined
-// away so the call site reads as it did.
+// On Win32 ValidateRect removes a rectangle from the window's update region so
+// the next WM_PAINT does not redraw it. There is no update region here --
+// Gdi.cpp is a display-list recorder and the core repaints the whole frame
+// every time -- so this is a no-op returning TRUE.
 BOOL    ValidateRect        (HWND, const RECT *);
 BOOL    UpdateWindow        (HWND);
 
@@ -691,12 +657,6 @@ LRESULT DefWindowProcA      (HWND, UINT, WPARAM, LPARAM);
 
 HWND    GetParent           (HWND);
 
-// GetAncestor and EnumChildWindows, added for OVP/VulkanClient's VideoTab,
-// which walks up from its own tab page to the Launchpad and then back down
-// looking for the scenario tree control. Both are pure walks over the window
-// tree Win32Dlg.cpp already maintains -- every Window there has a parent and
-// a children vector -- so neither invents any state.
-//
 // GA_PARENT is the same answer GetParent gives for a child window; GA_ROOT
 // walks parents to the top; GA_ROOTOWNER continues through owners, which is
 // how Win32 distinguishes an owned popup's root from its owner's.
@@ -707,8 +667,8 @@ HWND    GetAncestor         (HWND, UINT);
 
 typedef BOOL (*WNDENUMPROC)(HWND, LPARAM);
 // Depth-first over every descendant, stopping as soon as the callback returns
-// FALSE -- which is what Win32 documents and what the VideoTab's EnumChildProc
-// relies on to keep the first match.
+// FALSE -- what Win32 documents, and what callers searching for a single
+// control rely on to keep the first match.
 BOOL    EnumChildWindows    (HWND, WNDENUMPROC, LPARAM);
 
 HWND    SetFocus            (HWND);
@@ -716,23 +676,19 @@ HWND    GetFocus            (void);
 // The high bit is set while the key is held, which is the bit dialog
 // keyboard handling tests to detect a Shift-Tab.
 SHORT   GetKeyState         (int vkey);
-// GetAsyncKeyState, added for OVP/VulkanClient's RenderWndProc, which uses it
-// to read Shift and Ctrl while handling a mouse or key message. On Win32 the
-// difference from GetKeyState is WHEN the state is sampled: GetKeyState
-// answers for the message being processed, GetAsyncKeyState for right now.
-// The distinction does not survive here -- the UI host samples the live
-// keyboard once per frame and there is no per-message snapshot -- so both
+// On Win32 the difference from GetKeyState is when the state is sampled:
+// GetKeyState answers for the message being processed, GetAsyncKeyState for
+// right now. The distinction does not survive here -- the UI host samples the
+// live keyboard once per frame and there is no per-message snapshot -- so both
 // answer from that sample, with the same high-bit-means-held convention.
 SHORT   GetAsyncKeyState    (int vkey);
 BOOL    GetCursorPos        (LPPOINT);
 BOOL    SetCursorPos        (int, int);
 
-// Monitor geometry, added for OVP/VulkanClient's FixOutOfScreenPositions,
-// which asks which monitor a popup landed on and how big it is so it can pull
-// an off-screen dialog back into view. GLFW answers both questions
-// (glfwGetMonitors / glfwGetMonitorWorkarea), so the Win32 calls map onto it.
-// HMONITOR is an opaque handle here as it is there -- the implementation
-// stores a monitor index in it.
+// Monitor geometry: which monitor a popup landed on and how big it is, used to
+// pull an off-screen dialog back into view. Backed by glfwGetMonitors /
+// glfwGetMonitorWorkarea. HMONITOR is an opaque handle here as it is on
+// Windows -- the implementation stores a monitor index in it.
 ORB_DECLARE_HANDLE(HMONITOR);
 
 #define MONITOR_DEFAULTTONULL     0x00000000
@@ -761,18 +717,14 @@ ORB_EXTERN_C_END
 #define SendDlgItemMessage  SendDlgItemMessageA
 #define SendMessage         SendMessageA
 #define PostMessage         PostMessageA
-// The explicit-ANSI spellings. Orbiter's own sources use the unsuffixed names,
-// but TerrainToolKit calls CreateDialogParamA directly, and in the real SDK
-// both resolve to the same entry point.
+// The explicit-ANSI spellings, which some sources use directly. In the real
+// SDK both spellings resolve to the same entry point.
 #define CreateDialogParamA  CreateDialogParam
 #define CreateDialogA       CreateDialog
 #define GetMonitorInfo      GetMonitorInfoA
 #define DialogBoxParamA     DialogBoxParam
 // Windows defines DialogBox as a macro over DialogBoxParam with a zero
-// creation parameter, and there is no separate entry point. It was missing
-// here, so the only caller in the tree -- the LaunchpadParamTemplate SDK
-// sample -- failed to COMPILE, which is why nothing had noticed: a module that
-// does not build is absent in exactly the way an unported one is.
+// creation parameter; there is no separate entry point.
 #define DialogBox(hInst, tmpl, parent, proc) \
         DialogBoxParam((hInst), (tmpl), (parent), (proc), 0L)
 #define DialogBoxA          DialogBox
@@ -784,8 +736,8 @@ ORB_EXTERN_C_END
 #define GetWindowLongPtr    GetWindowLongPtrA
 #define SetWindowLongPtr    SetWindowLongPtrA
 // The 32-bit forms. On Win64 the SDK defines these as the Ptr versions for the
-// indices that hold pointers, and callers that only store an int are unaffected
-// either way. TerrainToolKit's gcTableView uses the short spelling.
+// indices that hold pointers, and callers that only store an int are
+// unaffected either way.
 #define GetWindowLongA      GetWindowLongPtrA
 #define SetWindowLongA      SetWindowLongPtrA
 #define GetWindowLong       GetWindowLongPtrA
@@ -799,10 +751,9 @@ ORB_EXTERN_C_END
 // GDI
 //
 // DlgCtrl's gauge and switch controls are owner-drawn: they paint themselves
-// with pens, brushes and BitBlt in response to WM_PAINT. These are declared so
-// those sources compile unchanged; Win32Dlg.cpp implements them against an
-// ImGui draw list, so a control painted here lands in the same frame as the
-// in-sim dialogs.
+// with pens, brushes and BitBlt in response to WM_PAINT. Gdi.cpp implements
+// these against an ImGui draw list, so a control painted here lands in the
+// same frame as the in-sim dialogs.
 // ---------------------------------------------------------------------------
 
 typedef struct tagPAINTSTRUCT {
@@ -854,12 +805,11 @@ typedef struct tagRGBQUAD {
     BYTE rgbBlue, rgbGreen, rgbRed, rgbReserved;
 } RGBQUAD;
 
-// The BMP file header and the 24-bit pixel triple. Dragonfly's panel loader
-// reads .bmp files itself rather than going through LoadImage, so it needs
-// both. The layout is the on-disk BMP format, so the field order and the
-// 2-byte packing of BITMAPFILEHEADER are part of the file format, not a
-// choice -- bfType/bfSize straddle a 4-byte boundary and the struct must not
-// be padded or every offset read from it is wrong.
+// The BMP file header and the 24-bit pixel triple, for panel loaders that read
+// .bmp files themselves rather than going through LoadImage. The field order
+// and the 2-byte packing are the on-disk format, not a choice: bfType/bfSize
+// straddle a 4-byte boundary, and if the struct is padded every offset read
+// from it is wrong.
 #pragma pack(push, 2)
 typedef struct tagBITMAPFILEHEADER {
     WORD  bfType;
@@ -936,10 +886,8 @@ typedef struct tagTEXTMETRICA {
 typedef TEXTMETRICA TEXTMETRIC;
 typedef LPTEXTMETRICA LPTEXTMETRIC;
 
-// Pen styles
-// The pen styles, with Win32's own values. PS_DOT was missing: the graphics
-// client's Sketchpad pen maps its style 2 to PS_DOT and IsDashed() tests for
-// it, so a dashed pen could not be spelled at all.
+// Pen styles, with Win32's own values. The Sketchpad pen maps its style 2 to
+// PS_DOT and IsDashed() tests for it.
 #define PS_SOLID       0
 #define PS_DASH        1
 #define PS_DOT         2
@@ -955,8 +903,7 @@ typedef LPTEXTMETRICA LPTEXTMETRIC;
 #define BS_HATCHED     2
 #define BS_PATTERN     3
 
-// Hatch styles, the lbHatch value when lbStyle is BS_HATCHED. Dragonfly's
-// panel uses HS_BDIAGONAL for its shaded regions.
+// Hatch styles, the lbHatch value when lbStyle is BS_HATCHED.
 #define HS_HORIZONTAL  0
 #define HS_VERTICAL    1
 #define HS_FDIAGONAL   2
@@ -965,9 +912,8 @@ typedef LPTEXTMETRICA LPTEXTMETRIC;
 #define HS_DIAGCROSS   5
 
 // MSVC's unprefixed `byte`. It predates std::byte and is an unsigned char, not
-// the C++17 enum class -- Dragonfly casts pixel data through it, which the
-// scoped std::byte would not permit. Only defined when the tree has not
-// already got it from a system header.
+// the C++17 enum class -- callers cast pixel data through it, which the scoped
+// std::byte would not permit.
 #ifndef ORB_BYTE_DEFINED
 #define ORB_BYTE_DEFINED
 typedef unsigned char byte;
@@ -986,11 +932,10 @@ typedef unsigned char byte;
 #define PROOF_QUALITY         2
 #define NONANTIALIASED_QUALITY 3
 #define ANTIALIASED_QUALITY   4
-// CLEARTYPE_QUALITY completes the set. The Sketchpad font selects it from
-// Config->SketchpadFont == 2 and from SKP_FONT_CLEARTYPE. Nothing here
-// rasterises ClearType -- stb_truetype antialiases greyscale -- but the value
-// round-trips through the LOGFONT and GetQuality() hands it back, so it has to
-// exist and has to be Win32's own number.
+// The Sketchpad font selects CLEARTYPE_QUALITY from Config->SketchpadFont == 2
+// and from SKP_FONT_CLEARTYPE. Nothing here rasterises ClearType --
+// stb_truetype antialiases greyscale -- but the value round-trips through the
+// LOGFONT and GetQuality() hands it back.
 #define CLEARTYPE_QUALITY     5
 #define CLEARTYPE_NATURAL_QUALITY 6
 #define DEFAULT_PITCH         0
@@ -1022,9 +967,8 @@ typedef unsigned char byte;
 #define CS_BYTEALIGNCLIENT 0x1000
 #define CS_BYTEALIGNWINDOW 0x2000
 #define CS_GLOBALCLASS 0x4000
-// Added for OVP/VulkanClient's WindowMgr, which registers its floating panel
-// class with it. It asks the window manager to draw a drop shadow behind the
-// window; there is nothing to switch on here, so it is accepted and ignored,
+// CS_DROPSHADOW asks the window manager to draw a drop shadow behind the
+// window. There is nothing to switch on here, so it is accepted and ignored --
 // which is also what Windows does on a theme that draws no shadows.
 #define CS_DROPSHADOW  0x00020000
 
@@ -1069,18 +1013,14 @@ typedef unsigned char byte;
 // LOGFONT -- the description CreateFont was given, readable back with
 // GetObject(hFont, sizeof(LOGFONT), &lf).
 //
-// Added because the graphics client's font manager is built on that read-back:
-// D3D9TextMgr.cpp's Init() takes an HFONT, asks GetObject for its LOGFONT, and
-// uses the face name, height, weight and italic flag to rasterise a glyph
-// atlas. On Windows the atlas came from GDI itself -- SelectObject the font
-// into a DC and TextOut every character -- but Gdi.cpp here is a display-list
-// RECORDER, so there are no glyph pixels to read back and the client has to
-// rasterise the face itself. To do that it must first be told which face, and
-// this struct is how Win32 says so.
+// The graphics client's font manager is built on that read-back: it asks
+// GetObject for an HFONT's LOGFONT and uses the face name, height, weight and
+// italic flag to rasterise its own glyph atlas. On Windows the atlas came from
+// GDI itself; Gdi.cpp here is a display-list recorder with no glyph pixels to
+// read back, so the client must rasterise the face itself.
 //
-// Field for field as Win32 declares it, so that client code copied from the
-// reference compiles unchanged; Gdi.cpp fills the five fields CreateFontA is
-// actually given and leaves the rest zero, which is what it knows.
+// Field for field as Win32 declares it. Gdi.cpp fills the five fields
+// CreateFontA is actually given and leaves the rest zero.
 // ---------------------------------------------------------------------------
 #define LF_FACESIZE 32
 
@@ -1130,10 +1070,8 @@ HBRUSH  CreateSolidBrush    (COLORREF);
 HBRUSH  CreateBrushIndirect (const LOGBRUSH *);
 HFONT   CreateFontA         (int, int, int, int, int, DWORD, DWORD, DWORD,
                              DWORD, DWORD, DWORD, DWORD, DWORD, LPCSTR);
-// CreateFontIndirectA, added for OVP/VulkanClient's SplashScreen, which fills
-// a LOGFONTA and passes it rather than spelling fourteen arguments out. Win32
-// has both forms and they make the same font; this one unpacks the struct and
-// calls the other, which is what the real GDI does as well.
+// Win32 has both forms and they make the same font; this one unpacks the
+// struct and calls the other, which is what the real GDI does as well.
 HFONT   CreateFontIndirectA (const LOGFONTA *);
 
 // Drawing primitives
@@ -1251,40 +1189,25 @@ typedef struct _CONSOLE_SCREEN_BUFFER_INFO {
 #define MF_BYPOSITION  0x00000400
 #define SC_CLOSE       0xF060
 
+#define ATTACH_PARENT_PROCESS ((DWORD)-1)
+
 // Console attachment. On Windows a GUI process has no console until it borrows
 // the parent's or allocates its own; on Linux stdout is already connected to
 // the terminal, so there is nothing to attach.
 //
-// Returning FALSE from both is deliberate and is the behaviour the call sites
-// want. cmdline.cpp writes:
-//
-//     if (AttachConsole(ATTACH_PARENT_PROCESS) || AllocConsole())
-//         freopen("CONOUT$", "w", stdout);
-//
-// With both false, the freopen of the Windows-only "CONOUT$" device is skipped
-// and std::cout keeps writing to the real stdout, which is what is wanted.
-#define ATTACH_PARENT_PROCESS ((DWORD)-1)
-
-// Console attachment.
-//
-// Both stay FALSE, deliberately. cmdline.cpp runs
-//
-//     if (AttachConsole(ATTACH_PARENT_PROCESS) || AllocConsole())
-//         freopen("CONOUT$", "w", stdout);
-//
-// at STARTUP, so making AllocConsole succeed here opens a console window the
-// moment Orbiter launches -- before the Launchpad is even shown, which is not
-// what the Windows build does and not what is wanted. With both false the
-// freopen of the Windows-only CONOUT$ device is skipped and std::cout keeps
-// writing to the real stdout.
+// Both returning FALSE is deliberate. cmdline.cpp runs, at startup,
+// `if (AttachConsole(ATTACH_PARENT_PROCESS) || AllocConsole())
+// freopen("CONOUT$", "w", stdout);` -- so an AllocConsole that succeeded would
+// open a console window the moment Orbiter launches, before the Launchpad is
+// shown. With both false the freopen of the Windows-only CONOUT$ device is
+// skipped and std::cout keeps writing to the real stdout.
 static inline BOOL AttachConsole(DWORD) { return FALSE; }
 static inline BOOL AllocConsole(void)   { return FALSE; }
 static inline BOOL FreeConsole(void)    { return TRUE;  }
 
 
-// MessageBeep plays a system alert sound. There is no portable equivalent, and
-// a wrong sound is worse than none, so this emits the terminal bell -- which
-// is what a console application would do -- and succeeds.
+// MessageBeep plays a system alert sound. There is no portable equivalent, so
+// this emits the terminal bell and succeeds.
 #define MB_ICONHAND_SOUND  0x00000010
 static inline BOOL MessageBeep(UINT) { fputc('\a', stderr); return TRUE; }
 
@@ -1303,29 +1226,16 @@ HANDLE  GetCurrentProcess   (void);
 DWORD   GetCurrentProcessId (void);
 DWORD   GetCurrentThreadId  (void);
 
-// GetCurrentThread RETURNS A PSEUDO-HANDLE, AND THAT IS THE WHOLE POINT.
+// GetCurrentThread returns a pseudo-handle, and that is the whole point: on
+// Windows it returns the constant (HANDLE)-2, which the kernel reinterprets
+// per call as whichever thread is asking, so the same value comes back on
+// every thread and comparing two can never distinguish one from another.
+// (Real per-thread identity is GetCurrentThreadId, above.)
 //
-// On Windows this does not return a handle to the calling thread: it returns
-// the constant (HANDLE)-2, a "pseudo-handle" the kernel reinterprets per call
-// as whichever thread is asking. So the SAME value comes back on every
-// thread, and comparing two of them can never distinguish one thread from
-// another. (The real per-thread identity is GetCurrentThreadId, above, which
-// is why that one is implemented over pthread_self.)
-//
-// It is reproduced here rather than made to work, because code in this tree
-// COMPARES the results and the comparison must keep giving the answer it
-// gives on Windows. D3D9Client.cpp stores GetCurrentThread() in hMainThread
-// and then guards clbkGetSketchpad_const with
-//
-//     if (GetCurrentThread() != hMainThread) { LogErr(...); HALT(); }
-//
-// while D3D9Surface.cpp asserts GetCurrentThread() == GetMainThread(). Both
-// tests are ALWAYS TRUE on Windows -- the guards have never fired and never
-// can. Returning a real thread identity here would make them start firing on
-// Linux only, turning a dormant Windows check into a Linux-only halt in the
-// Sketchpad path and a Linux-only failed assert on every surface built by a
-// loader thread. That would be a change to the client rather than a
-// conversion of it, so the pseudo-handle is carried across verbatim.
+// Reproduced rather than made to work, because client code compares the
+// results -- storing it in an hMainThread and then halting or asserting if a
+// later call differs. Those tests are always true on Windows and can never
+// fire; a real thread identity here would make them fire on Linux only.
 HANDLE  GetCurrentThread    (void);
 
 // LoadLibrary/FreeLibrary map onto dlopen/dlclose. Names ending in .dll are
@@ -1375,8 +1285,7 @@ static inline int lstrlenA(LPCSTR s) { return s ? (int)strlen(s) : 0; }
 #define lstrlen lstrlenA
 
 // MSVC's secure and underscore-prefixed CRT variants. The _s forms return
-// errno_t and take the destination size; the behaviour that matters to callers
-// here is truncation rather than overflow, which snprintf already provides.
+// errno_t and take the destination size.
 static inline int _snprintf(char *buf, size_t n, const char *fmt, ...) {
     va_list ap; va_start(ap, fmt);
     int r = vsnprintf(buf, n, fmt, ap);
@@ -1423,10 +1332,9 @@ static inline int fopen_s(FILE **f, const char *name, const char *mode) {
 // ---------------------------------------------------------------------------
 // Application, message loop, registry and system metrics
 //
-// Src/Orbiter/Orbiter.cpp drives a classic Win32 message loop and queries a
-// handful of system settings. The loop is preserved rather than replaced: the
-// implementation pumps GLFW and translates its events into the same WM_
-// messages, so Orbiter.cpp's WndProc keeps working unmodified.
+// Orbiter.cpp drives a classic Win32 message loop. It is preserved rather than
+// replaced: the implementation pumps GLFW and translates its events into the
+// same WM_ messages, so Orbiter.cpp's WndProc keeps working unmodified.
 // ---------------------------------------------------------------------------
 
 typedef char TCHAR;
@@ -1442,19 +1350,16 @@ typedef char TCHAR;
 #define WM_NCHITTEST      0x0084
 #define WM_POWERBROADCAST 0x0218
 #define WM_SYSCOMMAND     0x0112
-// The WM_SYSCOMMAND wParam values OVP/VulkanClient's RenderWndProc traps: the
-// Alt system-menu key, and the four commands it refuses while fullscreen.
-// They are plain message parameters -- numbers Windows sends -- so the values
-// are the documented ones and nothing here has to implement them; the client
-// simply recognises them if they arrive.
+// WM_SYSCOMMAND wParam values: the Alt system-menu key, and the four commands
+// a render window refuses while fullscreen. They are plain message parameters,
+// so nothing here has to implement them -- a client simply recognises them if
+// they arrive.
 #define SC_SIZE           0xF000
 #define SC_MOVE           0xF010
 #define SC_MINIMIZE       0xF020
 #define SC_MAXIMIZE       0xF030
 #define SC_CLOSE          0xF060
 #define SC_KEYMENU        0xF100
-// SC_MONITORPOWER is already defined a few lines below, beside the power
-// broadcast messages that go with it.
 #define HTCLIENT          1
 #define WA_INACTIVE       0
 #define SW_MAXIMIZE       3
@@ -1497,9 +1402,8 @@ typedef WNDCLASSEXA WNDCLASSEX;
 // around fullscreen transitions.
 #define SPI_GETFONTSMOOTHING 0x004A
 #define SPI_SETFONTSMOOTHING 0x004B
-// The desktop minus the compositor's reserved panels. Added for
-// OVP/VulkanClient's WindowMgr, which clamps a dragged floating panel to it;
-// answered from glfwGetMonitorWorkarea. See Win32Dlg.cpp.
+// SPI_GETWORKAREA is the desktop minus the compositor's reserved panels, used
+// to clamp a dragged floating panel; answered from glfwGetMonitorWorkarea.
 #define SPI_GETWORKAREA      0x0030
 #define SPIF_UPDATEINIFILE   0x0001
 #define SPIF_SENDCHANGE      0x0002
@@ -1536,8 +1440,7 @@ typedef LONG LSTATUS;
 
 // MultiByteToWideChar flags. MB_ERR_INVALID_CHARS makes a malformed sequence
 // fail the whole call rather than being replaced, which is how a caller tells
-// UTF-8 apart from a legacy single-byte string. See the note on the function
-// in Platform.cpp.
+// UTF-8 apart from a legacy single-byte string.
 #define MB_PRECOMPOSED       0x00000001
 #define MB_COMPOSITE         0x00000002
 #define MB_USEGLYPHCHARS     0x00000004
@@ -1559,9 +1462,7 @@ int     ShowCursor          (BOOL);
 BOOL    ClipCursor          (const RECT *);
 int     GetSystemMetrics    (int);
 
-// Added for OVP/VulkanClient's WindowMgr: it measures how far a dragged panel
-// overlaps a dock, and reparents a dialog into a sidebar when it is docked.
-// Both are implemented in Win32Dlg.cpp over the window tree it already keeps.
+// Implemented in Win32Dlg.cpp over the window tree it already keeps.
 BOOL    IntersectRect       (LPRECT dst, const RECT *a, const RECT *b);
 HWND    SetParent           (HWND child, HWND newParent);
 
@@ -1606,8 +1507,8 @@ static inline int _putenv(const char *s) { return putenv((char *)s); }
 // Standard control messages
 //
 // Combo boxes, list boxes and buttons are driven entirely through these
-// messages by the launchpad tabs; the dialog implementation dispatches them to
-// the corresponding ImGui widget state.
+// messages; the dialog implementation dispatches them to the corresponding
+// ImGui widget state.
 // ---------------------------------------------------------------------------
 
 #define CB_GETEDITSEL     0x0140
@@ -1624,9 +1525,9 @@ static inline int _putenv(const char *s) { return putenv((char *)s); }
 #define CB_SETCURSEL      0x014E
 #define CB_FINDSTRINGEXACT 0x0158
 #define CB_SELECTSTRING   0x014D
-// The per-item application value. The D3D9 VideoTab packs a display mode's
-// width and height into it and reads them back on selection instead of
-// parsing the visible label.
+// The per-item application value. A video tab packs a display mode's width and
+// height into it and reads them back on selection instead of parsing the
+// visible label.
 #define CB_GETITEMDATA    0x0150
 #define CB_SETITEMDATA    0x0151
 #define CB_ERR            (-1)
@@ -1857,9 +1758,7 @@ typedef struct tagDRAWITEMSTRUCT {
                            WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX)
 
 // The SDK's other spellings of the same bits. They are aliases, not extra
-// styles, and the dialog editor emits them freely -- ToolKit.rc writes
-// WS_CHILDWINDOW where every other script in the tree writes WS_CHILD, and
-// rc2cpp.py stopped on it and converted none of that module's dialogs.
+// styles, and the dialog editor emits them freely.
 #define WS_TILED          WS_OVERLAPPED
 #define WS_ICONIC         WS_MINIMIZE
 #define WS_CHILDWINDOW    WS_CHILD
@@ -1867,18 +1766,11 @@ typedef struct tagDRAWITEMSTRUCT {
                              WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX)
 #define WS_POPUPWINDOW    (WS_POPUP | WS_BORDER | WS_SYSMENU)
 
-// THE EXTENDED STYLES, COMPLETE.
-//
-// The handful this shim happened to need were added one at a time as they came
-// up, scattered through this header. That worked while one .rc was converted;
-// with every module's script going through rc2cpp.py it stops working, because
-// the dialog editor writes the full set and ANY unresolved name aborts that
-// module's whole conversion -- one missing WS_EX_ and the module has no
-// dialogs at all. WS_EX_WINDOWEDGE was the one ToolKit.rc stopped on.
-//
-// So the SDK's list is given in full and in one place, each guarded, so the
-// earlier scattered definitions still stand and nothing is defined twice.
-// Values are the SDK's.
+// The extended styles, complete. The dialog editor writes the full set, and a
+// single unresolved WS_EX_ name aborts that module's whole .rc conversion --
+// leaving it with no dialogs at all -- so the SDK's list is given in full
+// rather than a style at a time. Each is guarded, so the definitions scattered
+// earlier in this header still stand and nothing is defined twice.
 #ifndef WS_EX_DLGMODALFRAME
 #define WS_EX_DLGMODALFRAME     0x00000001L
 #endif
@@ -1977,9 +1869,8 @@ ORB_EXTERN_C_END
 #define WM_NCLBUTTONDBLCLK  0x00A3
 #define WM_NCMOUSEMOVE      0x00A0
 
-// WM_SIZING edge codes. wParam names which edge the user is dragging, and
-// DX9ExtMFD's MFDWindow clamps the rectangle differently for each so the MFD
-// stays square.
+// WM_SIZING edge codes: wParam names which edge the user is dragging, so a
+// handler that keeps a window square can clamp the right side of the rect.
 #define WMSZ_LEFT        1
 #define WMSZ_RIGHT       2
 #define WMSZ_TOP         3
@@ -1990,23 +1881,18 @@ ORB_EXTERN_C_END
 #define WMSZ_BOTTOMRIGHT 8
 #define WM_SIZING        0x0214
 
-// _countof yields the element count of an array. MSVC provides it; the SDK
-// spells the same thing ARRAYSIZE, which is already defined above.
+// _countof is MSVC's spelling of ARRAYSIZE, defined above.
 #ifndef _countof
 #define _countof(a) (sizeof(a) / sizeof((a)[0]))
 #endif
 
 // MAKEFOURCC packs four characters into the little-endian DWORD that file
-// formats use as a type tag. It lives in <mmsystem.h>, which <windows.h>
-// includes unless WIN32_LEAN_AND_MEAN is set -- so on Windows any file that
-// includes <windows.h> alone has it, and that is how ZTreeMgr.cpp gets it for
-// its tile-archive magic number, MAKEFOURCC('T','X',1,0). ZTreeMgr.h includes
-// only <iostream> and <windows.h>, so there is nowhere else for it to come
-// from here.
-//
-// The graphics client's own d3d9.h defines the identical macro for DDS format
-// codes and guards it with #ifndef, so whichever is read first wins and the
-// packing is the same either way.
+// formats use as a type tag. It lives in <mmsystem.h>, which <windows.h> pulls
+// in unless WIN32_LEAN_AND_MEAN is set, so on Windows a file that includes
+// <windows.h> alone has it -- which is how ZTreeMgr.cpp gets it for its
+// tile-archive magic number MAKEFOURCC('T','X',1,0). Guarded because the
+// graphics client's d3d9.h defines the identical macro for DDS format codes;
+// whichever is read first wins and the packing is the same either way.
 #ifndef MAKEFOURCC
 #define MAKEFOURCC(a, b, c, d) \
     ((DWORD)(BYTE)(a) | ((DWORD)(BYTE)(b) << 8) | \
@@ -2014,28 +1900,22 @@ ORB_EXTERN_C_END
 #endif
 
 // MSVC's sscanf_s. Its %s conversion takes an extra buffer-size argument after
-// the pointer, which plain sscanf does not:
+// the pointer, which plain sscanf does not, so forwarding to sscanf leaves
+// that size as an unused trailing vararg -- harmless, because sscanf stops
+// consuming arguments when the format runs out.
 //
-//     sscanf_s(line, "ATCH_MASK %s", mask, (int)_countof(mask));
-//
-// Forwarding to sscanf leaves that size as an unused trailing vararg, which is
-// harmless -- sscanf stops consuming arguments when the format runs out.
-//
-// CAUTION: that holds only when every %s is the LAST conversion in the format,
-// because only then is the size argument genuinely trailing. It is NOT a
-// property of having just one %s. Any conversion AFTER a %s consumes the size
-// in place of its own pointer:
+// That only holds when every %s is the last conversion in the format, which is
+// not the same as having only one %s. Any conversion after a %s consumes the
+// size in place of its own pointer:
 //
 //     sscanf_s(s, "%s %u %u", buf, 8, &day, &year)
 //
 // forwards as sscanf(s, "%s %u %u", buf, 8, &day, &year), where the first %u
-// writes an unsigned int through the ADDRESS 8 -- a wild store, not a no-op.
-// D3D9Client's BuildDate() is exactly this shape, and it is why the graphics
-// client's port of it uses plain sscanf instead.
+// writes an unsigned int through the address 8 -- a wild store, not a no-op.
 //
-// So a call site is safe here only if every %s is trailing. Anything else --
-// a %s followed by further conversions, or two or more %s -- must be rewritten
-// to plain sscanf without the sizes. -Wformat catches these; do not silence it.
+// So a call site is safe here only if every %s is trailing. Anything else must
+// be rewritten to plain sscanf without the sizes. -Wformat catches these; do
+// not silence it.
 #define sscanf_s sscanf
 
 // MSVC's underscore-prefixed floating-point classifiers. The C99 names are
@@ -2121,8 +2001,7 @@ static inline void _splitpath(const char *path, char *drive, char *dir,
 
 // MSVC's floating-point error hook. Orbiter defines _matherr() to trap domain
 // and range errors during flight; glibc's equivalent SVID struct is named
-// `exception` rather than `_exception`, so the MSVC spelling is provided here
-// and Orbiter.cpp's definition compiles unchanged.
+// `exception` rather than `_exception`.
 struct _exception {
     int    type;
     char  *name;
@@ -2134,9 +2013,9 @@ struct _exception {
 // ---------------------------------------------------------------------------
 // Version info, error formatting and process handles
 //
-// Src/Orbiter/Log.cpp writes a diagnostic header at startup: the build version
-// from the executable's resources, the system error text for a failed call,
-// and the list of loaded modules.
+// Log.cpp writes a diagnostic header at startup: the build version from the
+// executable's resources, the system error text for a failed call, and the
+// list of loaded modules.
 // ---------------------------------------------------------------------------
 
 // VS_FIXEDFILEINFO is the binary block VerQueryValue returns for "\\". Layout
@@ -2182,7 +2061,7 @@ DWORD  FormatMessageA          (DWORD flags, LPCVOID source, DWORD msgId,
                                 va_list *args);
 // Takes void* rather than HLOCAL: FORMAT_MESSAGE_ALLOCATE_BUFFER hands back a
 // buffer through an LPSTR, and callers pass that straight to LocalFree without
-// a cast, which the SDK's HLOCAL-as-void* typedef permits.
+// a cast, which the SDK's void*-based HLOCAL permits.
 HLOCAL LocalFree               (LPVOID mem);
 
 HANDLE OpenProcess             (DWORD access, BOOL inherit, DWORD pid);
@@ -2205,18 +2084,12 @@ static inline int strncpy_s(char *dst, size_t dstSize, const char *src, size_t n
 }
 
 #ifdef __cplusplus
-// MSVC's sprintf_s comes in two forms, and both are used in this tree:
-//
-//     sprintf_s(buf, size, fmt, ...)      the explicit-size form, defined
-//                                         further up this header
-//     sprintf_s(buf, fmt, ...)            a template that deduces the size
-//                                         of a char array destination
-//
-// TransX uses the second -- sprintf_s(tbuffer, "%.12g", value) -- which the
-// explicit-size form alone cannot express: the format string binds to the
-// size parameter and the first vararg to the format, giving
-// "cannot convert 'double' to 'const char*'". Only the template is added
-// here; it overloads against the existing function rather than replacing it.
+// MSVC's "secure template overloads", on by default in C++
+// (_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES): a call whose destination is a
+// fixed-size char array may leave the size out, because the array's extent
+// carries it. Both forms of sprintf_s, strcpy_s and strcat_s are used in this
+// tree, so the short forms are added here as overloads against the
+// explicit-size functions above, each forwarding with N as the bound.
 template <size_t N>
 inline int sprintf_s(char (&buf)[N], const char *fmt, ...) {
     va_list ap;
@@ -2226,22 +2099,6 @@ inline int sprintf_s(char (&buf)[N], const char *fmt, ...) {
     return r;
 }
 
-// strcpy_s and strcat_s have the same two forms, for the same reason. MSVC
-// calls these the "secure template overloads": in C++ they are on by default
-// (_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES), and any call whose destination
-// is a fixed-size char array may leave the size out, because the array's
-// extent carries it.
-//
-// The graphics client uses the short form in both:
-//
-//     strcat_s(buf, "AUTOGENMIPMAP ")   D3D9Surface.cpp / VulkanSurface.cpp
-//     strcpy_s(fnt.lfFaceName, "Courier New")   D3D9Client.cpp / VulkanClient.cpp
-//
-// Against the explicit-size functions above those read as "too few arguments".
-// As with sprintf_s these are added as overloads and change nothing about the
-// three-argument calls already in the tree; each forwards straight to the
-// explicit-size version with N as the bound, which is what MSVC's template
-// does too.
 template <size_t N>
 inline int strcpy_s(char (&dst)[N], const char *src) {
     return strcpy_s(dst, N, src);
@@ -2267,14 +2124,9 @@ static inline int64_t _ftelli64(FILE *f) {
     return (int64_t)ftello(f);
 }
 
-// File attributes and directory creation.
-//
-// TerrainToolKit checks for a tile cache directory and creates it:
-//     DWORD a = GetFileAttributes(path);
-//     if (a == INVALID_FILE_ATTRIBUTES) CreateDirectory(path, NULL);
-//     else if (a & FILE_ATTRIBUTE_DIRECTORY) ...
-// Only the directory bit and the "does not exist" sentinel are meaningful
-// here, so the attribute word carries just those.
+// File attributes and directory creation. Only the directory bit and the
+// INVALID_FILE_ATTRIBUTES "does not exist" sentinel are meaningful here, so
+// the attribute word carries just those.
 #define INVALID_FILE_ATTRIBUTES  ((DWORD)-1)
 #define FILE_ATTRIBUTE_READONLY  0x00000001
 #define FILE_ATTRIBUTE_HIDDEN    0x00000002
@@ -2326,37 +2178,24 @@ BOOL TransparentBlt  (HDC dst, int x, int y, int w, int h,
 ORB_EXTERN_C_END
 
 // ---------------------------------------------------------------------------
-// GDI: off-screen bitmaps, rectangle fill, extent measurement and clipping.
+// GDI: off-screen bitmaps, rectangle fill, extent measurement and clipping,
+// as used by a control that paints into an off-screen bitmap and blits it.
 //
-// All of these are called by TerrainToolKit's gcTableView.cpp, which paints
-// its property tree into an off-screen bitmap and blits it:
-//
-//   hBuf = CreateCompatibleBitmap(_hDC, w, h);   // the back buffer
-//   FillRect(hBM, &rect, hBr1);                  // row backgrounds
-//   GetTextExtentExPointA(...)                   // label column width
-//   HRGN hRgn = CreateRectRgn(0, 0, w, h);
-//   SelectClipRgn(_hDC, hRgn);                   // clip to the control
-//   ExcludeClipRect(_hDC, l, t, r, b);           // hole per child control
-//   TextOutW(hBM, ..., ws.c_str(), ...)          // UTF-16 values
-//
-// GetTextExtentExPointA is NOT GetTextExtentPoint32A: it additionally takes a
-// maximum extent and optional per-character width array, and reports how many
-// characters fit. gcTableView passes 100000 and two nulls, wanting only the
-// total size, but the signature has to match or the call does not compile.
+// GetTextExtentExPointA is not GetTextExtentPoint32A: it additionally takes a
+// maximum extent and an optional per-character width array, and reports how
+// many characters fit. Callers wanting only the total size pass a huge extent
+// and two nulls, but the signature has to match or the call does not compile.
 // ---------------------------------------------------------------------------
 
 ORB_DECLARE_HANDLE(HRGN);
 
-// WGL: the Win32 binding for OpenGL. Dragonfly's instrument panel renders
-// through it and declares an HGLRC member, so the handle type must exist for
-// its header to compile. Only the type is provided -- the module is built for
-// its physics and systems model, and its GL rendering path is inert without a
-// graphics client to give it a surface.
+// WGL: the Win32 binding for OpenGL. A panel module declares an HGLRC member,
+// so the handle type must exist for its header to compile; its GL rendering
+// path is inert without a graphics client to give it a surface.
 ORB_DECLARE_HANDLE(HGLRC);
 
-// WGL pixel format description. Dragonfly's instrument panel asks for a GL
-// pixel format before creating its context. The layout matches the SDK
-// because the struct is passed to ChoosePixelFormat/SetPixelFormat by size.
+// WGL pixel format description. The layout matches the SDK because the struct
+// is passed to ChoosePixelFormat/SetPixelFormat by size.
 typedef struct tagPIXELFORMATDESCRIPTOR {
     WORD  nSize;
     WORD  nVersion;
@@ -2403,40 +2242,26 @@ BOOL    GetTextExtentExPointA  (HDC hdc, LPCSTR str, int len, int maxExtent,
 BOOL    TextOutW               (HDC hdc, int x, int y, LPCWSTR str, int len);
 
 HRGN    CreateRectRgn          (int left, int top, int right, int bottom);
-// A hatched brush. The pattern is drawn as a real hatch by Gdi.cpp rather
-// than approximated with a solid fill, since Dragonfly uses it to mark
-// disabled panel regions and a flat colour would not read as disabled.
+// A hatched brush. Gdi.cpp draws the pattern as a real hatch rather than
+// approximating it with a solid fill, because callers use it to mark disabled
+// regions and a flat colour would not read as disabled.
 HBRUSH  CreateHatchBrush       (int style, COLORREF colour);
 
-// Used by the Sketchpad the graphics client draws its 2D output with -- the
-// HUD, every MFD, panel instruments. All four are ordinary GDI operations
-// this layer can record and replay; they simply had no caller until a client
-// existed.
+// Used by the Sketchpad the graphics client draws its 2D output with: the HUD,
+// every MFD, panel instruments.
 BOOL    GetTextMetricsA        (HDC hdc, LPTEXTMETRIC tm);
 COLORREF SetPixel              (HDC hdc, int x, int y, COLORREF colour);
 
-// GetPixel, and the reason it is here.
-//
-// OVP/VulkanClient's WindowMgr recolours its title-bar graphic pixel by pixel:
-// it selects the loaded bitmap into one memory DC and a compatible bitmap into
-// another, reads every source pixel with GetPixel, computes a colour from the
-// green and blue channels, and writes it with SetPixel. Without this the
-// sidebar has no title bars at all.
-//
-// It reads THE BITMAP SELECTED INTO THE DC, not the screen -- which is what
-// Win32 does for a memory DC and the only thing that can be answered here,
-// because a screen DC in this shim is a display-list recorder with no pixels
-// behind it. A DC with no selected bitmap therefore returns CLR_INVALID, which
-// is what Win32 returns for a point outside the clipping region.
+// GetPixel reads the bitmap selected into the DC, not the screen -- which is
+// what Win32 does for a memory DC, and the only thing that can be answered
+// here, because a screen DC in this shim is a display-list recorder with no
+// pixels behind it. A DC with no selected bitmap therefore returns
+// CLR_INVALID, which is what Win32 returns for a point outside the clipping
+// region.
 #define CLR_INVALID ((COLORREF)0xFFFFFFFF)
 COLORREF GetPixel              (HDC hdc, int x, int y);
 BOOL    SetViewportOrgEx       (HDC hdc, int x, int y, LPPOINT prev);
 
-// The read half of SetViewportOrgEx, and three more GDI entry points the
-// Sketchpad's GDI implementation (OVP/VulkanClient/GDIPad.cpp) calls and
-// nothing else in the tree did. All four are Win32 GDI, not Direct3D; see
-// Gdi.cpp for what each records.
-//
 // Note the two count-array types: PolyPolygon takes `const int *` and
 // PolyPolyline takes `const DWORD *`. That asymmetry is Win32's own and is
 // reproduced so the call sites need no cast.
@@ -2445,9 +2270,8 @@ BOOL    PolyPolygon            (HDC hdc, const POINT *pts, const int *counts, in
 BOOL    PolyPolyline           (HDC hdc, const POINT *pts, const DWORD *counts, DWORD nfig);
 int     DrawTextA              (HDC hdc, LPCSTR str, int len, LPRECT rc, UINT format);
 
-// DrawText's format flags. Only the three GDIPad::TextBox asks for are
-// honoured (see DrawTextA); the rest are defined so call sites compile and
-// are accepted and ignored rather than pretended.
+// DrawText's format flags. Only the three the Sketchpad's TextBox asks for are
+// honoured by DrawTextA; the rest are accepted and ignored.
 #define DT_TOP              0x00000000
 #define DT_LEFT             0x00000000
 #define DT_CENTER           0x00000001
@@ -2464,11 +2288,9 @@ int     DrawTextA              (HDC hdc, LPCSTR str, int len, LPRECT rc, UINT fo
 // WGL: pixel format selection and context management.
 //
 // These have no meaning without a GL surface, and the Launchpad-phase renderer
-// is Vulkan. They are declared so Dragonfly's instrument panel compiles and
-// links; the implementations report failure rather than pretending to
-// succeed, so the panel's GL path disables itself instead of drawing into a
-// context that does not exist. When a graphics client provides a real GL or
-// interop surface, these are the four functions to implement against it.
+// is Vulkan. The implementations report failure rather than pretending to
+// succeed, so a caller's GL path disables itself instead of drawing into a
+// context that does not exist.
 int   ChoosePixelFormat   (HDC hdc, const PIXELFORMATDESCRIPTOR *pfd);
 BOOL  SetPixelFormat      (HDC hdc, int fmt, const PIXELFORMATDESCRIPTOR *pfd);
 int   DescribePixelFormat (HDC hdc, int fmt, UINT bytes,
@@ -2494,12 +2316,6 @@ ORB_EXTERN_C_END
 #define COMPLEXREGION  3
 
 // Clipboard and global memory.
-//
-// TerrainToolKit's table view copies a selection as text:
-//     OpenClipboard(hWnd); EmptyClipboard();
-//     HGLOBAL h = GlobalAlloc(GMEM_MOVEABLE, len);
-//     memcpy(GlobalLock(h), text, len); GlobalUnlock(h);
-//     SetClipboardData(CF_TEXT, h); CloseClipboard();
 //
 // GlobalAlloc/Lock/Unlock are a plain heap allocation here -- the moveable
 // handle model has no equivalent and nothing in this tree relies on it. The
@@ -2529,10 +2345,9 @@ HANDLE  GetClipboardData (UINT format);
 ORB_EXTERN_C_END
 
 // The real <windows.h> pulls in <mmsystem.h> and <commdlg.h> unless
-// WIN32_LEAN_AND_MEAN is defined, which is why Log.cpp can call timeGetTime()
-// and TerrainToolKit/ToolKit.h can name OPENFILENAMEA while including only
-// <windows.h>. Included last so their own include of this header is a no-op
-// against the guard above.
+// WIN32_LEAN_AND_MEAN is defined, which is why a source including only
+// <windows.h> can still call timeGetTime() or name OPENFILENAMEA. Included
+// last so their own include of this header is a no-op against the guard above.
 #include <mmsystem.h>
 #include <commdlg.h>
 
@@ -2547,8 +2362,7 @@ ORB_EXTERN_C_END
 // MSVC CRT and SDK odds and ends used by XRSound.
 // ---------------------------------------------------------------------------
 
-// MessageBox flag: bring the box to the foreground. Nothing to do here, but
-// XRSound's config parser passes it when reporting a parse failure.
+// MessageBox flag: bring the box to the foreground. Nothing to do here.
 #define MB_SETFOREGROUND   0x00010000
 
 // Integer limits under their SDK spellings.
@@ -2567,9 +2381,8 @@ ORB_EXTERN_C_END
 #define MAXCHAR    MAXINT8
 
 // GetTickCount64: milliseconds since boot, 64-bit so it does not wrap after
-// 49 days as the 32-bit form does. XRSound uses it for its realtime update
-// pacing. CLOCK_MONOTONIC is the direct equivalent and is unaffected by clock
-// adjustments, which matters for an interval timer.
+// 49 days as the 32-bit form does. CLOCK_MONOTONIC is the direct equivalent
+// and is unaffected by clock adjustments, which matters for an interval timer.
 static inline ULONGLONG GetTickCount64(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -2584,14 +2397,9 @@ static inline DWORD GetTickCount(void) { return (DWORD)GetTickCount64(); }
 // exceptions. There is no honest way to resume from a SIGSEGV in a portable
 // program, so this maps the construct onto a plain try/catch.
 //
-// That is a REAL DIFFERENCE and worth stating. XRSoundDLL::clbkPreStep uses
-// both of its __try blocks the same way -- guard a call, log an access
-// violation, keep going -- so a C++ exception thrown by the guarded code is
-// still caught and logged exactly as intended. A genuine segfault inside
-// irrKlang would have been swallowed on Windows and will terminate here.
-// Given the guards exist for a stale vessel pointer that UpdateAllVesselsMap
-// is supposed to have already removed, that case should not arise, and
-// crashing loudly on it is arguably better than hiding it.
+// The difference matters: a C++ exception thrown by the guarded code is still
+// caught and logged as intended, but a genuine segfault that Windows would
+// have swallowed terminates the process here.
 #ifndef _WIN32
 #define __try           try
 #define __except(x)     catch (...)
@@ -2629,13 +2437,9 @@ static inline int gmtime_s(struct tm *result, const time_t *t) {
 // ---------------------------------------------------------------------------
 // Graphics client support
 //
-// Added for OVP/VulkanClient, the Vulkan port of OVP/D3D9Client. The D3D9
-// sources call these throughout -- Log.cpp alone uses five of the six -- and
-// they are ordinary Win32/CRT with exact POSIX equivalents, so they belong
-// here rather than being edited out of ~100 call sites.
-//
-// Nothing here emulates Direct3D. The D3D9 API surface itself is converted
-// file by file into Vulkan; only the platform layer is bridged.
+// Ordinary Win32/CRT with exact POSIX equivalents, called throughout the
+// graphics client. Nothing here emulates Direct3D -- only the platform layer
+// is bridged; the D3D9 API surface itself is converted into Vulkan.
 // ---------------------------------------------------------------------------
 
 #include <pthread.h>
@@ -2643,14 +2447,12 @@ static inline int gmtime_s(struct tm *result, const time_t *t) {
 
 // --- Critical sections -----------------------------------------------------
 //
-// A Win32 critical section is RECURSIVE: the owning thread may re-enter one it
+// A Win32 critical section is recursive: the owning thread may re-enter one it
 // already holds, and releases it only after a matching number of Leaves. A
-// default pthread mutex is not, and re-locking it deadlocks.
-//
-// That distinction is not academic here. D3D9Client's logging nests -- a
-// LogErr inside a section already entered by LogAlw -- and with a default
-// mutex the process would hang on the first nested log line rather than fail
-// to compile. PTHREAD_MUTEX_RECURSIVE is the only correct choice.
+// default pthread mutex is not, and re-locking it deadlocks. The graphics
+// client's logging nests -- a LogErr inside a section already entered by
+// LogAlw -- so with a default mutex the process would hang on the first nested
+// log line. PTHREAD_MUTEX_RECURSIVE is the only correct choice.
 
 typedef struct _RTL_CRITICAL_SECTION {
     pthread_mutex_t mutex;
@@ -2699,15 +2501,10 @@ static inline void DeleteCriticalSection(LPCRITICAL_SECTION cs) {
 // QuadPart must sit at offset 0 in an 8-byte object or every timestamp is
 // read from the wrong half.
 
-// The SDK declares the halves TWICE: once anonymously, so that `li.LowPart`
-// works, and once as a named member `u`, so that `li.u.LowPart` does too.
-// Only the named form was here, and the anonymous one is the spelling most
-// callers use -- Utils/texpack reads `sz.LowPart` straight from a
-// GetFileSizeEx result, which without this does not compile at all.
-//
-// Both overlay QuadPart at offset 0, so nothing about the layout changes; the
-// anonymous struct is a C11 feature and a GCC/Clang extension in C++, which
-// is how the real SDK header spells it too.
+// The SDK declares the halves twice: once anonymously, so that `li.LowPart`
+// works, and once as a named member `u`, so that `li.u.LowPart` does too. Both
+// overlay QuadPart at offset 0. The anonymous struct is a C11 feature and a
+// GCC/Clang extension in C++, which is how the real SDK header spells it too.
 typedef union _LARGE_INTEGER {
     struct { DWORD LowPart; LONG  HighPart; };
     struct { DWORD LowPart; LONG  HighPart; } u;
@@ -2724,9 +2521,9 @@ typedef union _ULARGE_INTEGER {
 // frequency. It is unaffected by wall-clock adjustments, so a user changing
 // the system time mid-flight cannot make a frame appear to take negative time.
 //
-// The 1e9 frequency is what makes D3D9Client's own arithmetic come out right
-// unmodified: D3D9GetTime computes count * 1e6 / frequency, which for a
-// nanosecond counter is exactly microseconds, the unit its callers expect.
+// The 1e9 frequency is what makes the client's own arithmetic come out right
+// unmodified: it computes count * 1e6 / frequency, which for a nanosecond
+// counter is exactly microseconds, the unit its callers expect.
 static inline BOOL QueryPerformanceFrequency(LARGE_INTEGER *freq) {
     if (!freq) return FALSE;
     freq->QuadPart = 1000000000LL;
@@ -2751,10 +2548,7 @@ static inline void DebugBreak(void) { raise(SIGTRAP); }
 
 // --- Remaining secure-CRT forms --------------------------------------------
 //
-// The rest of the _s family is defined further up this header; these two are
-// the forms the client's logging uses.
-//
-// _vsnprintf_s takes BOTH a buffer size and a character count, unlike
+// _vsnprintf_s takes both a buffer size and a character count, unlike
 // vsnprintf. MSVC writes at most `count` characters plus a terminator, and
 // truncates rather than overflowing when count >= sizeOfBuffer, so the
 // effective limit is the smaller of the two.
@@ -2777,18 +2571,14 @@ static inline int fprintf_s(FILE *f, const char *fmt, ...) {
 // ---------------------------------------------------------------------------
 // Files and directory enumeration
 //
-// Added for Utils/texpack, the planet texture-tree packer. It is the only
-// thing in the tree that reads a file through the Win32 handle API rather
-// than stdio, and the only thing that walks a directory with a wildcard --
-// which is why none of this existed until it was ported.
+// The Win32 handle API for reading a file, and the wildcard directory walk.
+// This block sits at the end of the header rather than beside
+// GetFileAttributes because GetFileSizeEx takes a PLARGE_INTEGER, and that
+// union is not declared until the graphics-client section above.
 //
-// This block sits at the end of the header rather than beside GetFileAttributes
-// where it belongs, because GetFileSizeEx takes a PLARGE_INTEGER and that union
-// is not declared until the graphics-client section above.
-//
-// The implementation is in Handles.cpp, next to CloseHandle, because a file
-// handle is closed with CloseHandle and must therefore be the same tagged
-// object every other HANDLE in this shim is.
+// The implementation is in Handles.cpp, next to CloseHandle: a file handle is
+// closed with CloseHandle and must be the same tagged object every other
+// HANDLE here is.
 // ---------------------------------------------------------------------------
 
 // CreateFile: desired access, and the creation disposition.
@@ -2803,7 +2593,7 @@ static inline int fprintf_s(FILE *f, const char *fmt, ...) {
 #define OPEN_ALWAYS         4
 #define TRUNCATE_EXISTING   5
 
-// The failure value CreateFile and FindFirstFile return. NOT null: Win32 uses
+// The failure value CreateFile and FindFirstFile return. Not null: Win32 uses
 // -1 here and 0 for most other APIs, and callers test for this exact value.
 #define INVALID_HANDLE_VALUE ((HANDLE)(LONG_PTR)-1)
 
@@ -2842,10 +2632,9 @@ BOOL   ReadFile       (HANDLE h, LPVOID buf, DWORD toRead, LPDWORD read,
                        void *overlapped);
 BOOL   GetFileSizeEx  (HANDLE h, PLARGE_INTEGER size);
 
-// The search argument is a path WITH the wildcard on the end, not a
-// directory: "Surf/04/000001/*.dds". See Handles.cpp for the two Win32
-// behaviours reproduced there -- case-insensitive matching, and "." and ".."
-// being listed.
+// The search argument is a path with the wildcard on the end, not a directory:
+// "Surf/04/000001/*.dds". Handles.cpp reproduces two Win32 behaviours here --
+// case-insensitive matching, and "." and ".." being listed.
 HANDLE FindFirstFileA (LPCSTR spec, LPWIN32_FIND_DATAA data);
 BOOL   FindNextFileA  (HANDLE h, LPWIN32_FIND_DATAA data);
 BOOL   FindClose      (HANDLE h);
@@ -2856,14 +2645,11 @@ ORB_EXTERN_C_END
 #define FindFirstFile  FindFirstFileA
 #define FindNextFile   FindNextFileA
 
-// NOTE: min/max are deliberately NOT defined here.
-//
-// The real <windows.h> defines them as macros unless NOMINMAX is set, and
-// D3D9Client's sources do use them. They are not added because a macro named
-// `max` breaks std::max, std::numeric_limits<>::max() and any header that
-// spells those -- for the ENTIRE tree, not just the client, since this header
-// is included almost everywhere. The client's own uses are converted to
-// std::max/std::min at the call site instead, which is a handful of lines
-// against a tree-wide hazard.
+// min/max are deliberately not defined here, though the real <windows.h>
+// defines them as macros unless NOMINMAX is set. A macro named `max` breaks
+// std::max, std::numeric_limits<>::max() and any header that spells those --
+// across the whole tree, since this header is included almost everywhere.
+// Client sources that used them are converted to std::max/std::min at the call
+// site instead.
 
 #endif // ORBITER_LINUX_WINDOWS_H

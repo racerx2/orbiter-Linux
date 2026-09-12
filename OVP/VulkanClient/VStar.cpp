@@ -9,23 +9,6 @@
 // class vStar (interface)
 // Renders the central star as a billboard mesh.
 // ==============================================================
-//
-// CONVERTED FROM OVP/D3D9Client/VStar.cpp, read end to end (99 lines).
-//
-// Render() is one matrix built by hand and one call into the effect layer.
-// Every change is a rename:
-//
-//   mWorld._11 .. _43  ->  mWorld.m11 .. m43. mWorld is an FMATRIX4 now
-//   (see VObject.h); D3DXMATRIX spelled the same sixteen elements with a
-//   leading underscore. THIS IS THE WHOLE OF THE DIFF in Render's body --
-//   twenty-odd element names and nothing else, because the arithmetic that
-//   builds the billboard frame never touched Direct3D.
-//
-//   D3D9Effect::RenderBillboard -> VulkanEffect::RenderBillboard, which takes
-//   a VulkanTexture* where it took an LPDIRECT3DTEXTURE9.
-//
-//   LPDIRECT3DDEVICE9 dev -> VulkanDevice* dev. Unused, on both platforms.
-// ==============================================================
 
 #include "Mesh.h"
 #include "VStar.h"

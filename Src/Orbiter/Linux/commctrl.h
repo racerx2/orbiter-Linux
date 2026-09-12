@@ -1,15 +1,12 @@
 // Linux <commctrl.h> — the common-control subset Orbiter uses.
 //
-// Included by Launchpad.cpp, LpadTab.cpp, TabAbout.cpp, TabExtra.cpp,
-// Orbiter.h and the ScnEditor/Meshdebug/TrackIR plugins. Those sources are not
-// modified; this header supplies what they reference.
-//
-// The TreeView_* names are macros in the real SDK, not functions: each one
-// expands to a SendMessage with a TVM_* code. They are kept as macros here for
-// the same reason, so the message flow through the dialog implementation is
-// identical to Windows and there is one code path to implement rather than
-// two. Structure layouts and message numbers match the SDK because the
-// scenario tree passes TVITEM/TVINSERTSTRUCT by pointer through SendMessage.
+// The TreeView_* and TabCtrl_* names are macros in the real SDK, not
+// functions: each expands to a SendMessage with a TVM_*/TCM_* code. They are
+// kept as macros here for the same reason, so every control operation reaches
+// the dialog implementation as a message, exactly as on Windows, and there is
+// one code path to implement rather than two. Structure layouts and message
+// numbers match the SDK because the scenario tree passes TVITEM and
+// TVINSERTSTRUCT by pointer through SendMessage.
 
 #ifndef ORBITER_LINUX_COMMCTRL_H
 #define ORBITER_LINUX_COMMCTRL_H
@@ -36,8 +33,8 @@ typedef struct tagNMHDR {
 } NMHDR, *LPNMHDR;
 #endif
 
-// Notification codes are unsigned wraparound values in the SDK; the
-// (0U - n) spelling is preserved so the numbers match exactly.
+// Notification codes are unsigned wraparound values in the SDK; the (0U - n)
+// spelling is preserved so the numbers match exactly.
 #define NM_FIRST        (0U -  0U)
 #define NM_OUTOFMEMORY  (NM_FIRST - 1)
 #define NM_CLICK        (NM_FIRST - 2)
@@ -53,9 +50,7 @@ typedef struct tagNMHDR {
 // ---------------------------------------------------------------------------
 // Tab control
 //
-// Used by the TrackIR plugin's configuration dialog. Like the TreeView_* set
-// above, TabCtrl_* are macros over messages in the real SDK, and are kept as
-// macros here so the traffic through the dialog implementation is identical.
+// Used by the TrackIR plugin's configuration dialog.
 // ---------------------------------------------------------------------------
 
 #define TCM_FIRST 0x1300
@@ -97,8 +92,8 @@ typedef struct tagTCITEMA {
 typedef TCITEMA TCITEM;
 typedef LPTCITEMA LPTCITEM;
 
-// Legacy spellings. The SDK carries both, and TrackIRconfig.cpp uses the
-// underscored one -- as the tree view sources use TV_ITEM for TVITEM.
+// Legacy spellings. The SDK carries both, and callers here use the underscored
+// one -- as the tree view sources use TV_ITEM for TVITEM.
 typedef TCITEMA TC_ITEMA;
 typedef TCITEMA TC_ITEM;
 
@@ -132,12 +127,9 @@ typedef TCITEMA TC_ITEM;
 #define WC_TABCONTROLA "SysTabControl32"
 #define WC_TABCONTROL  WC_TABCONTROLA
 
-// Tab control window styles and notification codes above; the trackbar's own
-// notification codes follow.
-//
 // A trackbar reports through WM_HSCROLL/WM_VSCROLL like a scrollbar, but with
 // its own code set in the low word of wParam. The values coincide with the
-// SB_* ones by design, and gcTableView switches on the TB_ spellings.
+// SB_* ones by design, and callers switch on the TB_ spellings.
 #define TB_LINEUP         0
 #define TB_LINEDOWN       1
 #define TB_PAGEUP         2
@@ -152,12 +144,9 @@ typedef TCITEMA TC_ITEM;
 // Tree view
 // ---------------------------------------------------------------------------
 
-// Tree view window styles.
-//
-// These decide what the control draws, and the Launchpad relies on their
-// absence as much as their presence: no tree here sets TVS_HASBUTTONS, so
-// none shows expander buttons and folders are opened by double-clicking.
-// Values are the SDK's.
+// Tree view window styles. The Launchpad relies on their absence as much as
+// their presence: no tree here sets TVS_HASBUTTONS, so none shows expander
+// buttons and folders are opened by double-clicking.
 #define TVS_HASBUTTONS      0x0001
 #define TVS_HASLINES        0x0002
 #define TVS_LINESATROOT     0x0004
@@ -289,9 +278,6 @@ typedef struct tagNMTREEVIEWA {
 typedef NMTREEVIEWA NMTREEVIEW,  *LPNMTREEVIEW;
 typedef NMTREEVIEWA NM_TREEVIEW, *LPNM_TREEVIEW;
 
-// TreeView_* are macros in the SDK. Keeping them as macros means every tree
-// operation arrives at the dialog implementation as a TVM_* SendMessage,
-// exactly as on Windows.
 #define TreeView_InsertItem(hwnd, lpis) \
     ((HTREEITEM)SendMessage((hwnd), TVM_INSERTITEM, 0, (LPARAM)(LPTVINSERTSTRUCT)(lpis)))
 #define TreeView_DeleteItem(hwnd, hitem) \
@@ -323,10 +309,9 @@ typedef NMTREEVIEWA NM_TREEVIEW, *LPNM_TREEVIEW;
     ((BOOL)SendMessage((hwnd), TVM_SORTCHILDREN, (WPARAM)(recurse), (LPARAM)(HTREEITEM)(hitem)))
 
 // The parameter names are underscore-prefixed and the local is _ms_TVi, the
-// same convention the Windows SDK uses, and for the same reason: a parameter
-// named `mask` or `data` would be substituted into `_tvi.mask`, expanding it
-// to `_tvi.TVIS_STATEIMAGEMASK`. Macro parameters must not collide with the
-// member names the macro body dereferences.
+// SDK's own convention: a parameter named `mask` would be substituted into
+// `_tvi.mask`, expanding it to `_tvi.TVIS_STATEIMAGEMASK`. Macro parameters
+// must not collide with the member names the macro body dereferences.
 #define TreeView_SetItemState(hwndTV, hti, _data, _mask) \
     do { TVITEM _ms_TVi; \
          _ms_TVi.mask      = TVIF_STATE; \
@@ -380,13 +365,10 @@ inline UINT orb_TreeView_GetCheckState(HWND hwnd, HTREEITEM hitem) {
 
 // Trackbar window styles, passed at creation.
 //
-// gcTableView's CreateSlider builds its sliders with
-//     WS_CHILD | WS_VISIBLE | TBS_NOTICKS | TBS_TRANSPARENTBKGND | TBS_BOTH
-// so all three must exist for it to compile. Values are the SDK's.
-//
-// TBS_BOTH means "ticks on both sides", which with TBS_NOTICKS set draws
-// none -- the combination is contradictory but harmless, and it is what the
-// source asks for, so it is reproduced rather than corrected.
+// gcTableView's CreateSlider asks for TBS_NOTICKS | TBS_TRANSPARENTBKGND |
+// TBS_BOTH. TBS_BOTH means "ticks on both sides", which with TBS_NOTICKS set
+// draws none -- contradictory but harmless, and reproduced rather than
+// corrected.
 #define TBS_AUTOTICKS        0x0001
 #define TBS_VERT             0x0002
 #define TBS_HORZ             0x0000
@@ -506,28 +488,17 @@ static inline BOOL InitCommonControlsEx(const INITCOMMONCONTROLSEX *) { return T
 // Tooltips
 // ---------------------------------------------------------------------------
 //
-// Referenced by OVP/VulkanClient/AtmoControls.cpp, which gives every slider a
-// tooltip. DECLARATIONS ONLY -- there is no tooltip control in this shim, and
-// the client needs none for its code to be correct:
+// Declarations only -- there is no tooltip control in this shim. Callers that
+// create one still get a real window back (CreateWindowExA always creates one
+// even for an unregistered class), so their `if (!hwndTip) return;` guards do
+// not fire and the TTM_* sends really are issued. They are harmless:
+// TTM_ACTIVATE is WM_USER+1 and TTM_ADDTOOLA is WM_USER+4, which collide with
+// the trackbar's TBM_* range, but WM_USER+0..+8 is routed to the window's own
+// procedure for every class except the trackbar and progress bar, and a
+// tooltip window has no registered class and therefore no procedure. The
+// window is WS_POPUP without WS_VISIBLE, so nothing draws a stray box.
 //
-//   * CreateWindowEx on an unregistered class still returns a real window
-//     (Win32Dlg.cpp's CreateWindowExA always creates one), so the client's
-//     `if (!s.hWnd || !s.hwndTip) return;` guard does NOT fire -- the TTM_*
-//     sends below really are issued.
-//   * They are harmless. TTM_ACTIVATE is WM_USER+1 and TTM_ADDTOOLA is
-//     WM_USER+4, which is the collision THE WM_USER COLLISION in Win32Dlg.cpp
-//     is about -- and that fix already covers this: WM_USER+0..+8 goes to the
-//     window's OWN procedure for every class except the trackbar and the
-//     progress bar. A tooltip window is neither, has no registered class and
-//     therefore no procedure, so the message is swallowed rather than being
-//     read as TBM_GETRANGEMIN.
-//   * The window is created WS_POPUP with no WS_VISIBLE, so `visible` is
-//     false and nothing draws a stray box in the dialog.
-//
-// The consequence is exact and worth stating: tooltip TEXT is stored (the
-// client keeps it in sValue::tooltip either way) and tooltip DISPLAY does not
-// happen yet. Showing it is this shim's job, not the client's -- the renderer
-// already has the string it would need.
+// Net effect: tooltip text is stored and tooltip display does not happen.
 
 #define TOOLTIPS_CLASSA   "tooltips_class32"
 #define TOOLTIPS_CLASS    TOOLTIPS_CLASSA
@@ -559,8 +530,8 @@ static inline BOOL InitCommonControlsEx(const INITCOMMONCONTROLSEX *) { return T
 #define TTM_SETTOOLINFO     TTM_SETTOOLINFOA
 #define TTM_UPDATETIPTEXT   TTM_UPDATETIPTEXTA
 
-// Field order and types match the SDK's TTTOOLINFOA, because the client fills
-// one in and passes it by pointer through SendMessage.
+// Field order and types match the SDK's TTTOOLINFOA, because callers fill one
+// in and pass it by pointer through SendMessage.
 typedef struct tagTOOLINFOA {
     UINT      cbSize;
     UINT      uFlags;

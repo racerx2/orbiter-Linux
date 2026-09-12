@@ -10,73 +10,10 @@
 // variable resolutions (new version).
 // ==============================================================
 //
-// CONVERTED FROM OVP/D3D9Client/Tilemgr2.cpp, read end to end (1226 lines).
-//
-// The base of the v2 planet engine: one tile, the loader thread, and the
-// manager's world matrices. Most of it is spherical geometry and quadtree
-// bookkeeping and crosses unchanged. SIX THINGS ARE REAL WORK.
-//
-//  1. <io.h> IS GONE, AND WITH IT FileExists. _findfirst / _findclose /
-//     _finddata_t are the MSVC CRT's directory-search API and have no Linux
-//     counterpart. The answer is not to reimplement them: this file ALREADY
-//     INCLUDES <filesystem> and already asks std::filesystem::exists ten
-//     lines further down, in LoadTextureFile. So FileExists asks the same
-//     question the same way. The non-throwing overload is used because
-//     _findfirst reported "not found" by return value, not by exception.
-//
-//  2. THE TWO D3DX TEXTURE LOADERS. D3DXCreateTextureFromFileEx and
-//     D3DXCreateTextureFromFileInMemoryEx each did four things in one call:
-//     read the DDS header, choose a format (D3DFMT_FROM_FILE), allocate, and
-//     upload every mip level. There is no D3DX here, so the halves separate:
-//     read the bytes, then NatCreateTextureFromDDSInMemory -- the client's
-//     own decoder, the same one NatLoadSurface and RingManager use.
-//
-//     D3DPOOL_SYSTEMMEM has no counterpart and needs none: the "pre" texture
-//     exists to be copied into the pooled one, which is exactly what a
-//     staging resource is, and memory placement follows the usage flags.
-//     D3DX_FILTER_BOX with MipLevels=0 asked D3DX to BUILD a mip chain the
-//     file might not carry; the decoder loads the levels the file has, so
-//     that generation is now an explicit GenerateMipmaps.
-//
-//  3. UpdateTexture -> BlitTexture. IDirect3DDevice9::UpdateTexture copied a
-//     SYSTEMMEM texture into a DEFAULT one, every matching mip level, no
-//     scaling and no conversion. VulkanDevice::BlitTexture is that: it takes
-//     min(src,dst) levels, and for a same-format same-size pair -- which is
-//     every tile -- it takes its vkCmdCopyImage path rather than
-//     vkCmdBlitImage, WHICH MATTERS, because a block-compressed image cannot
-//     be the destination of a blit at all and every surface tile is DXT.
-//
-//  4. Tile::Pick LOSES D3DXIntersectTri, which is written out. It is
-//     Möller-Trumbore, and the two facts that had to be preserved rather
-//     than assumed are the meaning of its outputs: u and v are barycentric
-//     against the FIRST vertex, so the hit point is p0 + u(p1-p0) + v(p2-p0),
-//     and dist is measured in units of the ray direction's own length (which
-//     is NOT normalised here). The caller reconstructs the point as
-//     _b*u + _a*v + _c*(1-u-v) after passing (_c,_b,_a) -- which is the same
-//     expression, and is what pins the convention down.
-//
-//  5. D3DXMatrixInverse's determinant output is dropped. The Windows call
-//     passes &det and nothing ever reads it; VMAT_MatrixInvert does not
-//     offer one.
-//
-//  6. THE THREE FONT/TEXTURE GLOBALS. CreateFont and DeleteObject are Win32
-//     GDI, not Direct3D, and the shim supplies both, so the debug font is
-//     unchanged. SAFE_RELEASE on the three textures becomes
-//     VulkanDevice::DestroyTexture -- there is no reference count.
-//
-// THE LOADER THREAD IS NOT CONVERTED. CreateThread, CreateEvent, CreateMutex,
-// SetEvent, ResetEvent, WaitForSingleObject, CloseHandle and Sleep are Win32
-// kernel calls, not Direct3D, and Src/Orbiter/Linux/windows.h implements every
-// one of them over pthreads. Rewriting it on std::thread would be reinventing
-// working code, which is exactly what this conversion is not for.
-//
-// Two initialiser lists are reordered into declaration order -- Tile's, which
-// is badly out of order, and TileManager2Base's. Tile's is worth a second
-// look rather than a mechanical fix: it initialises `cnt(Centre())`, and
-// Centre() reads lvl, ilat and ilng. Those are members 1, 2 and 3 and cnt is
-// member 15, so the call is safe -- but it is safe because of DECLARATION
-// order, not because of the order the list is written in. Fourteenth
-// instance of the -Wreorder class in this client.
+// D3DXCreateTextureFromFileEx and D3DXCreateTextureFromFileInMemoryEx did
+// four things in one call: read the DDS header, choose a format, allocate,
+// and upload every mip level. With no D3DX the halves separate -- read the
+// bytes, then NatCreateTextureFromDDSInMemory, the client's own decoder.
 // ==============================================================
 
 #include "Tilemgr2.h"
@@ -87,7 +24,7 @@
 #include "OapiExtension.h"
 
 #include <stack>
-// <io.h> stood here, for _findfirst/_findclose in FileExists. See point 1.
+// <io.h> stood here, for _findfirst/_findclose in FileExists.
 #include <filesystem>
 
 // =======================================================================
@@ -99,14 +36,9 @@ int SURF_MAX_PATCHLEVEL2 = 18; // move this somewhere else
 
 bool FileExists(const char* path)
 {
-	// Was:
-	//     struct _finddata_t fd;
-	//     intptr_t fh = _findfirst(path, &fd);
-	//     if (exists = (fh != -1)) _findclose(fh);
-	// _findfirst is the MSVC CRT's directory search and has no counterpart.
-	// The file already asks std::filesystem this same question in
-	// LoadTextureFile below; the error_code overload is used because
-	// _findfirst reported failure by return value rather than by throwing.
+	// Was _findfirst/_findclose, the MSVC CRT's directory search, which has no
+	// Linux counterpart. The error_code overload is used because _findfirst
+	// reported failure by return value rather than by throwing.
 	std::error_code ec;
 	return std::filesystem::exists(path, ec);
 }
@@ -115,12 +47,9 @@ bool FileExists(const char* path)
 // -----------------------------------------------------------------------
 // Read a DDS file into a VulkanTexture. Declared in Tilemgr2.h.
 //
-// NO WINDOWS COUNTERPART, because on Windows this WAS one call --
-// D3DXCreateTextureFromFileEx / D3DXCreateTextureFromFileA, both of which
-// opened the file and decoded it in one step. There is no D3DX here, so the
-// file read and the decode are two operations, and six call sites across this
-// file and Surfmgr2.cpp need both. Written once rather than six times, which
-// is how the six would otherwise drift apart.
+// No Windows counterpart: D3DXCreateTextureFromFileEx and
+// D3DXCreateTextureFromFileA opened and decoded in one step. Six call sites
+// across this file and Surfmgr2.cpp need both halves.
 // -----------------------------------------------------------------------
 
 VulkanTexture *LoadDDSFile(const char *path, bool bFullMipChain)
@@ -145,6 +74,10 @@ VulkanTexture *LoadDDSFile(const char *path, bool bFullMipChain)
 // =======================================================================
 // Class Tile
 
+// Initialiser list reordered to declaration order (-Wreorder). Note cnt is
+// initialised from Centre(), which reads lvl, ilat and ilng; those are
+// declared before cnt, so the call was and remains safe -- by declaration
+// order, not by the order the list happens to be written in.
 Tile::Tile (TileManager2Base *_mgr, int _lvl, int _ilat, int _ilng)
 : mgr(_mgr), lvl(_lvl), ilat(_ilat), ilng(_ilng),
   tex(NULL), overlay(NULL),
@@ -189,16 +122,12 @@ bool Tile::LoadTextureFile(const char *fullpath, VulkanTexture **pPre)
 	std::error_code ec;
 	if (std::filesystem::exists(fullpath, ec)) {
 
-		// Was D3DXCreateTextureFromFileEx(mgr->Dev(), fullpath, 0, 0, Mips, 0,
-		// D3DFMT_FROM_FILE, D3DPOOL_SYSTEMMEM, D3DX_DEFAULT, Filter, 0, NULL,
-		// NULL, pPre). See point 2 in the file header.
-		//
-		// `Mips = 0, Filter = D3DX_FILTER_BOX` when bMipmaps -- "the whole
-		// chain, generated where the file has none" -- is bFullMipChain. It
-		// CANNOT be VulkanDevice::GenerateMipmaps: every tile file is a
-		// single-level DXT image and no Vulkan call writes block-compressed
-		// output, so the chain is built on the CPU inside the decoder. See
-		// NatBuildMipChain in VulkanSurface.cpp.
+		// Was D3DXCreateTextureFromFileEx(..., D3DFMT_FROM_FILE,
+		// D3DPOOL_SYSTEMMEM, ...). Its `Mips = 0, Filter = D3DX_FILTER_BOX`
+		// pair -- the whole chain, generated where the file has none -- is
+		// bFullMipChain, and it cannot be VulkanDevice::GenerateMipmaps: every
+		// tile file is a single-level DXT image and no Vulkan call writes
+		// block-compressed output, so the decoder builds the chain on the CPU.
 		VulkanTexture *pT = LoadDDSFile(fullpath, bMipmaps);
 
 		if (pT) {
@@ -214,8 +143,7 @@ bool Tile::LoadTextureFile(const char *fullpath, VulkanTexture **pPre)
 bool Tile::LoadTextureFromMemory(void *data, DWORD ndata, VulkanTexture **pPre)
 {
 	// Was D3DXCreateTextureFromFileInMemoryEx with the same arguments as
-	// above. Here the bytes are already in memory, so only the decode is
-	// needed.
+	// above; the bytes are already in memory, so only the decode is needed.
 	VulkanTexture *pT = NatCreateTextureFromDDSInMemory(data, size_t(ndata), bMipmaps);
 
 	if (pT) {
@@ -235,16 +163,17 @@ bool Tile::LoadTextureFromMemory(void *data, DWORD ndata, VulkanTexture **pPre)
 bool Tile::CreateTexture(VulkanDevice *pDev, VulkanTexture *pPre, VulkanTexture **pTex)
 {
 	if (pPre) {
-		// GetLevelDesc(0, &desc) asked the runtime what level 0 looks like.
-		// A VkImage answers no questions about itself, so VulkanTexture keeps
-		// what it was created with -- which is the same information.
+		// GetLevelDesc(0, &desc) asked the runtime what level 0 looks like. A
+		// VkImage answers no questions about itself, so VulkanTexture keeps
+		// what it was created with.
 		const VulkanImageDesc &desc = pPre->Desc();
 		*pTex = g_pTexmgr_tt->New(desc.Width, desc.Format);
 		if (!*pTex) return false;
-		// HR(pDev->UpdateTexture(pPre, *pTex)). See point 3 in the file
-		// header: same format, same size, every matching mip level, and the
-		// vkCmdCopyImage path rather than a blit -- which is the only path a
-		// block-compressed destination has.
+		// Was HR(pDev->UpdateTexture(pPre, *pTex)): every matching mip level,
+		// no scaling, no conversion. BlitTexture takes its vkCmdCopyImage
+		// path for a same-format same-size pair, which is every tile here and
+		// is the only path a block-compressed destination has -- a BC image
+		// cannot be the destination of vkCmdBlitImage.
 		pDev->BlitTexture(*pTex, pPre);
 		return true;
 	}
@@ -415,14 +344,8 @@ FVECTOR3 Tile::GetBoundingSpherePos() const
 }
 
 // -----------------------------------------------------------------------
-// D3DXIntersectTri, written out, STOOD HERE and has moved to
-// VectorHelpers.h -- unchanged, with its note.
-//
-// It moved when VulkanMesh::Pick became the second caller. It was written
-// here because Tile::Pick was the first file that needed it, and a copy per
-// file is how two of them end up disagreeing -- the same reasoning that put
-// MatrixInverse in that header rather than in whichever file reached it
-// first. Nothing about the function changed.
+// D3DXIntersectTri, written out, stood here; it now lives in VectorHelpers.h
+// as IntersectTri, having gained a second caller in VulkanMesh::Pick.
 // -----------------------------------------------------------------------
 
 bool Tile::Pick(const FMATRIX4 *pW, const FVECTOR3 *vDir, TILEPICK &result)
@@ -452,9 +375,9 @@ bool Tile::Pick(const FMATRIX4 *pW, const FVECTOR3 *vDir, TILEPICK &result)
 	WORD *pIdc = mesh->idx;
 	VERTEX_2TEX *vtx = mesh->vtx;
 
-	// D3DXMatrixInverse(&mWI, &det, pW). The determinant output is never
-	// read; VMAT_MatrixInvert does not produce one and takes a non-const
-	// source, so the matrix is copied.
+	// Was D3DXMatrixInverse(&mWI, &det, pW). The determinant is never read;
+	// VMAT_MatrixInvert produces none and takes a non-const source, hence the
+	// copy.
 	FMATRIX4 mW = *pW;
 	VMAT_MatrixInvert(&mWI, &mW);
 	pos = oapi::TransformCoord(FVECTOR3(0.0f, 0.0f, 0.0f), mWI);
@@ -641,8 +564,7 @@ VBMESH *Tile::CreateMesh_quadpatch (int grdlat, int grdlng, float *elev, double 
 				if      (tpos.z < tpmin.z) tpmin.z = tpos.z;
 				else if (tpos.z > tpmax.z) tpmax.z = tpos.z;
 			}
-			// D3DVAL(x) was `(float)(x)`, spelled with a D3D name. FVAL is
-			// the same cast under a name that does not refer to Direct3D.
+			// D3DVAL(x) was `(float)(x)`; FVAL is the same cast, renamed.
 			vtx[n].x = FVAL(pos.x - dx); vtx[n].nx = FVAL(nml.x);
 			vtx[n].y = FVAL(pos.y - dy); vtx[n].ny = FVAL(nml.y);
 			vtx[n].z = FVAL(pos.z);      vtx[n].nz = FVAL(nml.z);
@@ -941,9 +863,8 @@ VBMESH *Tile::CreateMesh_hemisphere (int grd, float *elev, double globelev)
 		}
 	}
 
-	// nvtx and nidx are counted and never read -- both are computed up front
-	// as nVtx and nIdx, which is what the mesh is given. Referenced so that
-	// -Wunused-but-set-variable does not fire on counters the reference keeps.
+	// nvtx and nidx are counted and never read; the mesh is given nVtx and
+	// nIdx, computed up front. Referenced to quiet -Wunused-but-set-variable.
 	(void)nvtx; (void)nidx;
 
 	// create the mesh
@@ -1209,10 +1130,9 @@ TileManager2Base::ConfigPrm TileManager2Base::cprm = {
 	false,				// bLights
 	false,              // bCloudShadow
 	0.5,                // lightfac
-	// ConfigPrm's last member, tileLoadFlags, is not in the Windows
-	// initialiser; aggregate initialisation zeroes it, and GlobalInit
-	// overwrites it from Config->PlanetTileLoadFlags before anything reads
-	// it. Spelled out because -Wextra reports the omission and MSVC does not.
+	// tileLoadFlags is not in the Windows initialiser: aggregate
+	// initialisation zeroes it and GlobalInit overwrites it from
+	// Config->PlanetTileLoadFlags. Spelled out for -Wextra.
 	0                   // tileLoadFlags
 };
 oapi::VulkanClient* TileManager2Base::gc = NULL;
@@ -1232,10 +1152,8 @@ TileManager2Base::TileManager2Base (vPlanet *vplanet, int _maxres, int _gridres)
 : ElevMode(eElevMode::DontCare), ElevModeLvl(0),
   cullMode(ShaderClass::CULL_NONE), vp(vplanet), gridRes(_gridres)
 {
-	// The Windows list reads vp, gridRes, ElevMode, ElevModeLvl; the members
-	// are declared ElevMode, ElevModeLvl, ..., vp, ..., gridRes. Reordered to
-	// declaration order -- every value is a constant or a parameter, so
-	// nothing observable changes.
+	// Initialiser list reordered to declaration order (-Wreorder). Every value
+	// is a constant or a parameter, so nothing observable changes.
 
 	// set persistent parameters
 	TilesLoaded = 0;
@@ -1281,16 +1199,11 @@ void TileManager2Base::GlobalInit (class oapi::VulkanClient *gclient)
 
 	loader = new TileLoader (gc);
 
-	// CreateFont and DeleteObject are Win32 GDI, not Direct3D, and the shim
-	// implements both. Unchanged, including the signed height -- the sign of
-	// lfHeight carries the cell-vs-em meaning and is not recoverable from the
-	// magnitude.
 	hFont  = CreateFont(42, 0, 0, 0, 600, false, false, 0, 0, 0, 2, CLEARTYPE_QUALITY, 49, "Arial");
 
 	char name[MAX_PATH];
 
-	// Was D3DXCreateTextureFromFileA(pDev, name, &hXxx) three times: open,
-	// decode, allocate, upload. See point 2 in the file header.
+	// Was D3DXCreateTextureFromFileA(pDev, name, &hXxx) three times.
 	if (gc->TexturePath("D3D9Ocean.dds", name)) hOcean = LoadDDSFile(name);
 	if (gc->TexturePath("cloud1.dds", name)) hCloudMicro = LoadDDSFile(name);
 	if (gc->TexturePath("cloud1_norm.dds", name)) hCloudMicroNorm = LoadDDSFile(name);
@@ -1308,8 +1221,8 @@ bool TileManager2Base::ShutDown()
 void TileManager2Base::GlobalExit ()
 {
 	DeleteObject(hFont); hFont = NULL;
-	// SAFE_RELEASE dropped a COM reference count. vkDestroyImage takes the
-	// VkDevice that made the image, so the device does the destruction.
+	// Was SAFE_RELEASE. vkDestroyImage takes the VkDevice that made the
+	// image, so the device does the destruction.
 	if (hOcean) { pDev->DestroyTexture(hOcean); hOcean = NULL; }
 	if (hCloudMicro) { pDev->DestroyTexture(hCloudMicro); hCloudMicro = NULL; }
 	if (hCloudMicroNorm) { pDev->DestroyTexture(hCloudMicroNorm); hCloudMicroNorm = NULL; }

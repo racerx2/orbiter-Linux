@@ -4,16 +4,6 @@
 // Dual licensed under GPL v3 and LGPL v3
 // Copyright (C) 2007-2026 Martin Schweiger
 // ==============================================================
-//
-// CONVERTED FROM OVP/D3D9Client/SurfMgr.h, read end to end (37 lines).
-//
-// The v1 surface manager: TileManager's concrete subclass. Six declarations,
-// and every change is a type already fixed in TileMgr.h --
-// oapi::D3D9Client -> oapi::VulkanClient, LPDIRECT3DDEVICE9 -> VulkanDevice*,
-// D3DXMATRIX -> FMATRIX4, LPD3DXMATRIX -> FMATRIX4*, and
-// LPDIRECT3DTEXTURE9 -> VulkanTexture*. The signatures must match the pure
-// virtuals in TileMgr.h exactly, which is what makes this file mechanical.
-// ==============================================================
 
 #ifndef __SURFMGR_H
 #define __SURFMGR_H

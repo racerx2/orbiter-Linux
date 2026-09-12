@@ -4,12 +4,6 @@
 // Dual licensed under GPL v3 and LGPL v3
 // Copyright (C) 2006-2026 Martin Schweiger
 // ==============================================================
-//
-// CONVERTED FROM OVP/D3D9Client/VStar.h, read end to end (58 lines).
-// Two types: oapi::D3D9Client -> oapi::VulkanClient and
-// LPDIRECT3DDEVICE9 -> VulkanDevice*. Nothing else in the file names
-// Direct3D.
-// ==============================================================
 
 #ifndef __VSTAR_H
 #define __VSTAR_H

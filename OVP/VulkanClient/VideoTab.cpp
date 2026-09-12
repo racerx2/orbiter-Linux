@@ -8,72 +8,16 @@
 //				 2010-2016 Jarmo Nikkanen (D3D9Client implementation)
 // ==============================================================
 //
-// CONVERTED FROM OVP/D3D9Client/VideoTab.cpp, read end to end (1051 lines).
+// Direct3DCreate9() gave the Windows client a g_pD3DObject it could enumerate
+// hardware with before any device existed -- exactly what a Launchpad tab
+// needs. Its three uses split three ways here: adapters come from the core's
+// VkInstance, display modes from the window system (Vulkan does not enumerate
+// them at all), and caps from VkPhysicalDeviceLimits.
 //
-// THIS FILE IS A WIN32 DIALOG that happens to ask a graphics API three
-// questions. Nine tenths of it -- SendDlgItemMessage, EnableWindow,
-// GetWindowText, the sliders, the check boxes, the whole of SaveSetupState --
-// is Win32, not Direct3D, and crosses unchanged against
-// Src/Orbiter/Linux/windows.h. What changed:
-//
-//  1. g_pD3DObject IS GONE, and it is the thing this file was built around.
-//     Direct3DCreate9() gave the Windows client an object it could enumerate
-//     hardware with BEFORE any device existed, which is exactly what a
-//     Launchpad tab needs. Its three uses split into two different Linux
-//     answers, because Vulkan and the windowing system answer different halves
-//     of what D3D9 answered alone:
-//
-//       ADAPTERS -- GetAdapterCount / GetAdapterIdentifier -> the core's
-//       VkInstance (orbiter_GetVulkanContext, which is idempotent and safe to
-//       call before the Launchpad has drawn a frame), then
-//       vkEnumeratePhysicalDevices and vkGetPhysicalDeviceProperties. The
-//       device name is deviceName, which is what Description was.
-//
-//       DISPLAY MODES -- GetAdapterDisplayMode / GetAdapterModeCount /
-//       EnumAdapterModes -> orbiter_GetCurrentVideoMode /
-//       orbiter_GetVideoModeCount / orbiter_GetVideoMode. Vulkan does not
-//       enumerate display modes at all; that is a window-system question, and
-//       UIHost.cpp publishes these three FOR THIS TAB.
-//
-//       CAPS -- GetDeviceCaps().MaxAnisotropy ->
-//       VkPhysicalDeviceLimits::maxSamplerAnisotropy;
-//       CheckDeviceMultiSampleType -> limits.framebufferColorSampleCounts.
-//
-//     The D3DFMT_X8R8G8B8 argument to the mode queries disappears rather than
-//     being translated: it asked for the modes available in one back-buffer
-//     format, and the swapchain format here is chosen by the core, not by
-//     this tab.
-//
-//  2. THE MODE LIST IS PER-MONITOR, NOT PER-ADAPTER. SelectAdapter re-lists
-//     the modes when the user picks a different GPU, and on Linux it gets the
-//     same list back, because glfwGetVideoModes asks the MONITOR. That is not
-//     a loss: the modes a monitor accepts do not depend on which GPU drives
-//     it. The loop is kept as written so the combo is still rebuilt and
-//     reselected.
-//
-//  3. TWO WIN32 FILE APIS BECOME PORTABLE ONES, on precedents this conversion
-//     already set. CreateFile/GetFileSize/ReadFile/CloseHandle in
-//     InitCreditsDialog become stdio -- the same decision D3D9Util.cpp's
-//     shader cache took, and the reason is the same: the shim implements no
-//     kernel file handles and defines no INVALID_HANDLE_VALUE.
-//     FindFirstFileA/FindNextFileA/FindClose in ScanAtmoCfgs become
-//     std::filesystem::directory_iterator with a case-insensitive suffix
-//     test, which is exactly what vPlanet::EnumerateDirectory became.
-//
-//  4. FOUR MORE WINDOWS PATHS (finding 24). "GC\\" twice, the scenario path's
-//     trailing-backslash trim and its separator, and
-//     "Modules/D3D9Client/Credits.rtf" -- which was already forward-slashed
-//     and only needed the client's rename.
-//
-//  5. TWO ADDITIONS TO THE SHIM, both pure window-tree walks over state
-//     Win32Dlg.cpp already keeps: GetAncestor and EnumChildWindows. See
-//     UpdateConfigData, and the core section of the ledger.
-//
-//  6. THE CREDITS BOX WILL BE EMPTY, and that is recorded rather than worked
-//     around: EM_SETTEXTEX now exists in the shim's richedit.h so this file
-//     compiles as written, but Win32Dlg.cpp implements no rich edit control,
-//     so the message is not answered. Substituting WM_SETTEXT would put raw
-//     RTF markup on screen, which is worse than blank.
+// The credits box will be empty. EM_SETTEXTEX exists in the shim's richedit.h
+// so this file compiles as written, but Win32Dlg.cpp implements no rich edit
+// control, so the message is never answered. Substituting WM_SETTEXT would put
+// raw RTF markup on screen instead.
 // ==============================================================
 
 #include "VulkanClient.h"
@@ -88,8 +32,7 @@
 #include <vector>
 #include <sstream>
 #include <richedit.h>
-// <filesystem> for ScanAtmoCfgs, <algorithm> and <cctype> for the
-// case-insensitive suffix test that replaces FindFirstFile's wildcard.
+// For ScanAtmoCfgs, which replaces FindFirstFile's case-insensitive wildcard.
 #include <filesystem>
 #include <algorithm>
 #include <cctype>
@@ -128,18 +71,9 @@ VideoTab::~VideoTab()
 
 
 // ==============================================================
-// The two hardware queries that replace g_pD3DObject.
-//
-// They are file-static rather than members because they answer questions
-// about the machine, not about this dialog, and because the Windows original
-// asked them through a global for the same reason.
-//
-// GetPhysicalDevices() is GetAdapterCount() + GetAdapterIdentifier() in one:
-// D3D9 numbered its adapters and handed back a description string per index,
-// which is what vkEnumeratePhysicalDevices plus vkGetPhysicalDeviceProperties
-// gives. The VkInstance is the CORE's -- the client creates none, and
-// orbiter_GetVulkanContext is documented as callable before the Launchpad has
-// drawn a frame, which is precisely this case.
+// Replaces GetAdapterCount() + GetAdapterIdentifier(). The VkInstance is the
+// core's -- the client creates none, and orbiter_GetVulkanContext is callable
+// before the Launchpad has drawn a frame, which is precisely this case.
 // ==============================================================
 
 static bool GetPhysicalDevices(std::vector<VkPhysicalDevice> &out)
@@ -205,15 +139,13 @@ BOOL VideoTab::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 				SelectFullscreen(data->fullscreen);
 				return TRUE;
 			}
-			// FINDING 42: THIS CASE HAS NO break, ON WINDOWS EITHER. Any
-			// IDC_VID_BPP notification that is not CBN_SELCHANGE falls into
-			// IDC_VID_FULL below, and BN_CLICKED is 0 -- so a combo
-			// notification with a zero high word (CBN_ERRSPACE, and
-			// CBN_SELENDOK's neighbours) switches the dialog to full screen
-			// and sets data->fullscreen = true. Left as written, because
-			// adding the break changes what the dialog does; the marker below
-			// only tells GCC that the fall-through was seen, since -Wextra
-			// reports it and MSVC does not.
+			// This case has no break, on Windows either. Any IDC_VID_BPP
+			// notification that is not CBN_SELCHANGE falls into IDC_VID_FULL
+			// below, and BN_CLICKED is 0 -- so a combo notification with a
+			// zero high word switches the dialog to full screen and sets
+			// data->fullscreen = true. Left as written, because adding the
+			// break changes what the dialog does; the marker only tells GCC
+			// the fall-through was seen (-Wextra reports it, MSVC does not).
 			[[fallthrough]];
 
 		case IDC_VID_FULL:
@@ -281,11 +213,9 @@ BOOL VideoTab::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 
 bool VideoTab::Initialise()
 {
-	// D3DDISPLAYMODE mode, curMode; and D3DADAPTER_IDENTIFIER9 info; stood
-	// here. A display mode is three integers and a format, and the format has
-	// gone with the query that took it; an adapter identifier was a hundred
-	// bytes of driver strings and GUIDs of which one field, Description, was
-	// read.
+	// Replaces D3DDISPLAYMODE and D3DADAPTER_IDENTIFIER9. The mode's format
+	// went with the query that took it; of the identifier only Description was
+	// ever read.
 	int curW = 0, curH = 0, curHz = 0;
 
 	GraphicsClient::VIDEODATA *data = gclient->GetVideoData();
@@ -314,8 +244,7 @@ bool VideoTab::Initialise()
 	if (data->deviceidx < 0 || (data->deviceidx)>=nAdapter) data->deviceidx = 0;
 
 	for (int i=0;i<nAdapter;i++) {
-		// GetAdapterIdentifier(i, 0, &info) -> the device's own properties.
-		// deviceName is what Description was: the name the driver reports.
+		// deviceName is what D3DADAPTER_IDENTIFIER9::Description was.
 		VkPhysicalDeviceProperties props;
 		vkGetPhysicalDeviceProperties(devices[i], &props);
 		LogAlw("Adapter %d: %s", i, props.deviceName);
@@ -325,16 +254,15 @@ bool VideoTab::Initialise()
 	SendDlgItemMessage(hTab, IDC_VID_DEVICE, CB_SETCURSEL, data->deviceidx, 0);
 
 
-	// GetAdapterDisplayMode(deviceidx, &curMode) -- "what is the desktop
-	// showing right now". Vulkan cannot answer that; the window system can,
-	// and UIHost.cpp publishes it for exactly this line.
+	// Was GetAdapterDisplayMode(). Vulkan cannot say what the desktop is
+	// showing; the window system can, and UIHost.cpp publishes it.
 	orbiter_GetCurrentVideoMode(&curW, &curH, &curHz);
 
 	LogAlw("Current Mode W=%u, H=%u", curW, curH);
 
-	// GetAdapterModeCount(deviceidx, D3DFMT_X8R8G8B8). The format argument has
-	// no counterpart: it asked which modes the adapter offers in one
-	// back-buffer format, and the swapchain format here is the core's choice.
+	// The D3DFMT_X8R8G8B8 argument to GetAdapterModeCount has no counterpart:
+	// it asked which modes the adapter offers in one back-buffer format, and
+	// the swapchain format here is the core's choice.
 	UINT nModes = UINT(orbiter_GetVideoModeCount());
 
 	if (nModes == 0) {
@@ -405,12 +333,11 @@ void VideoTab::SelectMode(DWORD index)
 // ==============================================================
 // Respond to user adapter selection
 //
-// THE MODE LIST IS THE SAME LIST WHICHEVER ADAPTER IS PICKED, and that is
-// correct rather than a shortcut. D3D9 enumerated modes per ADAPTER;
-// glfwGetVideoModes enumerates them per MONITOR, and the resolutions a monitor
-// accepts do not depend on which GPU is driving it. The rebuild is kept so the
-// combo is still reset and reselected, which is what the rest of the dialog
-// expects after a device change.
+// The mode list comes back the same whichever adapter is picked: D3D9
+// enumerated modes per adapter, glfwGetVideoModes enumerates them per monitor,
+// and the resolutions a monitor accepts do not depend on which GPU drives it.
+// The rebuild is kept so the combo is still reset and reselected, which is
+// what the rest of the dialog expects after a device change.
 //
 bool VideoTab::SelectAdapter(DWORD index)
 {
@@ -422,8 +349,6 @@ bool VideoTab::SelectAdapter(DWORD index)
 	std::vector<VkPhysicalDevice> devices;
 
 	if (!GetPhysicalDevices(devices)) {
-		// Was "Direct3DCreate9 Failed" on a NULL g_pD3DObject. The equivalent
-		// failure is the core having no Vulkan instance to hand over.
 		LogErr("VideoTab::SelectAdapter(%u) No Vulkan instance available", index);
 		return false;
 	}
@@ -436,9 +361,8 @@ bool VideoTab::SelectAdapter(DWORD index)
 			return false;
 		}
 
-		// GetAdapterDisplayMode(D3DADAPTER_DEFAULT, &curMode) stood here, and
-		// curMode was never read afterwards -- one more of finding 35. The
-		// query goes with the variable rather than being kept to be discarded.
+		// A GetAdapterDisplayMode(D3DADAPTER_DEFAULT, &curMode) stood here
+		// whose result was never read; it went with the variable.
 
 		SendDlgItemMessage(hTab, IDC_VID_MODE, CB_RESETCONTENT, 0, 0);
 
@@ -542,23 +466,15 @@ void VideoTab::SelectHeight ()
 // ==============================================================
 // copy dialog state back to parameter structure
 //
-// THE SCENARIO BLOCK BELOW IS WIN32 UI, NOT DIRECT3D, and it is converted as
-// written. Two things about it are worth recording.
+// The scenario block below needed two shim additions, GetAncestor and
+// EnumChildWindows -- both pure walks over the window tree Win32Dlg.cpp already
+// maintains. It looks for Orbiter's Launchpad scenario tree by control id,
+// which on Linux is an ImGui tree in UIHost.cpp and not a window at all, so
+// EnumChildWindows finds nothing and the function takes its own "FAILED to get
+// a handle of a scenario dialog" path -- one the Windows version also handles.
 //
-// It needed two shim additions, GetAncestor and EnumChildWindows -- both pure
-// walks over the window tree Win32Dlg.cpp already maintains. And it looks for
-// Orbiter's own Launchpad scenario tree by control id, which on Linux is an
-// ImGui tree in UIHost.cpp and not a window at all; so EnumChildWindows finds
-// nothing and the function takes its own "FAILED to get a handle of a scenario
-// dialog" path, which is a path the Windows version already handles.
-//
-// FINDING 43: NOTHING READS THE RESULT. gclient->SetScenarioName(path) writes
-// VulkanClient::scenarioName, and scenarioName is written by that setter, set
-// once more in the constructor, and never read anywhere in the client on
-// either platform. So the whole block is a path computation whose product is
-// discarded. Converted rather than deleted, on the same principle as
-// CSphereManager::CreateDeviceObjects -- deleting dead code is a separate
-// decision from porting it.
+// Nothing reads the result either way: SetScenarioName writes
+// VulkanClient::scenarioName, which is never read on either platform.
 
 void VideoTab::UpdateConfigData()
 {
@@ -610,16 +526,13 @@ void VideoTab::UpdateConfigData()
 
 		using std::string;
 		string path = OapiExtension::GetScenarioDir();
-		// Was find_last_not_of('\\') and path += "\\". A scenario directory on
-		// Linux is separated with '/', and this string is opened as a file --
-		// finding 24. Two more instances.
+		// Was find_last_not_of('\\'), and path += "\\" below. This string is
+		// opened as a file, so the separator has to be '/'.
 		path.erase( path.find_last_not_of( '/' )+1 ); // trim trailing path-delimiter
 
 		char buf[MAX_PATH];
-		// Was = {0}, which -Wextra reports as leaving eight members
-		// uninitialised even though the language value-initialises every one
-		// of them. = {} says the same thing without the report and produces
-		// the identical object. Finding 36's family.
+		// Was = {0}; -Wextra reports that as leaving members uninitialised even
+		// though the language value-initialises all of them. = {} is identical.
 		TVITEMA tvItem = {};
 		tvItem.mask = TVIF_TEXT | TVIF_HANDLE;
 		tvItem.pszText = buf;
@@ -627,10 +540,8 @@ void VideoTab::UpdateConfigData()
 
 		for (auto it = hNodes.crbegin(); it != hNodes.crend(); ++it) {
 			tvItem.hItem = *it;
-			// The (void) is the macro's return value, which this call has
-			// always discarded: TreeView_GetItem expands to a SendMessage
-			// cast to BOOL, and GCC reports an unused computed value under
-			// -Wall where MSVC's equivalent is off by default.
+			// (void) discards the macro's BOOL, which this call always
+			// discarded; GCC reports the unused computed value under -Wall.
 			(void)TreeView_GetItem(hTree, &tvItem);
 			// Note: The returned text will not necessarily be stored in the
 			//       original buffer passed by the application.
@@ -735,11 +646,9 @@ void VideoTab::InitSetupDialog(HWND hWnd)
 	char cbuf[32];
 	DWORD aamax = 0;
 
-	// Was D3DCAPS9 caps; and GetDeviceCaps(idx, D3DDEVTYPE_HAL, &caps).
-	// D3DCAPS9 was one struct covering limits, format support and feature
-	// bits; Vulkan splits those three, and the one field this function reads
-	// -- MaxAnisotropy -- lives in the limits. Held as its own variable
-	// because that is all of D3DCAPS9 the file uses.
+	// Was D3DCAPS9 caps + GetDeviceCaps(). D3DCAPS9 covered limits, format
+	// support and feature bits in one struct; Vulkan splits the three, and the
+	// only field this file reads, MaxAnisotropy, is among the limits.
 	float maxAniso = 1.0f;
 
 	std::vector<VkPhysicalDevice> devices;
@@ -753,15 +662,12 @@ void VideoTab::InitSetupDialog(HWND hWnd)
 	vkGetPhysicalDeviceProperties(devices[SelectedAdapterIdx], &props);
 	maxAniso = props.limits.maxSamplerAnisotropy;
 
-	// CheckDeviceMultiSampleType(adapter, HAL, X8R8G8B8, windowed, N_SAMPLES,
-	// NULL) == S_OK -> "does this format support N-sample multisampling".
-	// Vulkan answers it as a bitmask of the counts a colour attachment may
-	// have, which is the same question for every colour format at once.
+	// CheckDeviceMultiSampleType, asked once per sample count per format,
+	// becomes one bitmask of the counts a colour attachment may have.
 	//
-	// WORTH KNOWING, though it is not this file's business to fix: the core's
-	// render pass is created with VK_SAMPLE_COUNT_1_BIT (UIHost.cpp), so what
-	// this combo offers is what the HARDWARE can do, exactly as the D3D9 query
-	// reported, and not what the client can currently switch on.
+	// The core's render pass is created with VK_SAMPLE_COUNT_1_BIT
+	// (UIHost.cpp), so this combo offers what the hardware can do -- as the
+	// D3D9 query also did -- not what the client can currently switch on.
 	const VkSampleCountFlags aa = props.limits.framebufferColorSampleCounts;
 
 	if (aa & VK_SAMPLE_COUNT_2_BIT) aamax=2;
@@ -940,9 +846,8 @@ void VideoTab::InitSetupDialog(HWND hWnd)
 	// Earth AtmoConfig -------------------------------
 	SendDlgItemMessage(hWnd, IDC_EARTHVISCFG, CB_RESETCONTENT, 0, 0);
 	for (auto x : AtmoCfgs["Earth"]) SendDlgItemMessageA(hWnd, IDC_EARTHVISCFG, CB_ADDSTRING, 0, (LPARAM)x.cfg.c_str());
-	// int against vector::size() -- one more of finding 26. The index is never
-	// negative and the count never exceeds INT_MAX, so int() at the comparison
-	// says which of the two the loop means.
+	// int() at the comparison settles the signed/unsigned warning; the count
+	// never exceeds INT_MAX.
 	for (int i = 0; i < int(AtmoCfgs["Earth"].size()); i++) {
 		if (Config->AtmoCfg["Earth"] == AtmoCfgs["Earth"][i].file) {
 			SendDlgItemMessage(hWnd, IDC_EARTHVISCFG, CB_SETCURSEL, i, 0);
@@ -1042,8 +947,8 @@ void VideoTab::InitSetupDialog(HWND hWnd)
 	SetWindowText(GetDlgItem(hWnd, IDC_PLANETGLOW), cbuf);
 
 	// caps.MaxAnisotropy was a DWORD; maxSamplerAnisotropy is a float, because
-	// Vulkan's sampler takes a float ratio. The DWORD cast is where the two
-	// meet, and it truncates towards zero exactly as the switch below expects.
+	// Vulkan's sampler takes a float ratio. The cast truncates towards zero,
+	// which is what the switch below expects.
 	DWORD af = min(DWORD(maxAniso), DWORD(Config->Anisotrophy));
 
 	switch(af) {
@@ -1185,22 +1090,12 @@ INT_PTR CALLBACK VideoTab::CreditsDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, L
 }
 
 // ==============================================================
-// Was CreateFile / GetFileSize / ReadFile / CloseHandle over a HANDLE, with
-// INVALID_HANDLE_VALUE as the failure test.
+// Was CreateFile / GetFileSize / ReadFile / CloseHandle over a HANDLE. The shim
+// implements no kernel file handles and defines no INVALID_HANDLE_VALUE, so
+// this is stdio, as the shader cache also is.
 //
-// NONE OF THOSE EXIST HERE, and this is not a Direct3D difference: the shim
-// implements no kernel file handles and defines no INVALID_HANDLE_VALUE,
-// because reading a file is what stdio is for. Exactly the decision
-// D3D9Util.cpp's shader cache took, and taken again here so the two agree.
-// The reading is byte-for-byte the same: open, size, read the whole thing into
-// a zeroed buffer one larger, hand it over, free it, close.
-//
-// The path follows the client's rename. It is already forward-slashed on
-// Windows, so only "D3D9Client" changes -- but the log line below spelled the
-// same path with backslashes, and that one is corrected too so the two agree.
-//
-// SEE THE FILE HEADER ON EM_SETTEXTEX: the message now exists but no rich edit
-// control does, so the box will be empty until Win32Dlg.cpp grows one.
+// EM_SETTEXTEX exists in the shim's richedit.h but Win32Dlg.cpp implements no
+// rich edit control, so the box stays empty until it grows one.
 //
 void VideoTab::InitCreditsDialog(HWND hWnd)
 {
@@ -1241,8 +1136,8 @@ void VideoTab::InitCreditsDialog(HWND hWnd)
 
 bool VideoTab::GetConfigName(const char* file, std::string& cfg, std::string& planet)
 {
-	// "GC\\" + file. oapiOpenFile resolves this against the config directory
-	// and opens it, so the separator is a filesystem separator -- finding 24.
+	// Was "GC\\". oapiOpenFile resolves this against the config directory and
+	// opens it, so the separator is a filesystem separator.
 	std::string filename = "GC/" + std::string(file);
 	FILEHANDLE hFile = oapiOpenFile(filename.c_str(), FILE_IN_ZEROONFAIL, CONFIG);
 	if (hFile) {
@@ -1259,17 +1154,12 @@ bool VideoTab::GetConfigName(const char* file, std::string& cfg, std::string& pl
 
 // ==============================================================
 // Was WIN32_FIND_DATA + FindFirstFileA("<cfg>GC\\*_atm.cfg") + FindNextFileA +
-// FindClose: the Win32 directory walk, and the fourth distinct spelling of one
-// in this client after <io.h>'s _findfirst, vPlanet's FindFirstFile and the
-// shim's own.
-//
-// std::filesystem::directory_iterator, as in vPlanet::EnumerateDirectory, and
-// with the same care about case: FindFirstFile's "*_atm.cfg" match is
-// case-INSENSITIVE on NTFS, so a file named Mars_ATM.cfg is found on Windows
-// and would be skipped by a literal suffix compare here. The directory test
-// replaces the FILE_ATTRIBUTE_DIRECTORY check and the leading-dot test, which
-// existed to skip "." and ".." -- entries directory_iterator does not produce
-// at all, so that test is kept only for genuinely dot-prefixed names.
+// FindClose, now std::filesystem::directory_iterator. FindFirstFile's
+// "*_atm.cfg" match is case-insensitive on NTFS, so Mars_ATM.cfg is found on
+// Windows and would be skipped by a literal suffix compare -- hence the
+// lowercasing below. The leading-dot test existed to skip "." and "..", which
+// directory_iterator does not produce; it is kept only for genuinely
+// dot-prefixed names.
 //
 void VideoTab::ScanAtmoCfgs()
 {

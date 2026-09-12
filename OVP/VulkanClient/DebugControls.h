@@ -4,23 +4,13 @@
 // Copyright (C) 2012-2026 Jarmo Nikkanen
 // ==============================================================
 
-// CONVERTED FROM OVP/D3D9Client/DebugControls.h, read end to end (135 lines).
-//
-// A namespace of free functions and a page of #defines. TWO DECLARATIONS
-// change and nothing else does:
-//
-//   void SetPickPos(D3DXVECTOR3 pos)   -> FVECTOR3   (the same three floats)
-//   void SelectMesh(D3D9Mesh *pMesh)   -> VulkanMesh*
-//
-// The file has NO INCLUDES, on Windows and here: LightEmitter, std::map,
-// HWND/UINT/WPARAM/LPARAM/INT_PTR/CALLBACK and the mesh class must all be
-// declared before it is included. TileMgr.h -> Mesh.h supplies VulkanMesh to
-// every current includer, which is the same chain D3D9Mesh arrived by. Left
-// as it is rather than given includes, because adding them is a change to a
-// file that needs none -- see the same note on Qtree.h.
-
 #ifndef __DEBUGCONTROLS_H
 #define __DEBUGCONTROLS_H
+
+// This header has no includes, here as on Windows: LightEmitter, std::map,
+// HWND/UINT/WPARAM/LPARAM/INT_PTR/CALLBACK and VulkanMesh all have to be
+// declared before it is included. Every current includer reaches it through
+// TileMgr.h -> Mesh.h, the same chain D3D9Mesh arrived by.
 
 /// \defgroup dbgprm Debug control configuration parameter identifiers
 /// Used by DebugControls::GetConfigParam()

@@ -3,48 +3,9 @@
 // licensed under LGPL v2
 // ===================================================
 //
-// CONVERTED FROM OVP/D3D9Client/gcCore.cpp, read end to end (799 lines).
-//
-// THE ADD-ON-FACING IMPLEMENTATION. gcCore.h -- which needed no changes at
-// all -- declares the interface an external module writes against, and this
-// is the client side of it. Most of the file forwards one call and converts
-// nothing. Six things do change, and one whole feature could not be carried
-// over at all.
-//
-//  1. THE CUSTOM SWAP CHAIN HAS NO COUNTERPART, and RegisterSwap now takes
-//     its own already-defined failure path. See the long note above it: it is
-//     the only capability in this conversion that is genuinely lost rather
-//     than respelled, and the API already had a way to say so.
-//
-//  2. StretchRect BECAME VulkanDevice::BlitTexture's RECTANGLE FORM, which
-//     was added for this one call site. vkCmdBlitImage takes two rectangles
-//     and always has; see VulkanFrame.h. NOTE THE ARGUMENT ORDER -- the
-//     converted call names the destination first where StretchRect named the
-//     source first.
-//
-//  3. ColorFill BECAME VulkanDevice::ClearImage, which already existed and
-//     already took the rectangle.
-//
-//  4. LockRect/UnlockRect BECAME VulkanTexture::Map/Unmap, and the two
-//     branches on D3DRESOURCETYPE collapse into one -- the same collapse
-//     TileBuffer::ReadDDSSurface made, and for the same reason. FIXING A BUG
-//     ON THE WAY: see finding 41 at LockSurface.
-//
-//  5. D3DCAPS9::MaxTextureRepeat HAS NO VULKAN COUNTERPART. GetSystemSpecs
-//     reports the value that means "no limit", exactly as gcConst.cpp's copy
-//     of the same function does -- the two must agree.
-//
-//  6. The D3DX casts in RenderLines DISAPPEAR rather than being renamed.
-//     VulkanEffect::RenderLines takes const FVECTOR3* and const FMATRIX4*,
-//     which is what the caller already had; the (const D3DXVECTOR3*) and
-//     (const D3DXMATRIX*) casts existed only to reinterpret one three-float
-//     type as another.
-//
-// NOT CONVERTED, because none of it needed converting: the camera interface,
-// the matrix interface, the tile-data interface and every gcCore2 function
-// below GetPlanetManager. They are calls into Scene, vVessel, vPlanet and
-// TileManager2<SurfTile>, all of which are already converted, and their
-// signatures did not change.
+// The add-on-facing implementation of gcCore.h. Most of it forwards one call
+// and converts nothing; the custom swap chain is the one capability that is
+// genuinely lost rather than respelled -- see the note above RegisterSwap.
 // ===================================================
 
 
@@ -53,12 +14,9 @@
 #include "gcCore.h"
 #include "VulkanSurface.h"
 #include "VulkanClient.h"
-// NOT IN THE WINDOWS INCLUDE LIST. CreatePoly, DeletePoly, GetTextLength and
-// SketchpadVersion all name Sketchpad types, which reached this file through
-// D3D9Surface.h -> D3D9Pad.h on Windows. The converted VulkanSurface.h
-// forward-declares VulkanPad instead of including VulkanPad.h, because
-// D3D9Pad.h includes D3D9Surface.h back and only MSVC's include guards make
-// that cycle survive. Same finding as VulkanControlPanel.cpp's.
+// Not in the Windows include list. The Sketchpad types reached this file
+// through D3D9Surface.h -> D3D9Pad.h; VulkanSurface.h forward-declares
+// VulkanPad instead, because that include cycle only survives on MSVC's guards.
 #include "VulkanPad.h"
 #include "Scene.h"
 #include "VVessel.h"
@@ -71,20 +29,14 @@ extern std::set<Font *> g_fonts;
 
 // Src/Orbiter/Linux/UIHost.cpp. The destination half of RegisterSwap: it is
 // what "present into that child window" means when the process has one window
-// and the child is a rectangle the UI host draws. See the note above
-// RegisterSwap, and g_controlImages in UIHost.cpp.
+// and the child is a rectangle the UI host draws.
 extern "C" void orbiter_SetControlImage(HWND h, void *imageView, int w, int hgt);
 
 
 // ===============================================================================================
-// gcSwap -- the custom swap chain's data block.
-//
 // Was { LPDIRECT3DSWAPCHAIN9 pSwap; LPDIRECT3DSURFACE9 pBack; SURFHANDLE hSurf; }.
-// Both D3D9 handles are gone with the swap chain itself (see RegisterSwap
-// below), so what is left is the SURFHANDLE the three surviving accessors
-// hand back. The class is kept rather than deleted because FlipSwap,
-// GetRenderTarget and ReleaseSwap all cast an HSWAP to it, and because a
-// future core that publishes a per-window VkSurfaceKHR would refill it.
+// Both D3D9 handles go with the swap chain itself (see RegisterSwap below),
+// leaving the SURFHANDLE the three surviving accessors hand back.
 // ===============================================================================================
 
 class gcSwap
@@ -93,7 +45,7 @@ public:
 	gcSwap() : hSurf(NULL), hWnd(NULL) { }
 	~gcSwap() { Release(); }
 	void Release() {
-		// The control stops showing this image BEFORE the surface -- and with
+		// The control stops showing this image before the surface -- and with
 		// it the VkImageView the UI host holds -- is destroyed. The other
 		// order leaves a dangling view in g_controlImages for as long as the
 		// next frame takes to notice.
@@ -172,88 +124,47 @@ DLLCLBK void gcBindCoreMethod(void** ppFnc, const char* name)
 // Custom SwapChain Interface
 // ===============================================================================================
 //
-// THE SWAP CHAIN ITSELF DOES NOT CROSS; WHAT IT IS FOR DOES.
+// The swap chain itself does not cross; what it is for does.
 //
-// RegisterSwap asks D3D9 for an ADDITIONAL SWAP CHAIN on an arbitrary HWND --
-// CreateAdditionalSwapChain(&pp, &pSwap) -- so that an add-on can present its
-// own rendering into its own child window. A literal translation needs three
-// things the client has none of:
+// RegisterSwap asks D3D9 for an additional swap chain on an arbitrary HWND, so
+// that an add-on can present its own rendering into its own child window. A
+// literal translation needs three things that do not exist here:
 //
-//   * A VkSurfaceKHR FOR THAT WINDOW. It comes from a platform call --
-//     vkCreateXlibSurfaceKHR, vkCreateWaylandSurfaceKHR,
-//     glfwCreateWindowSurface -- each needing the real window-system handle.
-//     THERE ISN'T ONE. An HWND here is Src/Orbiter/Linux's own handle, and a
-//     child control is not an OS window at all: it is a rectangle
-//     UIHost::drawControl paints into the single GLFW window's ImGui draw
-//     list. There is no X11 Window or wl_surface underneath it to create a
-//     surface on -- not "hard to find", but non-existent.
+//   * A VkSurfaceKHR for that window. It comes from a platform call needing a
+//     real window-system handle, and there isn't one: an HWND here is
+//     Src/Orbiter/Linux's own handle, and a child control is not an OS window
+//     at all -- it is a rectangle UIHost::drawControl paints into the single
+//     GLFW window's ImGui draw list. No X11 Window or wl_surface underneath it.
 //
 //   * A VkSwapchainKHR on it, with its images, views and render pass.
 //
-//   * A PRESENT. UIHost.cpp owns the only vkQueuePresentKHR in the process
-//     and the acquire/submit/present semaphores with it; a client presenting
-//     on its own would race the frame pump for the queue.
+//   * A present. UIHost.cpp owns the only vkQueuePresentKHR in the process and
+//     the acquire/submit/present semaphores with it; a client presenting on its
+//     own would race the frame pump for the queue.
 //
-// SO THE MECHANISM CHANGES AND THE CONTRACT DOES NOT. Read what the caller
-// actually does with the handle -- DX9ExtMFD's MFDWindow::clbkRefreshDisplay
-// is the consumer in this tree, and it is the whole use:
+// So the mechanism changes and the contract does not. What the caller does with
+// the handle -- DX9ExtMFD's MFDWindow::clbkRefreshDisplay is the consumer in
+// this tree -- never touches a swap chain: it asks for a render target the size
+// of that child window, draws into it, and says "show it there". Here the
+// render target is an ordinary sampled surface, and "show it there" is UIHost
+// drawing that image over the control's rectangle, which is precisely what
+// presenting to that child window did. The add-on itself is unchanged.
 //
-//     if (!hSwap) hSwap = pCore->RegisterSwap(hDsp, hSwap, 0);
-//     SURFHANDLE tgt = pCore->GetRenderTarget(hSwap);
-//     if (surf) pCore->StretchRectInScene(tgt, surf);
-//     else      pCore->ClearSurfaceInScene(tgt, 0);
-//     pCore->FlipSwap(hSwap);
-//
-// It never touches a swap chain. It asks for A RENDER TARGET THE SIZE OF THAT
-// CHILD WINDOW, draws into it, and says "show it there". Both halves have an
-// exact counterpart here: the render target is an ordinary sampled surface,
-// and "show it there" is UIHost drawing that image over the control's
-// rectangle -- which is precisely what presenting to that child window did.
-//
-// THE ADD-ON IS UNTOUCHED. MFDWindow.cpp and ExtMFD.cpp remain byte-identical
-// to OVP/D3D9Client/samples/DX9ExtMFD (diff clean), which is the point: the
-// difference lives where the platform difference is.
-//
-// Line-by-line against the Windows body (gcCore.cpp:104-150):
-//
-//   pp.BackBufferWidth/Height = 0   in windowed mode D3D9 reads this as "the
-//                                   window's client area". Asked for
-//                                   explicitly here -- GetClientRect(hWnd).
-//   pp.BackBufferFormat  X8R8G8B8   OAPISURFACE_PF_XRGB. Vulkan has no X8
-//                                   format; NatCreateSurface answers
-//                                   B8G8R8A8_UNORM plus SetAlphaOne, which is
-//                                   what X8 means. See its note.
-//   pp.BackBufferCount = 1          one image is what a SURFHANDLE is.
-//   MultiSample NONE, quality 0     no OAPISURFACE_ANTIALIAS. Note the AA
-//                                   parameter was ignored by the reference
-//                                   too, and stays ignored.
-//   SwapEffect FLIP, Windowed       properties of a swap chain; nothing to
-//   PresentationInterval IMMEDIATE  carry -- the core's own present paces the
-//   FullScreen_RefreshRate DEFAULT  frame, once per frame, as it always did.
-//   EnableAutoDepthStencil = false  no depth attached to the back buffer...
-//   OAPISURFACE_RENDER3D            ...but the reference's SurfNative flags
-//                                   ask for one anyway (D3D9 attaches it to
-//                                   the SURFACE, not the chain), so it is
-//                                   kept: a consumer that renders 3D into its
-//                                   swap target needs it.
-//   OAPISURFACE_BACKBUFFER          not passed on. It marks a surface as THE
-//                                   back buffer for the client's own
-//                                   render-target bookkeeping, and this one
-//                                   is not; it is a texture that gets drawn.
-//   + OAPISURFACE_TEXTURE           THE ONE ADDITION. The reference's back
-//                                   buffer was consumed by Present; this one
-//                                   is consumed by a sampler, so it needs
-//                                   SAMPLED usage. It also makes the settled
-//                                   layout SHADER_READ_ONLY_OPTIMAL, which is
-//                                   exactly where BlitTexture leaves it -- so
-//                                   StretchRectInScene needs no change and no
-//                                   extra barrier.
-//   if (pData) pData->Release()     kept verbatim: MFDWindow::Resize calls
-//   else pData = new gcSwap()       this again with the old handle on every
-//                                   resize, and reuses the object.
-//   failure -> LogErr + NULL        kept: every caller already handles NULL,
-//                                   because on Windows this fails in
-//                                   true-fullscreen mode.
+// The surface flags, against the D3DPRESENT_PARAMETERS the reference filled in.
+// BackBufferWidth/Height = 0 meant "the window's client area", which has to be
+// read off the window explicitly here. X8R8G8B8 becomes OAPISURFACE_PF_XRGB:
+// Vulkan has no X8 format, and NatCreateSurface answers B8G8R8A8_UNORM plus
+// SetAlphaOne, which is what X8 meant. RENDER3D is kept because the reference's
+// SurfNative flags ask for a depth buffer even though the chain does not (D3D9
+// attaches it to the surface). OAPISURFACE_TEXTURE is the one addition: this
+// image is consumed by a sampler rather than by Present, so it needs SAMPLED
+// usage, and it settles the layout at SHADER_READ_ONLY_OPTIMAL -- where
+// BlitTexture leaves it, so StretchRectInScene needs no extra barrier.
+// BACKBUFFER is not passed on: it marks a surface as *the* back buffer for the
+// client's own render-target bookkeeping, and this is not that. Swap effect,
+// presentation interval, refresh rate and multisample are all swap-chain
+// properties with nothing to carry; the AA parameter was ignored by the
+// reference too and stays ignored.
 // ===============================================================================================
 //
 HSWAP gcCore::RegisterSwap(HWND hWnd, HSWAP hData, int AA) 
@@ -265,18 +176,16 @@ HSWAP gcCore::RegisterSwap(HWND hWnd, HSWAP hData, int AA)
 		return NULL;
 	}
 
-	// pp.BackBufferWidth/Height = 0. D3D9 read the size off the window; here
-	// it has to be read off the window explicitly.
 	RECT rc = { 0, 0, 0, 0 };
 	GetClientRect(hWnd, &rc);
 	const DWORD w = (DWORD)(rc.right - rc.left);
 	const DWORD h = (DWORD)(rc.bottom - rc.top);
 
 	if (w == 0 || h == 0) {
-		// Windows had no equivalent failure -- a zero-sized window still made
-		// a swap chain -- but clbkCreateSurfaceEx returns NULL for a zero
-		// surface, so it is refused here rather than left to assert. Resize()
-		// calls this again the moment the control has a size.
+		// A zero-sized window still made a swap chain on Windows, but
+		// clbkCreateSurfaceEx returns NULL for a zero surface, so it is
+		// refused here rather than left to assert. Resize() calls this again
+		// the moment the control has a size.
 		LogErr("gcCore::RegisterSwap: window has a zero client area (%ux%u)", w, h);
 		return NULL;
 	}
@@ -300,40 +209,31 @@ HSWAP gcCore::RegisterSwap(HWND hWnd, HSWAP hData, int AA)
 
 	// Nothing has been drawn into it yet, so it is not published until the
 	// first FlipSwap -- the same moment the reference's first Present would
-	// have put something on screen. Release() above has already cleared any
-	// image from the swap this one replaces.
+	// have put something on screen.
 	return HSWAP(pData);
 }
 
 
 // ===============================================================================================
 //
-// Was HR(pSwap->Present(0, 0, 0, 0, 0)).
+// Was HR(pSwap->Present(0, 0, 0, 0, 0)). The present becomes the publication:
+// from this call on, UIHost draws this image over the control's rectangle, once
+// per frame, until the next RegisterSwap or ReleaseSwap -- the same way the
+// driver held the reference's presented image until the next Present.
 //
-// The present becomes the publication: from this call on, UIHost draws this
-// image over the control's rectangle, once per frame, until the next
-// RegisterSwap or ReleaseSwap. The reference presented one image per call and
-// the driver held it on screen until the next; this holds it the same way, and
-// the core's own frame pump does the actual presenting exactly as before.
-//
-// Idempotent, and deliberately re-published every call rather than only on the
-// first: the surface can be re-created underneath a live gcSwap (Resize), and
-// a caller that flips without having drawn is simply showing the same image
-// again -- which is what Present did.
+// Deliberately re-published on every call rather than only the first: the
+// surface can be re-created underneath a live gcSwap (Resize).
 void gcCore::FlipSwap(HSWAP hSwap) 
 { 
-	// Guarded rather than left to dereference a NULL the Windows version
-	// never had to consider -- there, a failed RegisterSwap meant the caller
-	// never got this far.
 	if (!hSwap) return;
 
 	gcSwap *pData = (gcSwap*)hSwap;
 	if (!pData->hSurf || !pData->hWnd) return;
 
-	// The SAMPLING view, which SetAlphaOne has swizzled alpha=1 on because the
-	// surface was asked for as PF_XRGB. That is what makes the picture opaque
-	// -- a D3D9 back buffer has no alpha channel and nothing behind the child
-	// window is ever visible through it. Measured: the MFD's background reads
+	// The sampling view, which SetAlphaOne has swizzled alpha=1 on because the
+	// surface was asked for as PF_XRGB. That is what makes the picture opaque:
+	// a D3D9 back buffer has no alpha channel, and nothing behind the child
+	// window was ever visible through it. Measured -- the MFD background reads
 	// srgb(0,0,0), not the dialog face.
 	VulkanTexture *pTex = SURFACE(pData->hSurf)->GetTexture();
 	if (!pTex) return;
@@ -564,8 +464,6 @@ DEVMESHHANDLE gcCore::LoadDevMeshGlobal(const char* file_name, bool bUseCache)
 //
 void gcCore::ReleaseDevMesh(DEVMESHHANDLE hMesh)
 {
-	// A DEVMESHHANDLE is an opaque handle to the client's own mesh type, so
-	// the cast names whatever that type now is. Same line as gcConst.cpp's.
 	delete (VulkanMesh*)(hMesh);
 }
 
@@ -584,10 +482,8 @@ void gcCore::RenderMesh(DEVMESHHANDLE hMesh, const oapi::FMATRIX4* pWorld)
 bool gcCore::PickMesh(PickMeshStruct* pm, DEVMESHHANDLE hMesh, const FMATRIX4* pWorld, short x, short y)
 {
 	Scene* pScene = g_client->GetScene();
-	// The (const LPD3DXMATRIX) cast is gone rather than renamed:
-	// Scene::PickMesh takes a const FMATRIX4*, which is what the caller
-	// already holds. The cast only ever reinterpreted one four-by-four of
-	// floats as another.
+	// The (const LPD3DXMATRIX) cast is gone rather than renamed: Scene::PickMesh
+	// takes a const FMATRIX4*, which is what the caller already holds.
 	VulkanPick pk = pScene->PickMesh(hMesh, pWorld, x, y);
 
 	if (pk.group >= 0) {
@@ -652,9 +548,8 @@ SURFHANDLE gcCore::CompressSurface(SURFHANDLE hSurface, DWORD flags)
 //
 void gcCore::RenderLines(const FVECTOR3* pVtx, const WORD* pIdx, int nVtx, int nIdx, const FMATRIX4* pWorld, DWORD color)
 {
-	// Both D3DX casts disappear. VulkanEffect::RenderLines is declared
-	// (const FVECTOR3*, const WORD*, int, int, const FMATRIX4*, DWORD), which
-	// is exactly what this function was handed.
+	// Both D3DX casts disappear: VulkanEffect::RenderLines takes exactly the
+	// types this function was handed.
 	VulkanEffect::RenderLines(pVtx, pIdx, nVtx, nIdx, pWorld, color);
 }
 
@@ -667,10 +562,10 @@ bool gcCore::StretchRectInScene(SURFHANDLE tgt, SURFHANDLE src, LPRECT tr, LPREC
 	{
 		VulkanTexture *pss = SURFACE(src)->GetSurface();
 		VulkanTexture *pts = SURFACE(tgt)->GetSurface();
-		// StretchRect(src, srcRect, dst, dstRect, filter) -- SOURCE FIRST.
-		// BlitTexture names the DESTINATION first, matching its own
-		// whole-image form and memcpy, so the two pairs swap here. See
-		// VulkanFrame.h. D3DTEXF_LINEAR is the default filter there.
+		// StretchRect(src, srcRect, dst, dstRect, filter) names the source
+		// first; BlitTexture names the destination first, matching its own
+		// whole-image form and memcpy, so the two pairs swap here.
+		// D3DTEXF_LINEAR is BlitTexture's default filter.
 		bool bOK = g_client->GetDevice()->BlitTexture(pts, tr, pss, sr);
 		g_client->EndScene();
 		return bOK;
@@ -685,11 +580,9 @@ bool gcCore::ClearSurfaceInScene(SURFHANDLE tgt, DWORD color, LPRECT tr)
 	if (S_OK == g_client->BeginScene())
 	{
 		VulkanTexture *pts = SURFACE(tgt)->GetSurface();
-		// ColorFill(surface, rect, D3DCOLOR) -> ClearImage(image, rect, DWORD),
-		// which already existed and already took the rectangle. The
-		// (D3DCOLOR) cast goes with the type: a D3DCOLOR was a DWORD
-		// 0xAARRGGBB and the client's DWORD colour is those same bytes in
-		// that same order.
+		// ColorFill(surface, rect, D3DCOLOR) -> ClearImage(image, rect, DWORD).
+		// The (D3DCOLOR) cast goes with the type: a D3DCOLOR was a DWORD
+		// 0xAARRGGBB, the same bytes in the same order.
 		bool bOK = g_client->GetDevice()->ClearImage(pts, tr, color);
 		g_client->EndScene();
 		return bOK;
@@ -710,8 +603,8 @@ bool gcCore::ClearSurfaceInScene(SURFHANDLE tgt, DWORD color, LPRECT tr)
 gcCore::PickGround gcCore::ScanScreen(int scr_x, int scr_y)
 {
 	// PickGround holds an oapi::DRECT, which has a user-declared copy
-	// constructor, so a raw memset over it is -Wclass-memaccess. The cast
-	// says the clear is deliberate. Same line as gcConst.h's.
+	// constructor, so a raw memset over it is -Wclass-memaccess. The cast says
+	// the clear is deliberate.
 	PickGround pg; memset(static_cast<void*>(&pg), 0, sizeof(PickGround));
 
 	Scene* pScene = g_client->GetScene();
@@ -753,12 +646,11 @@ void gcCore::GetSystemSpecs(SystemSpecs* sp, int size)
 		sp->DisplayMode = g_client->GetFramework()->GetDisplayMode();
 		// D3DCAPS9::MaxTextureWidth -> VkPhysicalDeviceLimits::maxImageDimension2D.
 		sp->MaxTexSize = g_client->GetHardwareCaps()->limits.maxImageDimension2D;
-		// D3DCAPS9::MaxTextureRepeat HAS NO VULKAN COUNTERPART -- it was the
+		// D3DCAPS9::MaxTextureRepeat has no Vulkan counterpart -- it was the
 		// largest texture coordinate the fixed-function sampler could still
 		// wrap correctly, and Vulkan names no such ceiling. Add-ons read this,
-		// so it cannot simply be dropped; it reports the value that means "no
-		// limit". gcConst.cpp's copy of this function says the same number,
-		// and the two have to agree.
+		// so it reports "no limit" rather than being dropped. gcConst.cpp's
+		// copy of this function has to say the same number.
 		sp->MaxTexRep = 0xFFFFFFFF;
 		sp->gcAPIVer = BuildDate();
 	}
@@ -920,9 +812,9 @@ int gcCore2::GetElevation(HTILE hTile, double lng, double lat, double *out_elev)
 //
 SURFHANDLE gcCore2::SetTileOverlay(HTILE hTile, const SURFHANDLE hOverlay)
 {
-	// Already disabled on Windows -- the body is commented out there too and
-	// the function returns NULL. The commented lines follow the type renames
-	// so that whoever re-enables them is not reading D3D9 in a Linux file.
+	// Already disabled on Windows: the body is commented out there too. The
+	// commented lines follow the type renames so that whoever re-enables them
+	// is not reading D3D9 in a Linux file.
 	//SurfTile *pTile = static_cast<SurfTile *>(hTile);
 	//VulkanTexture *pTex = SURFACE(hOverlay)->GetTexture();
 	//return HSURFNATIVE(pTile->SetOverlay(pTex, true));
@@ -946,38 +838,22 @@ HOVERLAY gcCore2::AddGlobalOverlay(HPLANETMGR hMgr, VECTOR4 mmll, OlayType type,
 
 // ===============================================================================================
 //
-// FINDING 41: THE WINDOWS VERSION OF THIS FUNCTION, AND OF ReleaseLock BELOW,
-// LOCKS THE HANDLE ITSELF RATHER THAN THE RESOURCE BEHIND IT.
-//
-// Both ask SURFACE(hSrf)->GetResource() for the resource TYPE and then call
-// LockRect on `hSrf` cast to the matching D3D9 interface:
-//
-//     LPDIRECT3DRESOURCE9 pResource = SURFACE(hSrf)->GetResource();
-//     ...
-//     LPDIRECT3DSURFACE9 pSurf = static_cast<LPDIRECT3DSURFACE9>(hSrf);
-//     if (HROK(pSurf->LockRect(&lock, NULL, flags))) ...
-//
-// A SURFHANDLE is `void*`, and every SURFHANDLE in this client is a
-// SurfNative* -- VulkanSurface.h says so in as many words. SurfNative is a
-// plain C++ class with no virtual functions and therefore no vtable, and its
-// first member is `char name[128]`. So that call reads a vtable pointer out of
-// the first eight characters of the surface's NAME and jumps through it. It is
-// not a wrong value; it is a wild indirect call. The correct expression is the
-// one the function has already computed two lines above.
-//
-// The conversion cannot reproduce the mistake even by accident, because there
-// is no second pointer to confuse: Map() is called on the VulkanTexture that
-// GetResource() returns.
+// The Windows version of this function, and of ReleaseLock below, locks the
+// handle itself rather than the resource behind it: it asks
+// SURFACE(hSrf)->GetResource() for the resource type, then calls LockRect on
+// `hSrf` cast to the matching D3D9 interface. A SURFHANDLE is void*, and every
+// SURFHANDLE in this client is a SurfNative* -- a plain class with no virtual
+// functions, whose first member is `char name[128]`. So that call reads a
+// vtable pointer out of the first eight characters of the surface's name and
+// jumps through it. The correct expression is the one the function has already
+// computed two lines above, and the conversion cannot reproduce the mistake:
+// Map() is called on the VulkanTexture GetResource() returns.
 //
 // D3DLOCK_DONOTWAIT has no counterpart and needs none. It asked the D3D9
-// runtime not to block while the GPU still held the resource; vkMapMemory does
-// no such waiting -- host-visible memory is mappable at any time and the
-// caller owns the synchronisation -- so `bWait` has nothing left to select. It
-// stays in the signature because gcCore.h is the public interface.
-//
-// And the two branches on D3DRESOURCETYPE collapse into one, as they do
-// everywhere else in this conversion: a VkImage is both a surface and a
-// texture. Same collapse as TileBuffer::ReadDDSSurface's.
+// runtime not to block while the GPU still held the resource; host-visible
+// memory is mappable at any time and the caller owns the synchronisation, so
+// `bWait` has nothing left to select. It stays in the signature because
+// gcCore.h is the public interface.
 //
 bool gcCore::LockSurface(SURFHANDLE hSrf, Lock* pOut, bool bWait)
 {

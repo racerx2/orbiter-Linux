@@ -5,57 +5,6 @@
 // Copyright (C) 2006-2026 Martin Schweiger
 //				 2010-2022 Jarmo Nikkanen
 // ==============================================================
-//
-// CONVERTED FROM OVP/D3D9Client/VPlanetAtmo.cpp, read end to end (1461 lines).
-//
-// The atmospheric scattering half of vPlanet: the planet shader variants, the
-// analytic scattering model that the CPU evaluates for object lighting, and
-// the six lookup tables the GPU builds once per frame. NEARLY ALL OF IT IS
-// FLOATING-POINT MATHS ON FVECTOR2/3/4 and converts line for line -- the
-// Gauss quadratures, the Henyey-Greenstein phase function, the ray/atmosphere
-// and ray/shadow intersections, the config-file reader. Four things change.
-//
-//  1. THE SIX SCATTERING TABLES. D3DXCreateTexture(w, h, 1,
-//     D3DUSAGE_RENDERTARGET, D3DFMT_A16B16G16R16F, D3DPOOL_DEFAULT) becomes
-//     VulkanDevice::CreateTexture with COLOR_ATTACHMENT | SAMPLED, which is
-//     exactly what D3DUSAGE_RENDERTARGET plus "and I will sample it
-//     afterwards" means, and which is also what puts the image in
-//     device-local memory as D3DPOOL_DEFAULT did.
-//
-//     D3DFMT_A16B16G16R16F IS VK_FORMAT_R16G16B16A16_SFLOAT, and the reversal
-//     is not a mistake: a D3D format name lists the packed word from the top
-//     down, a Vulkan one lists the bytes in memory order, so ABGR in a D3D
-//     name is RGBA in memory. Same trap, same answer, as
-//     D3DFMT_A8B8G8R8 -> VK_FORMAT_R8G8B8A8_UNORM in VulkanCatalog.h; getting
-//     it backwards would swap red and blue in every scattering table.
-//
-//  2. GetSurfaceLevel(0) HAS NO COUNTERPART AND NEEDS NONE. It fetched mip
-//     level 0 of a texture AS AN IDirect3DSurface9 -- a second, separate,
-//     reference-counted interface onto the same pixels, which is why each
-//     call is paired with a SAFE_RELEASE. A VkImage is a render target and a
-//     sampled texture at once (the difference is a usage flag given at
-//     creation), so the texture IS the surface: the fetch is an assignment
-//     and there is no reference to drop. See the note on
-//     SurfNative::GetSurface / GetTexture in VulkanSurface.h.
-//
-//  3. THE SHADER FILES ARE .glsl AND LIVE UNDER Modules/VulkanClient. Three
-//     names: Scatter.hlsl -> Scatter.glsl, NewPlanet.hlsl -> NewPlanet.glsl,
-//     and the module directory. The ENTRY POINTS AND THE PREPROCESSOR FLAGS
-//     ARE UNCHANGED -- "SunColor", "SkyView", "TerrainVS", "_LOCALLIGHTS",
-//     "_NO_ATMOSPHERE" and the rest are content the GLSL translation has to
-//     keep, not spellings this conversion is free to change. PlanetShader's
-//     constructor reads those same flags out of the options string to decide
-//     what the shader supports, so renaming one would silently disable a
-//     feature.
-//
-//  4. D3D9Sun -> VulkanSun and D3D9DebugLog -> VulkanDebugLog, plus the usual
-//     type list: LPDIRECT3DDEVICE9 -> VulkanDevice*, LPDIRECT3DTEXTURE9 and
-//     LPDIRECT3DSURFACE9 -> VulkanTexture*, D3DXMATRIX -> FMATRIX4.
-//
-// TestComputations is a debug overlay and is converted rather than dropped;
-// its one D3DX line -- an identity matrix that nothing reads -- goes, and its
-// `mp` and `lf` are the reference's own shadowed locals, left as written.
-// ==============================================================
 
 #define D3D_OVERLOADS
 
@@ -66,9 +15,8 @@
 #include "VulkanClient.h"
 #include "VulkanConfig.h"
 #include "VPlanet.h"
-// Scene.h ADDED. The Windows file reaches Scene through D3D9Client.h,
-// which includes it; VulkanClient.h does not, and every scn->... call
-// here needs the complete type. Same addition as TileMgr.cpp's.
+// Scene.h added: the Windows file reaches Scene through D3D9Client.h, which
+// includes it. VulkanClient.h does not, and scn->... needs the complete type.
 #include "Scene.h"
 #include "AtmoControls.h"
 #include "VectorHelpers.h"
@@ -94,8 +42,9 @@ PlanetShader::PlanetShader(VulkanDevice *pDev, const char* file, const char* vs,
 	bCloudShd = false;
 	bNightlights = false;
 
-	// The nine flag names are content, not spelling: they are what the GLSL
-	// translation must keep answering to. See point 3 in the file header.
+	// The flag names are content, not spelling: the GLSL translation has to
+	// keep answering to them, and renaming one would silently disable a
+	// feature.
 	if (std::string(options).find("_LOCALLIGHTS") != std::string::npos) bLocals = true;
 	if (std::string(options).find("_MICROTEX") != std::string::npos) bMicrotex = true;
 	if (std::string(options).find("_SHDMAP") != std::string::npos) bShdMap = true;
@@ -629,11 +578,10 @@ bool vPlanet::SphericalShadow()
 //
 void vPlanet::UpdateScatter()
 {
-	// DIAGNOSTIC: this function is the only writer of cp.mVP, the matrix the
-	// terrain shader transforms every tile by. Each of the three guards below
-	// can silently skip that write for a whole frame; if the write never
-	// happens the tiles are transformed by whatever cp held before, which is
-	// uninitialised on the very first frame. Env-gated, first 40 calls.
+	// Diagnostic: this function is the only writer of cp.mVP, the matrix the
+	// terrain shader transforms every tile by, and each of the three guards
+	// below can skip that write for a whole frame -- leaving it uninitialised
+	// on the first.
 	const bool bTrace = (getenv("ORBITER_VK_TRACE_MTX") != NULL);
 	static int nSct = 0;
 	if (bTrace && nSct < 40) {
@@ -653,11 +601,10 @@ void vPlanet::UpdateScatter()
 	dwSctFrame = scn->GetFrameId();
 
 	// Was D3DXCreateTexture(pDev, w, h, 1, D3DUSAGE_RENDERTARGET,
-	// D3DFMT_A16B16G16R16F, D3DPOOL_DEFAULT, &pXxx) seven times. See point 1
-	// in the file header: COLOR_ATTACHMENT is D3DUSAGE_RENDERTARGET, SAMPLED
-	// is what the terrain shader does with the result afterwards, and
-	// VK_FORMAT_R16G16B16A16_SFLOAT is D3DFMT_A16B16G16R16F -- the name
-	// reverses because one lists the packed word and the other the bytes.
+	// D3DFMT_A16B16G16R16F, D3DPOOL_DEFAULT, &pXxx). VK_FORMAT_R16G16B16A16_SFLOAT
+	// is D3DFMT_A16B16G16R16F: the name reverses because a D3D name lists the
+	// packed word from the top down and a Vulkan one lists the bytes in memory
+	// order. Backwards would swap red and blue in every scattering table.
 	if (HasAtmosphere() && surfmgr2)
 	{
 		const VkImageUsageFlags tblUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
@@ -699,9 +646,9 @@ void vPlanet::UpdateScatter()
 	float qw = float(pr / cr);
 	(void)hrz;	// computed and never read, on both platforms
 
-	// LPDIRECT3DSURFACE9 pTgt, pTgt2. pTgt2 is declared and never touched;
-	// pTgt held the result of GetSurfaceLevel(0), which has no counterpart --
-	// see point 2 in the file header -- so it is simply the texture.
+	// Was `LPDIRECT3DSURFACE9 pTgt, pTgt2`; pTgt2 was declared and never
+	// touched. pTgt held GetSurfaceLevel(0)'s result, which is just the
+	// texture here.
 	VulkanTexture *pTgt;
 
 	// ---------------------------------------------------------------------
@@ -716,11 +663,9 @@ void vPlanet::UpdateScatter()
 	VECTOR3 vBiT = unit(crossp(vTan, vNrm));
 
 	// ConstParams holds FVECTOR3/FVECTOR4, which have user-declared
-	// constructors, so GCC reports the raw clear (-Wclass-memaccess).
-	// The raw clear is exactly what is wanted -- this struct is uploaded
-	// byte for byte to the shader and every field is assigned below or
-	// meant to be zero -- and the cast says so. Same as VulkanPad2.cpp's
-	// SkpVtx clear.
+	// constructors, so GCC reports the raw clear (-Wclass-memaccess). The raw
+	// clear is what is wanted -- the struct is uploaded byte for byte -- and
+	// the cast says so.
 	memset(static_cast<void*>(&cp), 0, sizeof(cp));
 	memcpy(&cp.mVP, scn->GetProjectionViewMatrix(), sizeof(FMATRIX4));
 
@@ -821,9 +766,9 @@ void vPlanet::UpdateScatter()
 	Flow.bCamLit = !((cp.Cr2 < cp.PlanetRad2) && (dot(cp.toCam, cp.toSun) < 0));
 	Flow.bCamInSpace = !CameraInAtmosphere();
 
-	// DIAGNOSTIC: the exact inputs ComputeRayStats reads. Every pass that
-	// calls it produces zeros, and every pass that does not is correct, so
-	// either these are wrong or the shader's arithmetic is. Env-gated, once.
+	// Diagnostic: the exact inputs ComputeRayStats reads. Every pass that
+	// calls it produces zeros and every pass that does not is correct, so
+	// either these are wrong or the shader's arithmetic is.
 	if (getenv("ORBITER_VK_TRACE_SCT")) {
 		static bool bSaid = false;
 		if (!bSaid && strcmp(name, "Earth") == 0) {
@@ -858,9 +803,9 @@ void vPlanet::UpdateScatter()
 	pIP->Activate("SunColor");
 	pIP->SetStruct("Const", &cp, sizeof(ConstParams));
 
-	// pSunColor->GetSurfaceLevel(0, &pTgt) ... SAFE_RELEASE(pTgt). The image
-	// is its own level-0 surface; there is no second interface to take and
-	// none to release. See point 2 in the file header.
+	// Was pSunColor->GetSurfaceLevel(0, &pTgt) ... SAFE_RELEASE(pTgt). A
+	// VkImage is a render target and a sampled texture at once, so the image
+	// is its own level-0 surface: nothing to take, nothing to release.
 	pTgt = pSunColor;
 	pIP->SetOutputNative(0, pTgt);
 	if (!pIP->Execute(true)) LogErr("pIP Execute Failed (SunColor)");
@@ -936,13 +881,10 @@ void vPlanet::UpdateScatter()
 	pIP->SetOutputNative(0, pTgt);
 	if (!pIP->Execute(true)) LogErr("pIP Execute Failed (SkyView)");
 
-	// DIAGNOSTIC: read the tables back. Execute() reporting success says the
-	// draw was recorded, not that anything landed in the image. Every term
-	// that lights the terrain comes out of these, so if they are empty the
-	// surface is lit by the ambient approximation alone -- which is what the
-	// picture looks like. The first and last rows are printed separately
-	// because a vertically flipped table is the other thing that would put
-	// the wrong number under every lookup. Env-gated, once.
+	// Diagnostic: read the tables back. Execute() reporting success says the
+	// draw was recorded, not that anything landed in the image. The first and
+	// last rows are printed separately because a vertically flipped table is
+	// the other thing that would put the wrong number under every lookup.
 	if (getenv("ORBITER_VK_TRACE_SCT")) {
 		static bool bDone = false;
 		if (!bDone) {
@@ -979,10 +921,9 @@ void vPlanet::UpdateScatter()
 				for (size_t i = 0; i < texels; i++) {
 					float v = h2f(buf[i * 4]);
 					sum += v; if (v > mx) mx = v; if (v != 0.0f) nz++;
-					// THE ALPHA CHANNEL TOO. HorizonPS takes the sky dome's
-					// opacity straight from it -- oColor = vec4(color,
-					// sky.ray.a) -- so a table with correct colour and zero
-					// alpha draws a perfectly transparent sky.
+					// Alpha too: HorizonPS takes the sky dome's opacity
+					// straight from it, so a table with correct colour and
+					// zero alpha draws a perfectly transparent sky.
 					float a = h2f(buf[i * 4 + 3]);
 					asum += a; if (a > amx) amx = a; if (a != 0.0f) anz++;
 				}
@@ -993,11 +934,10 @@ void vPlanet::UpdateScatter()
 					   e.name, d.Width, d.Height, sum / double(texels), mx, nz, texels,
 					   h2f(buf[(d.Width / 2) * 4]), h2f(buf[(last + d.Width / 2) * 4]));
 
-				// A VERTICAL PROFILE DOWN THE MIDDLE COLUMN, which settles
-				// which way up the image was written. SunColor stores
-				// exp(-opticaldepth) against altitude on V: thin air high up
-				// means it must RISE with the row index. If it falls, the
-				// pass rendered upside down.
+				// A vertical profile down the middle column settles which way
+				// up the image was written: SunColor stores exp(-opticaldepth)
+				// against altitude on V, so it must rise with the row index.
+				// If it falls, the pass rendered upside down.
 				char prof[256]; int at = 0;
 				for (int k = 0; k < 9; k++) {
 					const uint32_t row = uint32_t((d.Height - 1) * k / 8);
@@ -1208,9 +1148,9 @@ bool vPlanet::LoadAtmoConfig()
 	LoadStruct(hFile, &OPrm, 1);
 	LoadStruct(hFile, &HPrm, 2);
 
-	// DIAGNOSTIC: every brightness term the terrain shader uses comes out of
-	// this file. LogAlw above does not reach Orbiter.log on this platform, so
-	// a null handle or a key that never matched is invisible. Env-gated.
+	// Diagnostic: every brightness term the terrain shader uses comes out of
+	// this file, and LogAlw above does not reach Orbiter.log on this platform,
+	// so a null handle or a key that never matched is invisible.
 	if (getenv("ORBITER_VK_TRACE_ATMO")) {
 		LogErr("ATMO [%s] path=%s handle=%p", name, path, (void *)hFile);
 		LogErr("ATMO   SPrm suni=%.4f trb=%.4f tgamma=%.4f aux3=%.4f ray=%.4f mie=%.4f rheight=%.4f visalt=%.1f orbalt=%.1f",
@@ -1554,9 +1494,8 @@ void vPlanet::TestComputations(Sketchpad* pSkp)
 		if (bSrc) {	// Camera in Shadow
 			s0 = max(sp.sx, sp.ae);
 
-			// These two shadow the outer mp/lf, which therefore stay zero --
-			// the reference's own doing, and what the debug line and the
-			// white marker below actually print. Left as written.
+			// These shadow the outer mp/lf, which therefore stay zero -- the
+			// reference's own doing, and what the debug line below prints.
 			float lf = max(0.0f, sp.ca) / max(1.0f, abs(sp.hd)); // Lerp Factor
 			float mp = lerp((sp.ax + s0) * 0.5f, sp.hd, saturate(lf));
 
@@ -1644,8 +1583,7 @@ void vPlanet::TestComputations(Sketchpad* pSkp)
 	VulkanDebugLog("Hd=%f, Ca=%f", sp.hd, sp.ca);
 	VulkanDebugLog("CameraInSpace=%f", cp.CamSpace);
 
-	// `D3DXMATRIX mI; D3DXMatrixIdentity(&mI);` stood here. Nothing reads it,
-	// and D3DXMatrixIdentity has no counterpart to write it with.
+	// `D3DXMATRIX mI; D3DXMatrixIdentity(&mI);` stood here; nothing reads it.
 	VECTOR3 V0, V1;
 	IVECTOR2 pt0, pt1;
 

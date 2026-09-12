@@ -11,61 +11,15 @@
 // Defines runway lights used in vBase.
 // ==============================================================
 //
-// CONVERTED FROM OVP/D3D9Client/RunwayLights.cpp, read end to end (1078
-// lines).
+// Mostly vector arithmetic and a config parser, so it converts line for line.
+// The D3DX helpers map onto Orbiter's own, which return their result where
+// D3DX took an out-parameter -- so a nested D3DX call becomes two statements:
 //
-// NINE TENTHS OF THIS FILE IS VECTOR ARITHMETIC ON VECTOR3 AND A CONFIG
-// PARSER, and converts line for line. The lights are laid out in the base's
-// own frame, written into BeaconArrayEntry records and handed to
-// BeaconArray, which owns the only device contact. What changes:
-//
-//  1. THE FIVE D3DX CALLS IN SetPAPIColors AND Render. Every one of them is
-//     a vector helper Orbiter's own SDK already has:
-//
-//       D3DXVec3TransformNormal -> oapi::TransformNormal
-//       D3DXVec3TransformCoord  -> oapi::TransformCoord
-//       D3DXVec3Normalize       -> oapi::unit
-//       D3DXVec3Dot             -> oapi::dot
-//       D3DXVEC                 -> FVEC
-//
-//     They took out-parameters where the SDK's return a value, so the nested
-//     D3DXVec3Normalize(&vFront, D3DXVec3TransformCoord(&vPos, ...)) becomes
-//     two statements. Same two operations, same order.
-//
-//  2. D3DXCOLOR ASSIGNED TO A DWORD, in TaxiLights::Init. That assignment
-//     invoked D3DXCOLOR's conversion operator: clamp each channel and pack
-//     0xAARRGGBB. FVECTOR4::dword_argb() is that operator under a name that
-//     says which byte order it produces -- and it has to be spelled, because
-//     FVECTOR4 has no implicit conversion to DWORD. Same finding as
-//     HazeMgr.cpp's sunset colours.
-//
-//  3. FOUR sscanf CONVERSIONS ARE WRONG ON THIS PLATFORM, AND IT IS A REAL
-//     STACK WRITE, NOT A WARNING. "PAPI %lf %lf %lf %lu %lu" and
-//     "VASI %lf %lf %lf %lu" scan into DWORD variables. On Windows DWORD is
-//     `unsigned long` and %lu is exactly right. HERE DWORD IS `unsigned int`
-//     -- four bytes -- while `unsigned long` is EIGHT, so each %lu writes
-//     eight bytes into a four-byte local. `u` and `q` are adjacent stack
-//     variables in the PAPI case, so the first write also clobbers the
-//     second. The conversion is %u, which is what the argument now is.
-//     Same class as finding 8 (BuildDate's sscanf_s) and finding 15
-//     (MaterialMgr's unbounded %s).
-//
-//  4. GetObjectA() -> GetObject(). vObject inherits GetObject() from
-//     oapi::VisObject; the Windows source writes GetObjectA because
-//     <windows.h> defines `GetObject` as a macro for `GetObjectA` and the
-//     macro had already rewritten the declaration. The shim does the same
-//     (windows.h), so both spellings still work here -- GetObject() is used
-//     because it is what the code means, and it matches BeaconArray.cpp.
-//     Same artefact as MaterialMgr.cpp's GetClassNameA (finding 14).
-//
-//  5. ONE DEAD LOCAL. BuildLights sets up a `papiLight` -- copy, size,
-//     angle, brightness -- and never reads it; the PAPI lights are built in
-//     BuildPAPI, which makes its own. MSVC's C4189 is off by default and
-//     GCC's -Wunused-but-set-variable is inside -Wall, so it is commented
-//     out with the reference's own lines left visible.
-//
-// LPDIRECT3DDEVICE9 -> VulkanDevice*, LPD3DXMATRIX -> FMATRIX4*, and
-// D3DXVECTOR3 -> FVECTOR3, as everywhere else.
+//   D3DXVec3TransformNormal -> oapi::TransformNormal
+//   D3DXVec3TransformCoord  -> oapi::TransformCoord
+//   D3DXVec3Normalize       -> oapi::unit
+//   D3DXVec3Dot             -> oapi::dot
+//   D3DXVEC                 -> FVEC
 // ==============================================================
 
 #include "RunwayLights.h"
@@ -90,7 +44,8 @@ RunwayLights::RunwayLights(class vBase *_vB, const class Scene *scn)
 	apr_length = 257.0;
 	iCategory = 0;
 	nPAPI = 0;
-	// GetObjectA() on Windows. See point 4 in the file header.
+	// GetObjectA() on Windows, because <windows.h> defines GetObject as a
+	// macro for it and had already rewritten the declaration.
 	hObj = vB->GetObject();
 	nVASI = 0;
 	bSingleEnded = false;
@@ -268,9 +223,8 @@ BeaconArray *RunwayLights::BuildLights(VECTOR3 _start, VECTOR3 _end, double disp
 	DWORD white  = 0xFFFFEECC; 
 	DWORD yellow = 0xFFFFBB33; 
 
-	// papiLight was declared here with the other four and is set four lines
-	// below and never read -- BuildPAPI builds its own. See point 5 in the
-	// file header.
+	// papiLight was declared here with the other four, set below, and never
+	// read -- BuildPAPI builds its own.
 	BeaconArrayEntry edgeLight, centerLight, endLight, beaconLight /*, papiLight*/;
 
 	centerLight.angle = lightAngle;
@@ -713,10 +667,6 @@ void RunwayLights::SetPAPIColors(BeaconArray *pPAPI, FMATRIX4 *world, int i)
 		DWORD red    = 0xFFFF4444;
 		DWORD white  = 0xFFFFEECC; 
 
-		// D3DXVec3TransformNormal(&vUp, ptr(D3DXVECTOR3(0,1,0)), world), then
-		// D3DXVec3Normalize(&vFront, D3DXVec3TransformCoord(&vPos, &vRef1,
-		// world)). The SDK's forms return their result, so the nested call
-		// becomes two statements -- same two operations, same order.
 		FVECTOR3 vUp = oapi::TransformNormal(FVECTOR3(0.0f, 1.0f, 0.0f), *world);
 		FVECTOR3 vRef1 = pVrt[0].pos;
 		FVECTOR3 vPos = oapi::TransformCoord(vRef1, *world);
@@ -893,9 +843,10 @@ int RunwayLights::CreateRunwayLights(class vBase *vB, const class Scene *scn, co
 				{
 					VECTOR3 vec; DWORD u, q;
 				
-					// "%lu %lu" on Windows, where DWORD is unsigned long.
-					// See point 3 in the file header: here it is unsigned
-					// int, and %lu would write eight bytes into each.
+					// Was "%lu %lu". DWORD is unsigned long on Windows and
+					// unsigned int here, so %lu writes eight bytes into a
+					// four-byte local -- and u and q are adjacent, so the
+					// first write clobbers the second.
 					int n = sscanf(cbuf, "PAPI %lf %lf %lf %u %u", &vec.x, &vec.y, &vec.z, &u, &q);
 
 					if (n==3) {
@@ -1042,8 +993,9 @@ void TaxiLights::Init()
 	taxiLight.dir = _V(0, 1, 0);
 	taxiLight.pos = _V(0, 0, 0);
 	//taxiLight.lat = taxiLight.lng = 0.0;
-	// A D3DXCOLOR assigned to a DWORD, which called D3DXCOLOR's conversion
-	// operator: clamp and pack 0xAARRGGBB. See point 2 in the file header.
+	// Was a D3DXCOLOR assigned to a DWORD, which invoked D3DXCOLOR's
+	// conversion operator: clamp and pack 0xAARRGGBB. FVECTOR4 has no
+	// implicit conversion, so dword_argb() says it explicitly.
 	taxiLight.color = FVECTOR4(float(color.x), float(color.y), float(color.z), 1.0f).dword_argb();
 
 	VECTOR3 space = dir * len / (count-1);

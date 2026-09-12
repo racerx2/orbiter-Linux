@@ -1,31 +1,16 @@
 // Linux <wincodec.h> — the Windows Imaging Component subset Orbiter uses.
 //
-// Src/Orbiter/GraphicsAPI.cpp uses WIC to load images (BMP/PNG/JPEG/TIFF) into
-// HBITMAPs and to encode screenshots. WIC is COM and Windows-only, but unlike
-// the embedded-IE control it replaces, its *function* is entirely ordinary:
-// decode an image file, scale it, convert pixel format, encode it back out.
-// Linux has several good implementations of that, so this is reimplemented
-// rather than stubbed out.
+// GraphicsAPI.cpp uses WIC to load images (BMP/PNG/JPEG/TIFF) into HBITMAPs
+// and to encode screenshots. WIC is COM and Windows-only, but its function is
+// entirely ordinary -- decode an image file, scale it, convert pixel format,
+// encode it back out -- so it is reimplemented rather than stubbed out.
 //
-// The interfaces are declared here exactly as GraphicsAPI.cpp codes against
-// them, so that file compiles unmodified. They are pure virtual because that
-// is what COM is -- every call is vtable dispatch -- which means no bodies are
-// needed to compile or link the callers. The concrete classes live in
-// Src/Orbiter/Linux/WinCodec.cpp and are backed by stb_image / stb_image_write.
-//
-// Only the 18 methods GraphicsAPI.cpp actually calls are declared:
-//   factory : CreateStream, CreateDecoderFromFilename, CreateDecoderFromStream,
-//             CreateFormatConverter, CreateBitmapScaler, CreateEncoder
-//   decoder : GetFrameCount, GetFrame
-//   source  : GetSize, CopyPixels
-//   scaler  : Initialize
-//   convert : Initialize
-//   stream  : InitializeFromFilename, InitializeFromMemory
-//   encoder : Initialize, CreateNewFrame, Commit
-//   frame   : Initialize, SetSize, SetPixelFormat, WritePixels, Commit
-//
-// COM reference counting is honoured: Release() is real, because
-// GraphicsAPI.cpp calls it on every object it creates.
+// Only the methods GraphicsAPI.cpp actually calls are declared. They are pure
+// virtual because that is what COM is (every call is vtable dispatch), so no
+// bodies are needed to compile or link the callers; the concrete classes live
+// in WinCodec.cpp, backed by stb_image / stb_image_write. Reference counting
+// is honoured -- Release() is real, because callers do call it on every object
+// they create.
 
 #ifndef ORBITER_LINUX_WINCODEC_H
 #define ORBITER_LINUX_WINCODEC_H
@@ -81,8 +66,8 @@ typedef struct WICRect {
 // ---------------------------------------------------------------------------
 // Format and container GUIDs
 //
-// Defined in Src/Orbiter/Linux/WinCodec.cpp. The implementation compares
-// against these by identity, so their values only need to be distinct.
+// Defined in WinCodec.cpp, which compares against them by identity, so their
+// values only need to be distinct.
 // ---------------------------------------------------------------------------
 
 ORB_EXTERN_C_BEGIN
@@ -191,9 +176,9 @@ struct IWICImagingFactory : public IWICUnknown {
 // ---------------------------------------------------------------------------
 // Property bag
 //
-// WIC passes encoder options through an IPropertyBag2. GraphicsAPI.cpp uses it
-// to set the JPEG quality: it fills a PROPBAG2 with the option name and a
-// VARIANT with a float, then calls Write. Nothing reads options back.
+// WIC passes encoder options through an IPropertyBag2. The only use here is
+// setting JPEG quality: fill a PROPBAG2 with the option name and a VARIANT
+// with a float, then Write. Nothing reads options back.
 // ---------------------------------------------------------------------------
 
 #define VT_EMPTY 0

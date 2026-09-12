@@ -5,42 +5,6 @@
 // Copyright (C) 2006-2026 Martin Schweiger
 // Copyright (C) 2012-2026 Jarmo Nikkanen
 // ==============================================================
-//
-// CONVERTED FROM OVP/D3D9Client/VPlanet.h, read end to end (487 lines).
-//
-// NOTHING STRUCTURAL CHANGES IN THIS FILE, and that is worth saying because
-// it is one of the largest headers in the client. What it declares is a
-// planet's visual: the tile managers, the atmospheric scattering constants,
-// the surface bases, the micro-texture configuration, the eclipse geometry.
-// All of it is Orbiter and physics, none of it is Direct3D, and the whole
-// conversion is four substitutions:
-//
-//   LPDIRECT3DTEXTURE9  -> VulkanTexture *
-//   LPDIRECT3DDEVICE9   -> VulkanDevice *
-//   D3DXVECTOR3/4,
-//   D3DXCOLOR, D3DXMATRIX -> FVECTOR3 / FVECTOR4 / FMATRIX4
-//   D3D9Mesh, D3D9Pad,
-//   D3D9Sun, D3D9Client -> VulkanMesh, VulkanPad, VulkanSun, VulkanClient
-//
-// THE THREE SHADER-FACING STRUCTS ARE THE PART THAT MATTERS. ShaderParams,
-// ConstParams, FlowControlPS and FlowControlVS are uploaded RAW to the
-// terrain and scattering shaders, so their layout is a contract with
-// NewPlanet.hlsl and Scatter.hlsl rather than an implementation detail. They
-// are declared with float2/float3/float4/float4x4, which VulkanUtil.h maps to
-// FVECTOR2/3/4 and FMATRIX4 -- the same sizes and the same order as the HLSL
-// types they were named after, which is why the declarations need no editing
-// at all.
-//
-// The `#pragma pack(push, 4)` around them is kept for the same reason it is
-// kept around LightStruct and VulkanMatExt in VulkanUtil.h: it is what makes
-// the C++ layout match what the shader reads, and the GLSL blocks that read
-// these MUST be layout(scalar). std140 would repad every float3 in
-// ConstParams -- and there are eleven of them -- which would silently move
-// every field after the first one.
-//
-// A `BOOL` in these structs is 32 bits, as it is in HLSL and in a GLSL
-// uniform block. See the note at the head of TexFlow in VulkanEffect.h.
-// ==============================================================
 
 #ifndef __VPLANET_H
 #define __VPLANET_H
@@ -56,18 +20,10 @@ class SurfTile;
 class CloudTile;
 class VulkanPad;
 
-// Forward declarations the Windows header does not have.
-//
-// On Windows this file compiles only because every .cpp that includes it
-// includes the tile-manager and haze headers FIRST -- vBase, SurfaceManager,
-// TileManager2, CloudManager, HazeManager, HazeManager2, RingManager and
-// ImageProcessing are all used here as pointers and none of them is declared.
-// That is an include-order dependency rather than a design, and it breaks the
-// moment a new .cpp includes this header on its own.
-//
-// Every one of them is used only through a pointer, so a declaration is
-// sufficient and the header becomes self-contained. Nothing is included that
-// was not included before.
+// Forward declarations the Windows header does not have: there, this file
+// compiles only because every .cpp including it happens to include the
+// tile-manager and haze headers first. All are used through pointers only, so
+// declaring them makes the header self-contained without adding an include.
 class vBase;
 class SurfaceManager;
 class CloudManager;
@@ -127,23 +83,21 @@ public:
 };
 
 
-// The packing is what makes the C++ layout match what the shader reads, and
-// 4-byte packing is exactly what the Windows build produced. The static_asserts
-// below turn a toolchain that lays these out differently into a BUILD ERROR
-// instead of wrong terrain.
+// These structs are uploaded raw to the terrain and scattering shaders, so
+// their layout is a contract with NewPlanet.glsl and Scatter.glsl. 4-byte
+// packing is what the Windows build produced, and the GLSL blocks that read
+// them must be layout(scalar): std140 would repad every float3 in ConstParams
+// -- eleven of them -- silently moving every field after the first. A BOOL
+// here is 32 bits, as in HLSL and in a GLSL uniform block.
 //
-// THE float4 / float4x4 MEMBERS ARE FVECTOR4P / FMATRIX4P, NOT FVECTOR4 /
-// FMATRIX4, and that is not cosmetic. Those two SDK types are ORB_ALIGN16;
-// pack(4) lowers the MEMBER's alignment but leaves the TYPE declared 16-byte
-// aligned, so GCC coalesces their constructors into aligned SSE stores. With
-// sizeof(ShaderParams) == 348, the second element of any array of them starts
-// 12 mod 16 and every one of those stores faults. That crash is what stopped
-// this client rendering its first frame -- see the note at FVECTOR4P in
-// VulkanUtil.h. The packed mirrors have identical bytes, so every assert
-// below still holds.
-//
-// -Wpacked-not-aligned is therefore left ON: nothing over-aligned remains, so
-// it is silent, and it will speak up if an over-aligned type is put back.
+// The float4 / float4x4 members are FVECTOR4P / FMATRIX4P, not FVECTOR4 /
+// FMATRIX4: those two SDK types are ORB_ALIGN16, and pack(4) lowers the
+// member's alignment while leaving the type declared 16-byte aligned, so GCC
+// coalesces their constructors into aligned SSE stores. With
+// sizeof(ShaderParams) == 348 the second element of any array of them starts
+// 12 mod 16 and every one of those stores faults. The packed mirrors have
+// identical bytes, so the asserts below still hold, and nothing over-aligned
+// remains for -Wpacked-not-aligned to complain about.
 #pragma pack(push, 4)
 
 // Bools for Scatter.glsl
@@ -263,10 +217,9 @@ struct ConstParams
 
 #pragma pack(pop)
 
-// The layout contract with NewPlanet.glsl and Scatter.glsl, asserted rather
-// than assumed. Every one of these structs is uploaded raw; a compiler that
-// pads them differently would move every field after the first pad and give
-// wrong terrain, wrong scattering or a wrong shadow, with nothing to point at.
+// The layout contract asserted rather than assumed: a compiler that pads these
+// differently gives wrong terrain, wrong scattering or a wrong shadow, with
+// nothing to point at.
 static_assert(sizeof(sFlow) == 12, "sFlow must stay three 32-bit BOOLs");
 static_assert(sizeof(FlowControlPS) == 52, "FlowControlPS must stay thirteen 32-bit BOOLs");
 static_assert(sizeof(FlowControlVS) == 12, "FlowControlVS must stay three 32-bit BOOLs");
@@ -433,9 +386,6 @@ public:
 		//bool bCloudFlatShadows; ///< render cloud shadows onto a sphere?
 
 		// Shader Params
-		// Were D3DXCOLOR, which is four floats in r,g,b,a order -- the same
-		// four floats FVECTOR4 holds, which is why the shader upload is
-		// unchanged.
 		FVECTOR4	TintColor;
 		FVECTOR4	AmbColor;
 		FVECTOR4	FogColor;

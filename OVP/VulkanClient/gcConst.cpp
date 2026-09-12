@@ -15,37 +15,6 @@
 // LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 // IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 // =================================================================================================================================
-//
-// CONVERTED FROM OVP/D3D9Client/gcConst.cpp, read end to end (362 lines).
-//
-// THE THIN COMPATIBILITY LAYER over gcCore for add-on modules: almost every
-// function here forwards one call and converts nothing. Its HEADER,
-// gcConst.h, needed ONE LINE changed in the whole file (a raw struct clear
-// that GCC reports and MSVC does not) and gcCore.h and gcGUI.h needed NOTHING
-// AT ALL -- which is the point of those headers: they are the client's public
-// face and were already written without a Direct3D type in them.
-//
-// Three things change in this file.
-//
-//  1. <d3d9.h> / <d3dx9.h> -> VulkanTypes.h, and the two client includes
-//     follow their renames. Neither D3DX header was used for anything: the
-//     file names no D3DX entry point.
-//
-//  2. `delete (D3D9Mesh*)hMesh` -> `delete (VulkanMesh*)hMesh`. A
-//     DEVMESHHANDLE is an opaque handle to the client's own mesh type, so the
-//     cast has to name whatever that type now is.
-//
-//  3. GetSystemSpecs REPORTS TWO HARDWARE LIMITS, AND ONLY ONE OF THEM STILL
-//     EXISTS. D3DCAPS9::MaxTextureWidth is
-//     VkPhysicalDeviceLimits::maxImageDimension2D -- the same question with
-//     an exact answer. D3DCAPS9::MaxTextureRepeat, the largest texture
-//     coordinate the sampler could still wrap correctly, HAS NO VULKAN
-//     COUNTERPART because Vulkan imposes no such limit: wrapping is done on a
-//     float coordinate and the specification names no ceiling. This is a
-//     value add-ons read, so it cannot simply be dropped; it reports the
-//     value that means "no limit" and says so here. Second instance -- see
-//     SurfTile::MaxRep in Surfmgr2.cpp.
-// =================================================================================================================================
 
 
 #include <vulkan/vulkan.h>
@@ -335,9 +304,11 @@ void gcConst::GetSystemSpecs(SystemSpecs* sp, int size)
 		// D3DCAPS9::MaxTextureWidth -> VkPhysicalDeviceLimits::maxImageDimension2D,
 		// one of the few D3DCAPS9 fields with an exact counterpart.
 		sp->MaxTexSize = g_client->GetHardwareCaps()->limits.maxImageDimension2D;
-		// D3DCAPS9::MaxTextureRepeat has no counterpart at all -- Vulkan sets
-		// no ceiling on how far a texture coordinate may wrap. See point 3 in
-		// the file header: this is the value that means "no limit".
+		// D3DCAPS9::MaxTextureRepeat -- the largest texture coordinate the
+		// sampler could still wrap correctly -- has no counterpart at all:
+		// Vulkan wraps a float coordinate and the specification names no
+		// ceiling. Add-ons read this field, so it cannot be dropped; this is
+		// the value that means "no limit".
 		sp->MaxTexRep = 0xFFFFFFFF;
 		sp->gcAPIVer = BuildDate();
 	}

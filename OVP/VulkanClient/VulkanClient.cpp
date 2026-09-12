@@ -6,51 +6,28 @@
 //				 2012-2016 Jarmo Nikkanen
 // ==============================================================
 //
-// CONVERTED FROM OVP/D3D9Client/D3D9Client.cpp, read end to end (3303 lines).
+// This is the module entry point and the GraphicsClient override set. Most of
+// it is core API and converts unchanged; the structural changes are stated
+// once here rather than at each of the several dozen places they show up.
 //
-// This is the module entry point and the GraphicsClient override set: the
-// functions Orbiter's core calls to start the client, hand it a window, run a
-// frame, and shut it down. Most of it is core API and converts unchanged. The
-// changes are structural and worth stating once, here, rather than at each of
-// the several dozen places they show up.
+//  1. The core owns the device and the frame. On Windows the client created
+//     the Direct3D device, the swap chain and the back buffer, wrapped its
+//     rendering in BeginScene/EndScene and Present()ed. Here
+//     Src/Orbiter/Linux/UIHost.cpp stands all of that up before any client
+//     loads, and owns the only vkQueuePresentKHR in the process.
 //
-//  1. THE CORE OWNS THE DEVICE AND THE FRAME. On Windows the client created
-//     the Direct3D device, the swap chain and the back buffer, called
-//     BeginScene/EndScene around its own rendering, and Present()ed. Here
-//     Src/Orbiter/Linux/UIHost.cpp stands up the VkInstance, the
-//     VkPhysicalDevice, the VkDevice, the queue, the descriptor pool, the
-//     swapchain and the colour+depth render pass BEFORE any client loads, and
-//     it owns the only vkQueuePresentKHR in the process. So this file does
-//     not create a device -- VulkanDevice::Adopt takes the core's context --
-//     and clbkDisplayFrame does not present.
+//  2. Lost devices do not exist. D3D9's TestCooperativeLevel / Reset() cycle,
+//     which this file spends a good deal of code on, has no counterpart:
+//     VK_ERROR_DEVICE_LOST is unrecoverable, and swapchain recreation on
+//     resize is the core's job.
 //
-//  2. LOST DEVICES DO NOT EXIST. D3D9's TestCooperativeLevel /
-//     D3DERR_DEVICELOST / Reset() cycle -- which this file spends a good deal
-//     of code on -- has no Vulkan counterpart. The nearest thing is
-//     VK_ERROR_DEVICE_LOST, which is unrecoverable, and swapchain
-//     recreation on resize, which is the CORE's job. See
-//     the porting notes for the longer argument.
-//
-//  3. IMGUI IS THE CORE'S. imgui_impl_dx9 and imgui_impl_win32 were the
-//     client's backends on Windows; UIHost.cpp initialises ImGui with the
-//     Vulkan and SDL backends and runs its frame. The client draws into
-//     ImGui through the ImGuiDialog interface in OrbiterAPI.h and never
+//  3. ImGui is the core's. The client draws through ImGuiDialog and never
 //     touches a backend.
 //
-//  4. d3d9on12.h AND Direct3DCreate9On12 HAVE NO COUNTERPART. They let a
-//     D3D9 program run on the D3D12 runtime, which is a Windows migration
-//     path and nothing more.
-//
-//  5. NvOptimusEnablement HAS NO COUNTERPART. It is a DWORD exported from a
-//     Windows DLL that the NVIDIA driver reads out of the PE export table to
-//     pick the discrete GPU on a laptop. Linux has no such protocol; the
-//     equivalent is an environment variable the user sets
-//     (DRI_PRIME/__NV_PRIME_RENDER_OFFLOAD), which is not the module's to
-//     set.
-//
-//  6. NVAPI HAS NO COUNTERPART. The stereo blocks sit behind #ifdef _NVAPI_H,
-//     never defined in this tree, and NVAPI is a Windows-only Direct3D
-//     library.
+//  4. d3d9on12, NvOptimusEnablement and NVAPI have no counterpart: a Windows
+//     D3D9-on-D3D12 migration path, a DWORD the NVIDIA driver reads out of a
+//     PE export table to pick the discrete GPU, and a Windows-only Direct3D
+//     library behind an #ifdef never defined in this tree.
 // ==============================================================
 
 
@@ -86,13 +63,9 @@
 #include "gcCore.h"
 #include "gcConst.h"
 #include <unordered_map>
-// <d3d9on12.h> and the two ImGui backend headers are gone; see notes 3 and 4
-// in the file header. "imgui.h" stays -- the client builds ImGui windows
-// through ImGuiDialog, it simply does not own a backend.
+// <d3d9on12.h> and the two ImGui backend headers are gone; see notes 3 and 4.
 #include "imgui.h"
 
-// The _MSC_VER round() shim for Visual Studio 2012 and earlier is gone. GCC
-// has had C99's round() since long before C++17, which this builds as.
 
 // ==============================================================
 // Structure definitions
@@ -114,10 +87,8 @@ using namespace oapi;
 HINSTANCE g_hInst = 0;
 VulkanClient *g_client = 0;
 class gcConst* g_pConst = 0;
-// g_pD3DObject is gone. It was the IDirect3D9 factory object, created by the
-// VideoTab so it could enumerate adapters and modes. The VkInstance comes
-// from the core's context instead -- see VulkanFrame.h -- and the client
-// never creates one.
+// g_pD3DObject is gone: the IDirect3D9 factory the VideoTab used to enumerate
+// adapters. The VkInstance comes from the core's context.
 Memgr<float>* g_pMemgr_f = nullptr;
 Memgr<INT16>* g_pMemgr_i = nullptr;
 Memgr<UINT8>* g_pMemgr_u = nullptr;
@@ -127,8 +98,6 @@ Texmgr<VulkanTexture*>* g_pTexmgr_tt = nullptr;
 Vtxmgr<VulkanBuffer*>* g_pVtxmgr_vb = nullptr;
 Idxmgr<VulkanBuffer*>* g_pIdxmgr_ib = nullptr;
 
-// The __Direct3DCreate9On12 function-pointer typedef is gone with the header
-// that named its argument type; see note 4.
 
 set<VulkanMesh*> MeshCatalog;
 set<SurfNative*> SurfaceCatalog;
@@ -141,7 +110,7 @@ DWORD uCurrentMesh = 0;
 vObject *pCurrentVisual = 0;
 _VulkanStats VulkanStats;
 
-// The #ifdef _NVAPI_H StereoHandle is gone; see note 6.
+// The #ifdef _NVAPI_H StereoHandle is gone -- NVAPI is Windows-only.
 
 bool bFreeze = false;
 bool bFreezeEnable = false;
@@ -154,7 +123,8 @@ std::set<Brush *> g_brushes;
 
 extern list<gcGUIApp *> g_gcGUIAppList;
 
-// The extern "C" NvOptimusEnablement export is gone; see note 5.
+// The extern "C" NvOptimusEnablement export is gone -- it is a DWORD the
+// NVIDIA driver reads out of a PE export table to pick the discrete GPU.
 
 // ==============================================================
 // API interface
@@ -168,12 +138,8 @@ DLLCLBK void InitModule(HINSTANCE hDLL)
 
 #ifdef _DEBUG
 	// _CrtSetDbgFlag / _CrtSetBreakAlloc are the MSVC debug heap and have no
-	// counterpart; the equivalent here is running under valgrind or building
-	// with -fsanitize=address, neither of which is a call the module makes.
-	// THE ASSERTIONS BELOW ARE KEPT IN FULL. They check the layout of
-	// oapi::FVECTOR4 -- that its union views agree and that .a/.w sit behind
-	// .rgb/.xyz -- which is exactly the kind of thing that could differ
-	// between MSVC and GCC and would be silently wrong if it did.
+	// counterpart. The assertions below check that oapi::FVECTOR4's union
+	// views agree, which could differ between MSVC and GCC.
 
 	assert(sizeof(FVECTOR4) == 16);
 	assert(sizeof(FVECTOR4::data) == 16);
@@ -211,22 +177,14 @@ DLLCLBK void InitModule(HINSTANCE hDLL)
 	g_pMemgr_w = new Memgr<WORD>("WORD");
 	g_pMemgr_vtx = new Memgr<VERTEX_2TEX>("VERTEX_2TEX");
 
-	// D3DXCheckVersion(D3D_SDK_VERSION, D3DX_SDK_VERSION) HAS NO COUNTERPART.
-	// It asked whether the installed D3DX redistributable matched the headers
-	// the module was built against -- a Windows redistributable-versioning
-	// problem. The Vulkan loader answers the equivalent question at
-	// vkCreateInstance time, and the core has already done that by the time
-	// this runs; a client that gets here has a working device.
-	//
-	// The #ifdef _NVAPI_H NvAPI_Initialize block that followed is gone; see
-	// note 6 in the file header.
+	// D3DXCheckVersion asked whether the installed D3DX redistributable matched
+	// the headers; the Vulkan loader answers the equivalent at vkCreateInstance
+	// time, and the core has already done that.
 
 	Config = new VulkanConfig();
 
-	// The cache directory names follow the module: "Cache/VulkanClient/Shaders".
-	// GetFileAttributesA and CreateDirectoryA come from the Linux shim
-	// (Src/Orbiter/Linux/windows.h), which implements both over stat() and
-	// mkdir(), so the three-step create converts verbatim.
+	// The cache directories follow the module name. GetFileAttributesA and
+	// CreateDirectoryA come from the Linux shim, over stat() and mkdir().
 	if (Config->ShaderCacheUse) {
 		DWORD fa = GetFileAttributesA("Cache");
 		if (fa == INVALID_FILE_ATTRIBUTES) CreateDirectoryA("Cache", NULL);
@@ -275,7 +233,7 @@ DLLCLBK void ExitModule(HINSTANCE hDLL)
 	DebugControls::Release();
 	AtmoControls::Release();
 
-	// The #ifdef _NVAPI_H NvAPI_Unload block is gone; see note 6.
+	// The #ifdef _NVAPI_H NvAPI_Unload block is gone -- NVAPI is Windows-only.
 
 	LogAlw("Log Closed");
 	VulkanCloseLog();
@@ -304,20 +262,9 @@ DLLCLBK gcConst * gcGetCoreAPI()
 // VulkanClient class implementation
 // ==============================================================
 
-// THE ORDER OF THIS INITIALISER LIST IS THE ORDER OF THE DECLARATIONS.
-// The Windows list is in a different order, which MSVC accepts silently;
-// GCC warns (-Wreorder), and since members are initialised in declaration
-// order regardless, a list that reads differently from what runs is a trap.
-// Same members, same values, only the sequence moves.
-//
-// pLoadLabel("") and pLoadItem("") become pLoadLabel{} and pLoadItem{}. Both
-// are char[128], and a character ARRAY cannot be initialised from a string
-// literal in parentheses -- that is an MSVC extension, and GCC rejects it.
-// The braces value-initialise the buffer to all zeros, which is exactly what
-// an empty string in a char buffer is.
-//
-// hMainThread(NULL) becomes MainThreadId(0); see GetMainThreadId() in the
-// header for why the pseudo-handle became a thread id.
+// Initialiser list reordered to declaration order (-Wreorder). pLoadLabel("")
+// becomes pLoadLabel{}: a char array cannot be initialised from a parenthesised
+// string literal outside MSVC.
 VulkanClient::VulkanClient (HINSTANCE hInstance) :
 	GraphicsClient(hInstance),
 	pBltGrpTgt	(NULL),
@@ -371,8 +318,8 @@ VulkanClient::~VulkanClient()
 {
 	LogAlw("VulkanClient destructor called");
 	SAFE_DELETE(vtab);
-	// SAFE_RELEASE(g_pD3DObject) has no counterpart: there is no factory
-	// object to release. The VkInstance belongs to the core.
+	// SAFE_RELEASE(g_pD3DObject) has no counterpart: the VkInstance is the
+	// core's.
 }
 
 
@@ -399,28 +346,10 @@ const void *VulkanClient::GetConfigParam (DWORD paramtype) const
 }
 
 
-// ==============================================================
-// This is called only once when the launchpad will appear
-// This callback will initialize the Video tab only
-//
-// THE ENTIRE D3D9-CREATION BLOCK IS GONE, and it is the clearest single
-// example of note 1 in the file header. On Windows this function:
-//
-//   - built a D3D9ON12_ARGS from Config->Enable9On12,
-//   - looked up Direct3DCreate9On12 in an already-loaded D3D9.dll,
-//   - called it, or Direct3DCreate9, to make the IDirect3D9 factory,
-//   - failed the client if that returned NULL.
-//
-// There is nothing here to create. The VkInstance, VkPhysicalDevice, VkDevice
-// and queue all belong to Src/Orbiter/Linux/UIHost.cpp and exist before this
-// module is loaded; VulkanDevice::Adopt takes them in
-// clbkCreateRenderWindow. Config->Enable9On12 selected between the native
-// D3D9 runtime and the D3D12 emulation layer, a Windows-only choice with no
-// counterpart at all.
-//
-// OapiExtension::RunsUnderWINE() goes with it. It was asked here only to skip
-// the 9-on-12 path, since WINE's D3D9.dll has no such export.
-//
+// The entire D3D9-creation block is gone -- the clearest example of note 1. It
+// made the IDirect3D9 factory, optionally through Direct3DCreate9On12, and
+// there is nothing here to create. OapiExtension::RunsUnderWINE() goes with
+// it: it was asked here only to skip the 9-on-12 path.
 bool VulkanClient::clbkInitialise()
 {
 	_TRACE;
@@ -431,10 +360,8 @@ bool VulkanClient::clbkInitialise()
 	if (GraphicsClient::clbkInitialise()==false) return false;
 
 	//Create the Launchpad video tab interface
-	// (char*) on the literal: oapiWriteLog takes char*, not const char*, and
-	// GCC rejects the implicit conversion from a string literal
-	// (-Wwrite-strings) where MSVC permits it. The cast is the spelling the
-	// rest of this file already uses at its other oapiWriteLog call sites.
+	// (char*) on the literal: oapiWriteLog takes char*, and GCC rejects the
+	// implicit conversion from a string literal where MSVC permits it.
 	oapiWriteLog((char*)"[Vulkan] Initialize VideoTab...");
 	vtab = new VideoTab(this, ModuleInstance(), OrbiterInstance(), LaunchpadVideoTab());
 	return vtab->Initialise();
@@ -450,9 +377,8 @@ HWND VulkanClient::clbkCreateRenderWindow()
 
 	LogAlw("================ clbkCreateRenderWindow ===============");
 
-	// `if (!g_pD3DObject) return NULL;` has no counterpart -- there is no
-	// factory object. What this function used to reach through it,
-	// CD3DFramework9::Initialize now gets from the core's context.
+	// `if (!g_pD3DObject) return NULL;` has no counterpart; what it reached
+	// through, CVulkanFramework::Initialize gets from the core.
 
 	Config->WriteParams();
 	
@@ -478,17 +404,10 @@ HWND VulkanClient::clbkCreateRenderWindow()
 	pDevice			 = NULL;
 	pBltGrpTgt		 = NULL;	// Let's set this NULL here, constructor is called only once. Not when exiting and restarting a simulation.
 	pNoiseTex		 = NULL;
-	// surfBltTgt is gone. The Windows line set it and said so itself -- "This
-	// variable is not used, set it to NULL anyway". It is GraphicsClient's
-	// own member for the default Blt target and nothing in the client reads
-	// it; VulkanClient.h does not redeclare it.
-	//
-	// Unchanged. GetCurrentThread() is the shim's, and returns the same
-	// pseudo-handle (HANDLE)-2 Windows returns, so the two guards fed by this
-	// value stay dead exactly as they are on Windows. See the note at
-	// VulkanClient::GetMainThread() for why translating it to a real thread
-	// id -- which an earlier version of this port did -- turns a dormant
-	// Windows check into a Linux-only abort.
+	// surfBltTgt is gone: GraphicsClient's own member, which nothing reads.
+	// GetCurrentThread() is the shim's and returns the same pseudo-handle
+	// Windows returns, so the two guards fed by hMainThread stay dead exactly
+	// as they are there. See GetMainThread().
 	hMainThread		 = GetCurrentThread();
 
 	VMAT_Identity(&ident);
@@ -516,11 +435,6 @@ HWND VulkanClient::clbkCreateRenderWindow()
 		return NULL;
 	}
 
-	// The GDI black-fill of the client area converts as written: the Linux
-	// shim supplies GetClientRect, GetDC, CreateSolidBrush, FillRect,
-	// DeleteObject, ReleaseDC and ValidateRect, and Gdi.cpp records the fill
-	// into the display list the core replays. The comment on ValidateRect is
-	// the author's and still applies.
 	RECT rect;
 	GetClientRect(hRenderWnd, &rect);
 	HDC hWnd = GetDC(hRenderWnd);
@@ -550,21 +464,15 @@ HWND VulkanClient::clbkCreateRenderWindow()
 	g_pVtxmgr_vb = new Vtxmgr<VulkanBuffer*>(pDevice, "TileVertex");
 	g_pIdxmgr_ib = new Idxmgr<VulkanBuffer*>(pDevice, "TileIndices");
 
-	// D3DXCreateTextureFromFileA becomes NatLoadTexture. D3DX read the file,
-	// chose a format and uploaded in one call; NatLoadTexture is the client's
-	// own loader (VulkanSurface.cpp) doing the same three things over stb_image
-	// and DDS. THE FILE NAME IS UNCHANGED -- Textures/D3D9Noise.dds is a
-	// shipped asset, not an API name, and renaming it would break every
-	// installation. Same decision as Scene.cpp's D3D9CLUT.dds.
+	// D3DXCreateTextureFromFileA becomes NatLoadTexture, the client's own
+	// loader. The file name is unchanged: Textures/D3D9Noise.dds is a shipped
+	// asset, not an API name, and renaming it would break every installation.
 	pNoiseTex = NatLoadTexture("Textures/D3D9Noise.dds");
 	if (!pNoiseTex) LogErr("Failed to load Textures/D3D9Noise.dds");
 
-	// GetRenderTarget(0) and GetDepthStencilSurface() have no counterpart:
-	// the swapchain images and the depth buffer belong to UIHost.cpp and the
-	// client is never handed one. What it gets instead are the attachment
-	// PROXIES the framework built -- extent and format, no image -- which is
-	// all the back-buffer SURFHANDLE is ever asked for. See
-	// VulkanDevice::CreateAttachmentProxy.
+	// GetRenderTarget(0) and GetDepthStencilSurface() have no counterpart: the
+	// swapchain images belong to the core, so what the client gets are the
+	// attachment proxies -- extent and format, no image.
 	pBackBuffer   = pFramework->GetRenderTargetProxy();
 	pDepthStencil = pFramework->GetDepthStencilProxy();
 
@@ -629,37 +537,14 @@ HWND VulkanClient::clbkCreateRenderWindow()
 	WriteLog("[VulkanClient Initialized]");
 	LogOk("...3D environment initialised");
 
-	// The #ifdef _NVAPI_H stereo block stood here; see note 6 in the file
-	// header. NvAPI_Stereo_CreateHandleFromIUnknown takes an IUnknown*, which
-	// is the clearest statement of why it cannot be carried: it is a COM
-	// interface on a Direct3D device.
+	// The #ifdef _NVAPI_H stereo block stood here -- NVAPI is Windows-only.
 
 	// Create status queries -----------------------------------------
 	//
-	// FOUR CreateQuery CALLS, ALL WITH A NULL OUT-POINTER. That is D3D9's
-	// documented idiom for "is this query type supported" -- it validates and
-	// creates nothing -- and the four answers were only logged.
-	//
-	// The Vulkan counterparts are not four questions but two, and neither is
-	// a create:
-	//
-	//   D3DQUERYTYPE_OCCLUSION       VK_QUERY_TYPE_OCCLUSION, which every
-	//                                conforming implementation supports; the
-	//                                only variable is whether PRECISE counts
-	//                                are available (occlusionQueryPrecise).
-	//   D3DQUERYTYPE_PIPELINETIMINGS
-	//   D3DQUERYTYPE_BANDWIDTHTIMINGS
-	//   D3DQUERYTYPE_PIXELTIMINGS    no counterpart at all. These were
-	//                                D3D9 driver-specific profiling counters,
-	//                                unimplemented on most hardware even
-	//                                then. The Vulkan equivalent is
-	//                                VK_QUERY_TYPE_PIPELINE_STATISTICS, which
-	//                                is one query type behind one feature bit
-	//                                (pipelineStatisticsQuery) rather than
-	//                                three.
-	//
-	// So the four log lines become two, reporting the two feature bits that
-	// actually answer the question. Nothing in the client reads either.
+	// Four CreateQuery calls with a NULL out-pointer -- D3D9's idiom for "is
+	// this query type supported" -- whose answers were only logged. Occlusion
+	// queries are a core Vulkan requirement, and the three timing types were
+	// driver-specific counters whose nearest equivalent is one feature bit.
 	LogAlw("VK_QUERY_TYPE_OCCLUSION is supported by device (core requirement); "
 		   "precise counts %s", pDevice->GetFeatures()->occlusionQueryPrecise
 		   ? "supported" : "not supported");
@@ -692,30 +577,19 @@ void VulkanClient::clbkPostCreation()
 
 	bRunning = true;
 
-	// bRunning's other half, on the host's side of the boundary.
-	//
-	// The reference needs one flag here because it owns its own device and
-	// swap chain: setting bRunning is enough for the next Present to show a
-	// scene. Here the window, the swapchain and the only present belong to
-	// Src/Orbiter/Linux/UIHost.cpp, and it gates BOTH on g_sessionActive --
-	// whether to call this client's scene callback at all, and whether the
-	// host window has any reason to be on screen. Without this call the
-	// window was HIDDEN the moment the Launchpad closed and the scene
-	// callback was never invoked: a scenario launched to a blank desktop with
+	// bRunning's other half, on the host's side of the boundary. The window,
+	// the swapchain and the only present belong to UIHost.cpp, and it gates
+	// both on a session flag -- whether to call this client's scene callback
+	// at all, and whether the host window has any reason to be on screen.
+	// Registering the callback and raising the flag are both required, and
+	// this client did neither: a scenario launched to a blank desktop with
 	// nothing in the log to say why.
-	// The other half of the handshake: WHAT to draw when the host pumps a
-	// frame. Registering it and raising the session flag are both required --
-	// UIHost.cpp's renderFrame does
-	//     if (g_sceneRenderFn && g_sessionActive) g_sceneRenderFn(...)
-	// -- and this client previously did neither, so the test failed twice
-	// over and the scene was never recorded.
 	orbiter_SetSceneRenderCallback(&VulkanClient::SceneRenderThunk, this);
 
 	orbiter_BeginSession();
 
-	// The splash is the window's only content while a scenario loads, and
-	// loading is now over. The reference's counterpart is releasing
-	// pSplashScreen; here the pixels belong to the host, so it is told.
+	// The reference releases pSplashScreen when loading is over; here the
+	// pixels belong to the host, so it is told.
 	orbiter_ClearSplash();
 
 	LogAlw("=============== Loading Completed and Visuals Created ================");
@@ -727,15 +601,8 @@ void VulkanClient::clbkPostCreation()
 	WriteLog("[Scene Initialized]");
 }
 
-// ==============================================================
-// Perform some routine tests with sketchpad
-//
-// EVERY CALL IN THIS FUNCTION IS CORE API -- oapiGetSketchpad, the Sketchpad
-// methods, gcCore2's polygon builders -- so it converts unchanged except for
-// the asset path. "D3D9/SketchpadTest.dds" becomes "Vulkan/SketchpadTest.dds"
-// because it is a directory THIS MODULE ships under its own name, unlike
-// D3D9Noise.dds which lives in the shared Textures folder.
-//
+// Core API throughout. "D3D9/SketchpadTest.dds" becomes
+// "Vulkan/SketchpadTest.dds", a directory this module ships under its own name.
 void VulkanClient::SketchPadTest()
 {
 	SURFHANDLE hSrc = clbkLoadSurface("Vulkan/SketchpadTest.dds", OAPISURFACE_TEXTURE);
@@ -889,10 +756,8 @@ void VulkanClient::SketchPadTest()
 	pSkp->QuickPen(0xA0000000, 3.0f);
 	pSkp->PushWorldTransform();
 
-	// ptr(FVECTOR2(...)) becomes a named local. ptr() existed to take the
-	// address of a temporary, which C++ forbids and MSVC allowed; the value
-	// is unchanged. Same finding as Scene.cpp's, and the same one scale is
-	// reused for the four calls that share it.
+	// ptr(FVECTOR2(...)) becomes a named local: ptr() existed to take the
+	// address of a temporary, which C++ forbids and MSVC allowed.
 	FVECTOR2 sc100(100.0f, 100.0f);
 
 	pSkp->SetWorldScaleTransform2D(&sc100, &pos0);
@@ -938,11 +803,8 @@ void VulkanClient::SketchPadTest()
 	pCore->DeletePoly(hStrip);
 	pCore->DeletePoly(hStrip2);
 
-	// IMAGE_DDS becomes IMAGE_PNG. NatSaveSurface has no DDS writer -- there
-	// is no Vulkan call that produces BC blocks and the client does not carry
-	// a compressor -- which is the decision already recorded in
-	// NatCompressSurface and in DebugControls::SaveEnvMap. The first save
-	// above already asked for PNG, so the two outputs now match.
+	// IMAGE_DDS becomes IMAGE_PNG: NatSaveSurface has no DDS writer, no Vulkan
+	// call produces BC blocks and the client carries no compressor.
 	oapiSaveSurface("SketchpadOutput2", hTgt, ImageFileFormat::IMAGE_PNG);
 
 	oapiReleaseTexture(hTgt);
@@ -959,52 +821,25 @@ void VulkanClient::clbkCloseSession(bool fastclose)
 
 	LogAlw("================ clbkCloseSession ===============");
 
-	// The partner of orbiter_BeginSession() in clbkPostCreation, and it has to
-	// come FIRST: it clears the host's g_sessionActive, so the frame pump
-	// stops calling this client's scene callback before anything the callback
-	// touches is torn down below. Ending the session after the teardown would
-	// leave the host free to render one more frame from freed objects.
+	// The partner of orbiter_BeginSession(), and it has to come first: it clears
+	// the host's session flag, so the frame pump stops calling this client's
+	// scene callback before anything the callback touches is torn down.
 	orbiter_EndSession();
 
-	// AND THEN WAIT FOR THE FRAMES THAT WERE ALREADY SUBMITTED.
+	// And then wait for the frames that were already submitted.
+	// orbiter_EndSession stops the host starting another; it does not wait for
+	// the ones in flight, and everything below deletes objects those frames
+	// are still reading. On Windows nothing had to wait -- the runtime held a
+	// reference for as long as its queued commands needed one -- and here the
+	// layer named four kinds of casualty at once (sampler, pipeline, buffer,
+	// image view, ten of each, the report cap) before the segfault that closed
+	// every session. DestroyObjects does this same pair, but at the END of the
+	// teardown, by which time the scene is gone.
 	//
-	// orbiter_EndSession stops the host STARTING another frame; it does not
-	// wait for the ones in flight, and everything below this line deletes
-	// objects those frames are still reading. On Windows nothing had to wait:
-	// every D3D9 resource was reference-counted and the runtime held a
-	// reference for as long as its own queued commands needed one, so a
-	// Release during teardown decremented a count and freed nothing early.
-	// Vulkan has no such count, and the layer named four kinds of casualty at
-	// once:
-	//
-	//     VUID-vkDestroySampler-sampler-01082
-	//     VUID-vkDestroyPipeline-pipeline-00765
-	//     VUID-vkDestroyBuffer-buffer-00922
-	//     VUID-vkDestroyImageView-imageView-01026
-	//
-	// ten of each -- the report cap -- ending in the segfault that closed
-	// every session.
-	//
-	// DestroyObjects already does exactly this pair, but at the END of the
-	// teardown, by which time the scene, every visual, every mesh and every
-	// shader have been deleted. The wait belongs where the deleting starts.
 	// vkDeviceWaitIdle alone is not enough: the frames' command buffers still
-	// NAME the descriptor sets and images, which is why the command pools are
-	// reset too. See orbiter_ResetFrameCommands.
-	//
-	// AND UNDER THE DEVICE LOCK, because the tile loaders are still running
-	// at this point -- TileBuffer::ShutDown and TileManager2Base::ShutDown
-	// are forty lines below, deliberately, since that is where the reference
-	// stops them. vkDeviceWaitIdle is defined as vkQueueWaitIdle on every
-	// queue, so it is host access to the queue those threads are submitting
-	// on through EndOneShot, and the layer reported exactly that:
-	//
-	//     UNASSIGNED-Threading-MultipleThreads-Write
-	//     vkDeviceWaitIdle(): THREADING ERROR : object of type VkQueue is
-	//     simultaneously used in current thread A and thread B
-	//
-	// The reference needs no counterpart: D3DCREATE_MULTITHREADED made the
-	// D3D9 runtime hold this lock for every device call. See orbiter_LockDevice.
+	// NAME the descriptor sets and images, so the pools are reset too. And
+	// under the device lock, because the tile loaders are still running and
+	// vkDeviceWaitIdle is host access to the queue they submit on.
 	if (pFramework && pFramework->GetVulkanDevice() &&
 		pFramework->GetVulkanDevice()->GetDevice() != VK_NULL_HANDLE) {
 		orbiter_LockDevice();
@@ -1069,23 +904,17 @@ void VulkanClient::clbkCloseSession(bool fastclose)
 }
 
 
-// ==============================================================
-// SAFE_RELEASE BECOMES DestroyTexture FOR EVERY IMAGE IN THIS FUNCTION, and
-// the difference is worth stating once because it recurs: Release()
-// DECREMENTED a reference count and destroyed only at zero, where
-// DestroyTexture destroys unconditionally. That is correct for each of these
-// -- pSplashScreen, pTextScreen, pNoiseTex and the microtextures are all
-// images this client created and nothing else holds -- but it is the reason
-// SAFE_RELEASE must never be translated mechanically. See finding 45 in
-// DebugControls.cpp for the case where it must not be translated at all.
-//
+// SAFE_RELEASE becomes DestroyTexture for every image here. Release()
+// decremented a count and destroyed only at zero, where DestroyTexture
+// destroys unconditionally -- correct for each of these, but the reason
+// SAFE_RELEASE must never be translated mechanically.
 void VulkanClient::clbkDestroyRenderWindow (bool fastclose)
 {
 	_TRACE;
 	oapiWriteLog((char*)"Vulkan: [Destroy Render Window Called]");
 	LogAlw("============= clbkDestroyRenderWindow ===========");
 
-	// The #ifdef _NVAPI_H stereo-handle teardown stood here; see note 6.
+	// The #ifdef _NVAPI_H stereo-handle teardown stood here.
 
 	LogAlw("===== Calling GlobalExit() for sub-systems ======");
 	HazeManager::GlobalExit();
@@ -1251,44 +1080,20 @@ void VulkanClient::PushSketchpad(SURFHANDLE surf, VulkanPad *pSkp) const
 
 
 // ==============================================================
-// THE RENDER-TARGET STACK IS THE SINGLE BIGGEST STRUCTURAL CONVERSION IN
-// THIS FILE, so the argument is written out once here and the three
-// functions below follow it.
+// The render-target stack is the biggest structural conversion in this file,
+// so the argument is written out once and the three functions below follow it.
 //
-// WHAT THE WINDOWS VERSION DID. A render target is DEVICE STATE in D3D9:
-// SetRenderTarget(0, surf) and SetDepthStencilSurface(surf) point the device
-// at a pair of surfaces, SetViewport sizes the transform, and every draw that
-// follows lands there until someone points it somewhere else. The stack is
-// the client's own bookkeeping on top of that -- "remember what was bound so
-// I can put it back" -- and the three device calls in each of these functions
-// are what actually did the pointing.
+// A render target is DEVICE STATE in D3D9: SetRenderTarget,
+// SetDepthStencilSurface and SetViewport point the device at a pair of
+// surfaces. In Vulkan the attachment set is baked into a VkFramebuffer inside
+// a VkRenderPass, a pass cannot begin inside another, and the viewport is
+// dynamic state on a command buffer -- so the three device calls become one
+// BeginOffscreen, and only one pass can be open at a time, which is why each
+// of these ends the current one first.
 //
-// WHAT VULKAN HAS INSTEAD. The set of attachments is baked into a
-// VkFramebuffer inside a VkRenderPass. A pass cannot be begun inside another
-// pass, the pipelines drawn in it must have been built against a COMPATIBLE
-// pass, and the viewport is dynamic state on a command buffer rather than on
-// a device. So "change the render target" is not three calls -- it is
-// VulkanDevice::BeginOffscreen: pick or build a pass for these attachment
-// formats, pick or build a framebuffer for these exact images, transition
-// them, take a command buffer of its own, and begin. EndOffscreen ends the
-// pass, transitions the colour attachments to SHADER_READ_ONLY_OPTIMAL,
-// submits and waits.
-//
-// SO THE STACK SURVIVES AND THE DEVICE CALLS BECOME ONE PAIR. The list, the
-// order, the codes and the log lines are unchanged; the three SetXxx calls
-// become BeginOffscreen, and popping ends the current pass and re-begins the
-// one underneath. Only one offscreen pass can be open at a time, which is why
-// each of these ends the current one first -- SetRenderTarget did the same
-// thing implicitly by simply overwriting the binding.
-//
-// THE BACK BUFFER IS THE EXCEPTION AND MUST BE. pBackBuffer is an ATTACHMENT
-// PROXY: it carries the extent and format of the core's colour attachment and
-// holds no VkImage, because the swapchain images belong to UIHost.cpp. There
-// is nothing to begin a pass on -- and nothing needs to be, because the
-// core's render pass is ALREADY OPEN on the frame's command buffer when the
-// scene callback runs. So a push of the back buffer records the stack entry
-// and begins nothing, and popping back to it ends the offscreen pass and
-// leaves the core's, which is exactly the state the frame started in.
+// The back buffer is the exception and must be: pBackBuffer is an attachment
+// proxy holding no VkImage, and the core's render pass is already open when
+// the scene callback runs, so pushing it begins nothing.
 // ==============================================================
 
 void VulkanClient::PushRenderTarget(VulkanTexture *pColor, VulkanTexture *pDepthStencil, int code) const
@@ -1305,9 +1110,8 @@ void VulkanClient::PushRenderTarget(VulkanTexture *pColor, VulkanTexture *pDepth
 	// SetRenderTarget replaced the previous binding.
 	if (pDevice->IsOffscreen()) pDevice->EndOffscreen();
 
-	// SetViewport is gone as a separate call: BeginOffscreen sets the
-	// viewport and the scissor from the extent of the attachments it is
-	// given, which is the same rectangle from the same place.
+	// SetViewport is gone as a separate call: BeginOffscreen takes the viewport
+	// and scissor from the extent of the attachments it is given.
 	if (pColor && !pColor->IsProxy()) {
 		if (!pDevice->BeginOffscreen(pColor, pDepthStencil)) {
 			LogErr("PushRenderTarget: BeginOffscreen failed for %s", _PTR(pColor));
@@ -1318,13 +1122,9 @@ void VulkanClient::PushRenderTarget(VulkanTexture *pColor, VulkanTexture *pDepth
 	LogDbg("Plum", "PUSH:RenderStack[%lu]={%s, %s} %s", (unsigned long)RenderStack.size(), _PTR(data.pColor), _PTR(data.pDepthStencil), labels[data.code]);
 }
 
-// ==============================================================
-// The Windows version changes the DEVICE binding and deliberately leaves the
-// stack alone -- the entry on top still names the surfaces that were pushed.
-// That behaviour is preserved: the pass is re-begun on the new pair and the
-// stack is untouched, so a following Pop restores whatever is underneath,
-// not what this call installed. Same asymmetry, same consequences.
-//
+// The Windows version changes the DEVICE binding and leaves the stack alone,
+// so a following Pop restores what is underneath rather than what this call
+// installed. Same asymmetry, same consequences.
 void VulkanClient::AlterRenderTarget(VulkanTexture *pColor, VulkanTexture *pDepthStencil)
 {
 	if (pDevice->IsOffscreen()) pDevice->EndOffscreen();
@@ -1364,16 +1164,9 @@ void VulkanClient::PopRenderTargets() const
 	LogDbg("Plum", "POP:RenderStack[%lu]={%s, %s, %s} %s", (unsigned long)RenderStack.size(), _PTR(data.pColor), _PTR(data.pDepthStencil), _PTR(data.pSkp), labels[data.code]);
 }
 
-// ==============================================================
-// HackFriendlyHack HAS NOTHING LEFT TO DO, and the function's own comment
-// says why: it existed to put the D3D DEVICE "in 'more' expected state" for
-// someone attaching a debugger -- viewport, render target and depth-stencil
-// surface set back to the back buffer. All three were device state. Vulkan
-// has none of them: there is no current render target to reset, the viewport
-// lives on a command buffer, and the core's render pass is already the one
-// bound. Kept as an empty body because the SDK declares it and callers may
-// exist outside this tree.
-//
+// HackFriendlyHack has nothing left to do. It put the D3D device "in 'more'
+// expected state" for a debugger -- viewport, render target and depth-stencil
+// surface -- and all three were device state. Kept as an empty body.
 void VulkanClient::HackFriendlyHack()
 {
 }
@@ -1427,48 +1220,25 @@ void VulkanClient::clbkRenderScene()
 	if (bFailed) return;
 	if (!bRunning) return;
 
-	// The counterpart of pDevice->BeginScene(). It does not open a command
-	// buffer -- UIHost.cpp's frame pump owns the one that reaches the
-	// swapchain -- it declares that a scene frame is being built, which is
-	// what makes the host call this client's scene callback when it pumps.
-	// Its EndSceneFrame partner is in PresentScene, where Present() was.
+	// The counterpart of pDevice->BeginScene(). It opens no command buffer -- it
+	// declares that a scene frame is being built, which is what makes the host
+	// call this client's scene callback. EndSceneFrame is in PresentScene.
 	orbiter_BeginSceneFrame();
 }
 
 
 // ==============================================================
-// THE SCENE IS RECORDED HERE, NOT IN clbkRenderScene, and this is the largest
-// structural difference in the whole client.
+// The scene is recorded here, not in clbkRenderScene, and this is the largest
+// structural difference in the whole client. The reference draws the moment
+// Orbiter asks, because a D3D9 device is always ready to record; the only
+// Vulkan command buffer that reaches the swapchain belongs to UIHost.cpp's
+// frame pump and exists solely for the duration of the callback it makes. So
+// clbkRenderScene only opens the frame and everything it used to do lives
+// here, in the same order and once per frame.
 //
-// The reference draws the moment Orbiter asks: clbkRenderScene calls
-// BeginScene(), scene->RenderMainScene(), the overlays, EndScene(). It can,
-// because a D3D9 device is always ready to record -- there is no such thing as
-// "outside a frame".
-//
-// A Vulkan draw has to go into a command buffer, and the ONLY command buffer
-// that reaches the swapchain belongs to UIHost.cpp's frame pump. It exists
-// solely for the duration of the callback the pump makes, inside the render
-// pass it has already opened. So the work cannot happen when Orbiter asks; it
-// happens when the host calls back.
-//
-// clbkRenderScene therefore only OPENS the frame, and everything it used to do
-// lives here. The order Orbiter drives is unchanged --
-//
-//     clbkRenderScene()  -> orbiter_BeginSceneFrame()
-//     clbkDisplayFrame() -> PresentScene() -> orbiter_EndSceneFrame()
-//                                          -> pump -> THIS
-//
-// -- so the scene is still built once per frame, in the same sequence, just
-// recorded at the point where a command buffer exists.
-//
-// WITHOUT THIS the client rendered into no command buffer at all. The log said
-// so, several hundred times a frame:
-//
-//     VulkanERROR: ShaderClass::Setup outside a frame -- no command buffer
-//     VulkanERROR: VulkanEffectFile::BeginPass(0) outside the scene callback
-//
-// and the window showed the menu bar and HUD (which the host draws) over a
-// black scene, with a "Critical Error / BltError" box on top.
+// Without this the client rendered into no command buffer at all -- several
+// hundred "outside a frame" errors per frame, and a black scene under the
+// host's own menu bar and HUD.
 // ==============================================================
 void VulkanClient::SceneRenderThunk(void *cmdBuf, void *renderPass,
 									unsigned width, unsigned height, void *user)
@@ -1482,14 +1252,10 @@ void VulkanClient::RenderSceneWork(VkCommandBuffer cmd, unsigned width, unsigned
 	if (pDevice == NULL || scene == NULL) return;
 	if (bFailed || !bRunning) return;
 
-	// The frame's buffer is the host's and is valid only until this returns,
-	// so it is published for the duration and withdrawn at the end. Every
-	// ShaderClass::Setup and VulkanEffectFile::BeginPass below reads it
-	// through VulkanDevice::GetCommandBuffer().
+	// The frame's buffer is the host's and is valid only until this returns, so
+	// it is published for the duration and withdrawn at the end.
 	pDevice->SetFrameCommandBuffer(cmd, width, height);
 
-	// Which buffer the CORE handed us, so a draw recorded elsewhere can be
-	// told apart from one recorded into the frame that is actually presented.
 	if (getenv("ORBITER_VK_TRACE_TILES")) {
 		static int n = 0;
 		if (n++ < 3)
@@ -1498,90 +1264,39 @@ void VulkanClient::RenderSceneWork(VkCommandBuffer cmd, unsigned width, unsigned
 
 	if (pWM) pWM->Animate();
 
-	// THE FRAME BOUNDARY FOR EVERY DESCRIPTOR POOL IN THE CLIENT, and a call
-	// with no counterpart in the reference.
+	// The frame boundary for every descriptor pool in the client, with no
+	// counterpart in the reference: a D3D9 draw consumed its state
+	// immediately, where a Vulkan draw only records a REFERENCE to a
+	// descriptor set that has to outlive the frame that named it.
 	//
-	// A D3D9 draw consumed its state immediately: SetTexture recorded a
-	// binding and the call was over. A Vulkan draw only records a REFERENCE
-	// to a descriptor set, so each draw needs its own and every one of them
-	// has to stay alive until the frame that named it has been submitted.
-	// Both pipeline builders allocate from a pool for that reason, and both
-	// pools are recycled here -- once, at the top of the frame, which is the
-	// only point at which the previous frame's sets are certainly done with.
-	//
-	// VulkanEffectFile::ResetFrame also rewinds the per-frame uniform arena;
-	// without this call it fills after a few thousand passes and says so.
-	//
-	// EVERY effect file, not `VulkanEffect::FX` alone. There are four --
-	// VulkanEffect::FX, Scene::FX, VulkanPad::FX and
-	// VulkanCelestialSphere::s_FX -- and this line used to reset one, so the
-	// other three filled once and then refused every pass for the rest of the
-	// session:
-	//
-	//     2451 x VulkanEffectFile: the frame's uniform arena is full
-	//            (786432 bytes, 4096 passes). ResetFrame is not being called.
-	//
-	// BeginPass returns false there, so those draws were dropped in silence.
-	//
-	// Switching this from `VulkanEffect::FX->ResetFrame()` to all four also
-	// exposed a second, older defect, in the reset ITSELF -- it was resetting
-	// pools the GPU was still reading:
-	//
-	//     VUID-vkResetDescriptorPool-descriptorPool-00313
-	//     vkResetDescriptorPool(): descriptorPool can't be called on
-	//     VkDescriptorPool 0x14c000000014c that is currently in use by
-	//     VkCommandBuffer 0x63498dac1400.
-	//
-	// which the validation layer reported with the old single-FX line in
-	// place too, and which the driver answered with intermittent
-	// VK_ERROR_DEVICE_LOST. "The only point at which the previous frame's
-	// sets are certainly done with" assumes ONE frame in flight; the core
-	// keeps orbiter_GetFramesInFlight() of them. Both ResetFrame bodies now
-	// ROTATE their pools and arenas on that lag instead of resetting them in
-	// place -- see VulkanEffectFile's FrameSet note.
+	// EVERY effect file, not VulkanEffect::FX alone. There are four, and this
+	// line used to reset one, so the other three filled their per-frame
+	// uniform arenas once and then refused every pass for the rest of the
+	// session -- 2451 x "the frame's uniform arena is full" -- with BeginPass
+	// returning false in silence. Both ResetFrame bodies also ROTATE their
+	// pools rather than resetting in place, because the core keeps
+	// orbiter_GetFramesInFlight() frames and resetting a pool the GPU was
+	// still reading gave intermittent VK_ERROR_DEVICE_LOST.
 	VulkanEffectFile::ResetFrameAll();
 	ShaderClass::ResetFrame();
 
 	// `if (Config->PresentLocation == 1) PresentScene();` is gone with the
-	// setting. PresentLocation chose whether the present happened here or in
-	// clbkDisplayFrame, and there is no present to place: UIHost.cpp owns the
-	// only vkQueuePresentKHR. See the note at the top of VulkanConfig.h, and
-	// PresentScene() below for what is left of that function. It is called
-	// once, from clbkDisplayFrame, which is the callback whose name says so.
+	// setting: it chose where the present happened, and there is none to place.
 
 	scene_time = VulkanGetTime();
 
-	// TestCooperativeLevel() HAS NO COUNTERPART, and this is the one place
-	// the absence is load-bearing rather than incidental.
-	//
-	// A D3D9 device could be LOST -- another application taking exclusive
-	// fullscreen, a display-mode change, a driver reset -- after which every
-	// call failed with D3DERR_DEVICELOST until Reset() succeeded. That whole
-	// state machine is a Direct3D 9 concept. Vulkan has one failure that
-	// resembles it, VK_ERROR_DEVICE_LOST, and it is UNRECOVERABLE: the
-	// VkDevice and every object made from it are dead and the program must
-	// rebuild from the instance. It is reported by the call that hit it, not
-	// polled, and the calls in question are the queue submits and present --
-	// all of which belong to UIHost.cpp here, not to the client.
-	//
-	// The other half of what this guarded is a resize, which on Windows meant
-	// a device Reset. Here it means the CORE recreates its swapchain and
-	// render pass; the client is told through clbkOptionChanged and
-	// GetRenderPass(), and its pipelines key on the pass so they rebuild
-	// themselves. See the porting notes.
-	//
-	// So the MessageBoxA that stood here -- and its advice about Alt-Tab and
-	// multi-sampling in true fullscreen, both Direct3D-fullscreen concepts --
-	// has nothing to report.
+	// TestCooperativeLevel() has no counterpart, and here the absence is
+	// load-bearing. A D3D9 device could be LOST -- another application taking
+	// exclusive fullscreen, a mode change, a driver reset -- after which every
+	// call failed until Reset() succeeded. VK_ERROR_DEVICE_LOST is
+	// unrecoverable and is reported by the call that hit it, and those calls
+	// belong to UIHost.cpp. The resize half is the core's too; the client's
+	// pipelines key on the render pass and rebuild themselves.
 
-	// GetAvailableTextureMem() becomes GetLocalMemorySize(), with the caveat
-	// its own declaration carries: D3D9 reported what was FREE, and core
-	// Vulkan reports only what EXISTS, so this is the total device-local heap
-	// rather than the same number. The test below is "are we nearly out",
-	// which an upper bound cannot answer -- it will simply never fire on a
-	// card with more than 32MB of VRAM, which is every card that can run
-	// this. Recorded rather than silently dropped, because a client that
-	// wants the true figure needs VK_EXT_memory_budget.
+	// GetAvailableTextureMem() becomes GetLocalMemorySize(), which reports what
+	// EXISTS rather than what is FREE, so the "nearly out" test below can never
+	// fire on a card with more than 32MB. The true figure needs
+	// VK_EXT_memory_budget.
 	UINT mem = UINT(pDevice->GetLocalMemorySize()>>20);
 	if (mem<32) TileBuffer::HoldThread(true);
 
@@ -1596,13 +1311,9 @@ void VulkanClient::RenderSceneWork(VkCommandBuffer cmd, unsigned width, unsigned
 		if (Config->LabelDisplayFlags & VulkanConfig::LABEL_DISPLAY_REPLAY && hVes->Playback()) strcpy_s(Label, 7, "Replay");
 
 		if (Label[0]!=0) {
-			// BeginScene/EndScene have no counterpart -- the core's render
-			// pass is already open on the frame's command buffer -- and
-			// D3DXFont::DrawTextA becomes the client's own Sketchpad text.
-			// See pOverlayFont in the header for why the D3DX font could not
-			// be carried. DT_CENTER|DT_TOP becomes SetTextAlign(CENTER, TOP)
-			// with the x at the centre of the same rectangle, which is what
-			// DrawTextA did with it.
+			// D3DXFont::DrawTextA becomes the client's own Sketchpad text; see
+			// pOverlayFont in the header. DT_CENTER|DT_TOP becomes
+			// SetTextAlign with the x at the centre of the same rectangle.
 			RECT rect2 = _RECT(0, viewH - 60, viewW, viewH - 20);
 			if (Sketchpad *pSkp = clbkGetSketchpad(GetBackBufferHandle())) {
 				if (pOverlayFont) pSkp->SetFont(pOverlayFont);
@@ -1622,8 +1333,7 @@ void VulkanClient::RenderSceneWork(VkCommandBuffer cmd, unsigned width, unsigned
 		if (Sketchpad *pSkp = clbkGetSketchpad(GetBackBufferHandle())) {
 			if (pOverlayFont) pSkp->SetFont(pOverlayFont);
 			pSkp->SetTextAlign(Sketchpad::CENTER, Sketchpad::TOP);
-			// D3DCOLOR_XRGB(0,255,255) is 0x00FFFF; SetTextColor takes the
-			// same 0x00RRGGBB packing.
+			// D3DCOLOR_XRGB(0,255,255) is 0x00FFFF, the same packing.
 			pSkp->SetTextColor(0x00FFFF);
 			pSkp->Text((rect2.left + rect2.right) / 2, rect2.top, "Frozen", 6);
 			clbkReleaseSketchpad(pSkp);
@@ -1639,10 +1349,9 @@ void VulkanClient::RenderSceneWork(VkCommandBuffer cmd, unsigned width, unsigned
 	VulkanSetTime(VulkanStats.Timer.FrameTotal, frame_time);
 	frame_time = VulkanGetTime();
 
-	// The host's buffer goes out of scope the moment this returns. Anything
-	// that tries to draw after it -- a Sketchpad the panel code forgot to
-	// release, a stray blit -- must fail loudly rather than record into a
-	// dangling handle, which is what withdrawing it here guarantees.
+	// The host's buffer goes out of scope the moment this returns, so a draw
+	// issued after it fails loudly rather than recording into a dangling
+	// handle.
 	pDevice->SetFrameCommandBuffer(VK_NULL_HANDLE, 0, 0);
 }
 
@@ -1655,45 +1364,23 @@ void VulkanClient::clbkTimeJump(double simt, double simdt, double mjd)
 }
 
 
-// ==============================================================
-// PresentScene HAS NOTHING TO PRESENT, and this is note 1 in the file header
-// at its sharpest.
-//
-// IDirect3DDevice9::Present hands the back buffer to the display and flips.
-// The Vulkan counterpart is vkQueuePresentKHR on a swapchain image that was
-// acquired with vkAcquireNextImageKHR, and BOTH belong to
-// Src/Orbiter/Linux/UIHost.cpp: it acquires, begins the render pass, calls
-// the client's scene callback inside it, ends, submits and presents, once per
-// frame. There is exactly one present in the process and it is not this one.
-// A second would not be a second picture -- it would be a validation error
-// and a hang.
-//
-// What is left is the timing, which is real, and RenderWithPopupWindows,
-// which is Win32 window management rather than presentation. Both are kept.
-//
+// PresentScene has nothing to present. The counterpart of Present is
+// vkQueuePresentKHR on an acquired swapchain image, and both belong to
+// UIHost.cpp -- a second present would be a validation error and a hang. What
+// is left is the timing and RenderWithPopupWindows, which is window
+// management.
 void VulkanClient::PresentScene()
 {
 	double time = VulkanGetTime();
 
-	// The fullscreen/windowed branch collapses because the two arms differed
-	// only in whether Present was skipped when popup windows had already
-	// repainted the screen -- and there is no Present here. What the branch
-	// still has to do, it does in both arms.
+	// The fullscreen/windowed branch collapses: the arms differed only in
+	// whether Present was skipped, and there is no Present here.
 	RenderWithPopupWindows();
 
-	// THIS IS WHERE Present() WENT.
-	//
-	// The note above is right that this client has no present of its own, and
-	// wrong to conclude that nothing takes Present's place. orbiter_EndSceneFrame
-	// closes the scene frame BeginSceneFrame opened and calls the host's frame
-	// pump, which acquires a swapchain image, opens the render pass, calls
-	// this client's registered scene callback inside it, composites the
-	// dialogs on top and presents. One call, one picture on screen -- exactly
-	// what Present did, performed by the file that owns the swapchain.
-	//
-	// Omitting it is what left the window blank: the client rendered its
-	// scene into a callback the host never invoked, because the host only
-	// invokes it while a session is active and only pumps when asked.
+	// This is where Present() went. orbiter_EndSceneFrame closes the scene frame
+	// and calls the host's frame pump, which acquires an image, opens the pass,
+	// calls this client's scene callback and presents. Omitting it left the
+	// window blank.
 	orbiter_EndSceneFrame();
 
 	VulkanSetTime(VulkanStats.Timer.Display, time);
@@ -1711,18 +1398,9 @@ bool VulkanClient::clbkDisplayFrame()
 
 	if (!bRunning && pDevice) {
 		RECT txt = _RECT( loadd_x, loadd_y, loadd_x+loadd_w, loadd_y+loadd_h );
-		// StretchRect(src, NULL, dst, rect, POINT) becomes
-		// BlitTexture(dst, rect, src, NULL, false) -- DESTINATION FIRST, and
-		// D3DTEXF_POINT is the trailing false. See the note in Scene.cpp's
-		// RenderBlurredMap.
-		//
-		// AND THE DESTINATION CANNOT BE BLITTED TO. pBackBuffer is an
-		// attachment proxy with no VkImage (the swapchain images are
-		// UIHost.cpp's), and vkCmdBlitImage is illegal inside a render pass
-		// in any case. The splash screen therefore goes through the client's
-		// own Sketchpad, which draws into the pass that is already open --
-		// the same route the "Frozen" overlay above takes, and the same
-		// finding as Scene::VisualizeCubeMap's.
+		// The destination cannot be blitted to: pBackBuffer is an attachment
+		// proxy with no VkImage, and vkCmdBlitImage is illegal inside a render
+		// pass anyway. So the splash goes through the client's own Sketchpad.
 		if (Sketchpad *pSkp = clbkGetSketchpad(GetBackBufferHandle())) {
 			if (pSplashScreen) {
 				RECT full = _RECT(0, 0, viewW, viewH);
@@ -1733,9 +1411,7 @@ bool VulkanClient::clbkDisplayFrame()
 		}
 	}
 
-	// Was `if (Config->PresentLocation == 0) PresentScene();`. Unconditional
-	// now, because PresentLocation is gone with the present it placed; see
-	// clbkRenderScene.
+	// Was `if (Config->PresentLocation == 0) PresentScene();`.
 	PresentScene();
 
 	double frmt = (1000000.0/Config->FrameRate) - (time - framer_rater_limit);
@@ -1753,32 +1429,16 @@ bool VulkanClient::clbkDisplayFrame()
 }
 
 
-// ==============================================================
-// SetDialogBoxMode(true) HAS NO COUNTERPART, here or in
-// RenderWithPopupWindows below.
-//
-// It told a D3D9 device in EXCLUSIVE FULLSCREEN to allow GDI to draw over the
-// front buffer, so that Win32 dialogs could appear on top of the rendered
-// scene. It required D3DSWAPEFFECT_DISCARD, a lockable back buffer and a
-// non-multisampled swap chain -- which is why the message box in
-// clbkRenderScene warned about dialogs and multi-sampling in true fullscreen.
-//
-// There is no exclusive fullscreen here to escape from: the core runs an SDL
-// window (borderless fullscreen at most), and dialogs are ImGui windows drawn
-// inside the same frame rather than HWNDs the desktop compositor puts on top.
-// So the function has nothing left to do; it is kept because the SDK declares
-// it and the callback must exist.
-//
+// SetDialogBoxMode(true) has no counterpart, here or in
+// RenderWithPopupWindows. It let GDI draw over the front buffer of a D3D9
+// device in EXCLUSIVE FULLSCREEN so Win32 dialogs could appear over the scene.
+// There is no exclusive fullscreen to escape from, and dialogs are ImGui
+// windows drawn inside the same frame.
 void VulkanClient::clbkPreOpenPopup ()
 {
 	_TRACE;
 }
 
-// =======================================================================
-// This function is pure Win32 window arithmetic -- GetWindowRect,
-// MonitorFromWindow, GetMonitorInfo, MoveWindow -- and converts unchanged
-// against the Linux shim, which implements all four.
-//
 static DWORD g_lastPopupWindowCount = 0;
 static void FixOutOfScreenPositions (const HWND *hWnd, DWORD count)
 {
@@ -1854,11 +1514,8 @@ bool VulkanClient::RenderWithPopupWindows()
 	return false;
 }
 
-// #pragma region / #pragma endregion ARE GONE THROUGHOUT THIS FILE. They are
-// an MSVC editor feature -- collapsible source folds -- that GCC does not
-// know, and -Wall reports every one of them as an unknown pragma. The
-// comment banners they wrapped are kept, so the file still reads in the same
-// sections.
+// #pragma region / #pragma endregion are gone throughout: an MSVC editor
+// feature GCC reports as an unknown pragma under -Wall.
 
 // =======================================================================
 // Particle stream functions
@@ -1931,9 +1588,7 @@ void VulkanClient::clbkStoreMeshPersistent(MESHHANDLE hMesh, const char *fname)
 
 	if (hMesh==NULL) return;
 
-	// The Windows line is `int idx = meshmgr->StoreMesh(hMesh, fname);` and
-	// idx is never read. The call is kept -- it is what stores the mesh --
-	// and the variable dropped, because GCC warns on it where MSVC does not.
+	// The Windows line assigns the return to an `idx` that is never read.
 	meshmgr->StoreMesh(hMesh, fname);
 }
 
@@ -1956,24 +1611,15 @@ DEVMESHHANDLE VulkanClient::GetDevMesh(MESHHANDLE hMesh)
 bool VulkanClient::clbkSetMeshTexture(DEVMESHHANDLE hMesh, DWORD texidx, SURFHANDLE surf)
 {
 	_TRACE;
-	// SURFACE(surf) is dropped: VulkanMesh::SetTexture takes a SURFHANDLE,
-	// where D3D9Mesh::SetTexture took a SurfNative*. Same object either way.
+	// SURFACE(surf) is dropped: VulkanMesh::SetTexture takes a SURFHANDLE.
 	if (hMesh && surf) return ((VulkanMesh*)hMesh)->SetTexture(texidx, surf);
 	return false;
 }
 
 
-// ==============================================================
-// The (const D3DMATERIAL9*) and (D3DMATERIAL9*) casts in the two functions
-// below are gone. They existed because D3D9Util's CreateMatExt/GetMatExt took
-// a D3DMATERIAL9, and the SDK's MATERIAL has the same four colour members in
-// the same order -- so the cast was a reinterpretation between two structs
-// that happened to agree. The converted pair takes the SDK's MATERIAL
-// directly (VulkanUtil.h), which is what the caller already has, so there is
-// nothing to reinterpret. Dropping a cast that was covering a type pun is
-// not a simplification; it is the removal of the D3D9 type that made it
-// necessary.
-//
+// The (const D3DMATERIAL9*) casts in the two functions below are gone: they
+// reinterpreted the SDK's MATERIAL as a D3DMATERIAL9, two structs that
+// happened to agree. CreateMatExt/GetMatExt now take MATERIAL directly.
 int VulkanClient::clbkSetMeshMaterial(DEVMESHHANDLE hMesh, DWORD matidx, const MATERIAL *mat)
 {
 	_TRACE;
@@ -2129,13 +1775,8 @@ void VulkanClient::clbkGetViewportSize(DWORD *width, DWORD *height) const
 	*width = viewW, *height = viewH;
 }
 
-// ==============================================================
-// Returns a specific render parameter
-//
-// RP_REQUIRETEXPOW2 stays 0 and is now a statement of fact rather than a
-// measurement: Vulkan requires full non-power-of-two texture support of every
-// conforming implementation, so the answer cannot be anything else. Same
-// finding as IsLimited() in the header.
+// RP_REQUIRETEXPOW2 stays 0, now a statement of fact: Vulkan requires full
+// non-power-of-two support of every conforming implementation.
 
 bool VulkanClient::clbkGetRenderParam(DWORD prm, DWORD *value) const
 {
@@ -2198,18 +1839,9 @@ void VulkanClient::PickTerrain(DWORD uMsg, int xpos, int ypos)
 }
 
 
-// ==============================================================
-// Message handler for render window
-//
-// THIS FUNCTION IS ENTIRELY WIN32 AND CONVERTS ALMOST UNCHANGED. Every
-// message, every GET_X_LPARAM, TrackMouseEvent and GetAsyncKeyState is
-// supplied by Src/Orbiter/Linux/windows.h and driven by the SDL event pump in
-// UIHost.cpp -- the client asks the same questions and gets the same answers.
-// The two substitutions are D3D9Pick -> VulkanPick and, at one site,
-// GetObjectA() -> Object() (finding 34: GetObjectA was a Windows name
-// collision workaround for the ANSI/Unicode GetObject macro, which the shim
-// does not define).
-//
+// Entirely Win32. The two substitutions are D3D9Pick -> VulkanPick and, at one
+// site, GetObjectA() -> Object(), GetObjectA having been a workaround for the
+// ANSI/Unicode GetObject macro that the shim does not define.
 LRESULT VulkanClient::RenderWndProc (HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
 	static bool bTrackMouse = false;
@@ -2438,10 +2070,9 @@ INT_PTR VulkanClient::LaunchpadVideoWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
 	else return false;
 }
 
-// =======================================================================
-// D3DXMatrixOrthoOffCenterRH becomes VMAT_OrthoOffCenterRH and D3D9Effect
-// becomes VulkanEffect; the matrix, including its depth range, is unchanged
-// -- D3D9 clip space is 0 <= z <= w and so is Vulkan's.
+// D3DXMatrixOrthoOffCenterRH becomes VMAT_OrthoOffCenterRH; the matrix and its
+// depth range are unchanged -- D3D9 clip space is 0 <= z <= w and so is
+// Vulkan's.
 
 void VulkanClient::clbkRender2DPanel (SURFHANDLE *hSurf, MESHHANDLE hMesh, MATRIX3 *T, float alpha, bool additive)
 {
@@ -2509,58 +2140,27 @@ DWORD VulkanClient::clbkGetDeviceColour (BYTE r, BYTE g, BYTE b)
 // =======================================================================
 
 
-// =======================================================================
-// Surface functions
-// =======================================================================
+// The five-call readback dance collapses into one call. A D3D9 default-pool
+// surface cannot be locked, so the Windows body creates two temporaries,
+// StretchRects, GetRenderTargetDatas and locks. Vulkan device-local memory
+// cannot be mapped either, and the answer is ReadTexture -- which takes the
+// host-visible case too, so the pool branch goes as well.
 //
-// THE FIVE-CALL READBACK DANCE COLLAPSES INTO ONE CALL, and the reason is
-// that both APIs have the same restriction and Vulkan gives it one name.
-//
-// A D3D9 default-pool surface cannot be locked, so the Windows body creates a
-// render target, creates a system-memory surface, StretchRects into the first,
-// GetRenderTargetDatas into the second, and locks that. Vulkan device-local
-// memory cannot be mapped either, and the answer is vkCmdCopyImageToBuffer
-// into a host-visible buffer -- which is what VulkanDevice::ReadTexture is.
-// So five device calls and two temporary surfaces become ReadTexture into a
-// vector.
-//
-// THE POOL BRANCH GOES WITH THEM. `desc->Pool != D3DPOOL_SYSTEMMEM` chose
-// between that dance and locking the surface directly. There is one pool
-// here; a host-visible image can be mapped and a device-local one cannot, and
-// ReadTexture already takes both cases. So there is one path.
-//
-// AND ONE BUG DOES NOT SURVIVE THE COLLAPSE. The Windows sysmem branch ends
-// `pSystem->UnlockRect()` -- pSystem, which on that path was never created
-// and is still NULL. It is a null-pointer call on every save from a
-// system-memory surface. There is nothing to translate it to, because there
-// is no second surface at all here, so it simply is not written.
-//
-// The pixel format is what ReadTexture gives: 32-bit BGRA, four bytes per
-// pixel, width*4 to the row. SaveSurfaceToFile is told that as a pitch rather
-// than reading it out of a D3DLOCKED_RECT.
+// One bug does not survive the collapse: the Windows sysmem branch ends
+// `pSystem->UnlockRect()` on a pSystem never created on that path, a
+// null-pointer call on every save from a system-memory surface.
 
 bool VulkanClient::clbkSaveSurfaceToImage(SURFHANDLE surf, const char *fname, ImageFileFormat fmt, float quality)
 {
 	_TRACE;
 	if (ChkDev(__FUNCTION__)) return false;
 
-	// A NULL SURFACE MEANS THE BACK BUFFER, AND THAT ONE CANNOT BE READ THE
-	// SAME WAY.
-	//
-	// The reference resolves it to pDevice->GetRenderTarget(0) -- a surface
-	// the D3D9 client owns, because it created the device and with it the
-	// swap chain. This client owns neither. GetBackBufferHandle() returns a
-	// SurfNative wrapping an attachment PROXY: VulkanDevice::CreateAttachmentProxy
-	// builds it with vkImage == VK_NULL_HANDLE deliberately, because there is
-	// no image here to name. ReadTexture on it therefore could only fail, and
-	// did -- once per session, which is Orbiter::PreCloseSession's
-	// Images/CurrentState.jpg (the thumbnail the Launchpad shows for the
-	// current state) never being written.
-	//
-	// So the back buffer is read by the side that owns it. See
-	// orbiter_CaptureBackBuffer, and UIHost.cpp's recordFrameCapture for why
-	// the copy has to be recorded inside the frame rather than taken
-	// afterwards.
+	// A NULL surface means the back buffer, and that one cannot be read the
+	// same way: the reference resolves it to GetRenderTarget(0), a surface the
+	// D3D9 client owns, while here it is an attachment proxy with no VkImage.
+	// ReadTexture on it could only fail -- and did, once per session, which is
+	// Images/CurrentState.jpg never being written. See
+	// orbiter_CaptureBackBuffer.
 	const bool bBackBuffer = (surf == NULL);
 	if (bBackBuffer) surf = pFramework->GetBackBufferHandle();
 
@@ -2573,9 +2173,7 @@ bool VulkanClient::clbkSaveSurfaceToImage(SURFHANDLE surf, const char *fname, Im
 	if (fmt == ImageFileFormat::IMAGE_DDS) {
 		char path[MAX_PATH];
 		sprintf_s(path, "%s.dds", fname);
-		// NatSaveSurface refuses DDS by name and logs it; see the note there.
-		// The call is kept so the refusal is reported where the request was
-		// made, exactly as the reference reported D3DX's failure.
+		// NatSaveSurface refuses DDS by name, where the request was made.
 		return NatSaveSurface(path, pSurf);
 	}
 
@@ -2622,13 +2220,9 @@ bool VulkanClient::clbkSaveSurfaceToImage(SURFHANDLE surf, const char *fname, Im
 }
 
 
-// ==============================================================
-// The 32-bit-to-24-bit repack, unchanged. desc->Height and desc->Width stay
-// parameters, as they were on Windows -- see the note on the declaration for
-// why the back-buffer path needs them to; pRect.pBits and pRect.Pitch become
-// the two parameters that follow, which is the whole of the D3DLOCKED_RECT
-// that was ever read.
-//
+// The 32-bit-to-24-bit repack, unchanged. Width and height stay parameters as
+// they were on Windows -- see the declaration for why the back-buffer path
+// needs them to.
 bool oapi::VulkanClient::SaveSurfaceToFile (const VulkanTexture* pTex, const void* pBits, size_t pitch,
                                             DWORD width, DWORD height,
                                             const char* fname, oapi::ImageFileFormat fmt, float quality)
@@ -2663,25 +2257,11 @@ bool oapi::VulkanClient::SaveSurfaceToFile (const VulkanTexture* pTex, const voi
 	return bRet;
 }
 
-// ==============================================================
-// PUTTING AN IMAGE ON THE CLIPBOARD HAS NO COUNTERPART HERE, and the refusal
-// is by name rather than a silent false.
-//
-// The Windows body opens the clipboard, makes a memory DC and a compatible
-// bitmap, BitBlts into it and calls SetClipboardData(CF_BITMAP, hBm).
-// Src/Orbiter/Linux/Platform.cpp's clipboard is the desktop text selection --
-// SetClipboardData accepts CF_TEXT and returns NULL for anything else -- and
-// GLFW, which is what backs it, offers only glfwSetClipboardString. There is
-// no image channel to write to.
-//
-// WORTH RECORDING BECAUSE THE WINDOWS VERSION DOES NOT DO WHAT ITS NAME SAYS
-// EITHER. It BitBlts from GetDC(hRenderWnd) -- the render WINDOW's device
-// context, i.e. whatever is on screen -- not from the surface it was asked to
-// save. Saving an off-screen surface to the clipboard put a picture of the
-// simulator window on the clipboard instead. So the parameters this function
-// now receives, the surface's own pixels, are what a working version would
-// need; what is missing is somewhere to put them.
-//
+// Putting an image on the clipboard has no counterpart, and the refusal is by
+// name rather than a silent false: the clipboard here is the desktop text
+// selection. Worth recording that the Windows version does not do what its
+// name says either -- it BitBlts from GetDC(hRenderWnd), the render window,
+// not from the surface it was given.
 bool oapi::VulkanClient::SaveSurfaceToClipboard (const VulkanTexture* pTex, const void* pBits, size_t pitch)
 {
 	LogErr("SaveSurfaceToClipboard: putting an image on the clipboard is not "
@@ -2691,11 +2271,6 @@ bool oapi::VulkanClient::SaveSurfaceToClipboard (const VulkanTexture* pTex, cons
 }
 
 
-// ==============================================================
-// Nothing here touches a Direct3D type: NatLoadSurface is the client's own
-// loader and the rest is map lookups. The commented-out cloning block is kept
-// exactly as the author left it, D3D9Mesh -> VulkanMesh aside, because it is
-// a record of an approach and not dead generated code.
 
 SURFHANDLE VulkanClient::clbkLoadTexture(const char *fname, DWORD flags)
 {
@@ -2739,12 +2314,8 @@ SURFHANDLE VulkanClient::clbkLoadSurface (const char *fname, DWORD attrib, bool 
 			else return ent->second;
 		}
 
-		// `static const DWORD exclude = ~(OAPISURFACE_SHARED | OAPISURFACE_ORIGIN);`
-		// stood above and is read only by the commented-out cloning block
-		// below. It is moved into that comment with the code it serves,
-		// because an unused file-scope constant is a warning here where it
-		// was not on Windows, and leaving it live would be keeping a variable
-		// alive for code that does not run.
+		// `static const DWORD exclude = ...` stood above, read only by the
+		// block below, so it moves into the comment with the code it serves.
 		/*
 		auto ent = ClonedTextures.find(name);
 
@@ -2783,11 +2354,8 @@ SURFHANDLE VulkanClient::clbkLoadSurface (const char *fname, DWORD attrib, bool 
 	return NatLoadSurface(fname, attrib, bPath);
 }
 
-// ==============================================================
-// The '\\' path separator becomes '/'. It is a path this function BUILDS
-// rather than one it receives, so the correct separator is the platform's;
-// Windows accepted both, Linux accepts only the forward slash.
-//
+// The '\\' path separator becomes '/'. It is a path this function BUILDS rather
+// than one it receives, so the separator is the platform's.
 HBITMAP VulkanClient::gcReadImageFromFile(const char *_path)
 {
 	char path[MAX_PATH];
@@ -2872,13 +2440,11 @@ void VulkanClient::clbkIncrSurfaceRef(SURFHANDLE surf)
 	if (surf) SURFACE(surf)->IncRef();
 }
 
-// =======================================================================
-// SurfNative KEEPS ITS REFERENCE COUNT, and that is not a leftover.
-//
-// IncRef/DecRef here are not COM: they count how many times ORBITER has asked
-// for a surface, which is a question about the SDK's ownership model rather
-// than about Direct3D. The Vulkan image inside is destroyed unconditionally
-// when the SurfNative goes, which is the part that changed.
+// SurfNative keeps its reference count, and that is not a leftover:
+// IncRef/DecRef count how many times ORBITER has asked for a surface, which is
+// the SDK's ownership model rather than Direct3D's. The image inside is
+// counted too, and for a while it was not -- ~SurfNative destroyed it
+// outright, so a texture an effect still had bound was freed under it.
 
 bool VulkanClient::clbkReleaseSurface(SURFHANDLE surf)
 {
@@ -2986,65 +2552,27 @@ bool VulkanClient::clbkBlt(SURFHANDLE tgt, DWORD tgtx, DWORD tgty, SURFHANDLE sr
 	return clbkScaleBlt(tgt, tgtx, tgty, w, h, src, srcx, srcy, w, h, flag);
 }
 
-// =======================================================================
-// THE DECISION TREE IS KEPT AND ITS TESTS ARE RE-EXPRESSED. The Windows body
-// picks between four device calls by asking about formats, pools and usage
-// flags; three of those four calls collapse into one here, but the questions
-// still matter, so the shape stays and each test is translated:
-//
-//   sd->Format == td->Format          unchanged; VulkanImageDesc::Format
-//   td->Usage & D3DUSAGE_RENDERTARGET  Usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
-//   sd->Pool == D3DPOOL_DEFAULT        !sd->HostVisible
-//   sd->Pool == D3DPOOL_SYSTEMMEM      sd->HostVisible
-//   SURFACE(x)->GetType()==D3DRTYPE_TEXTURE  SURFACE(x)->IsTexture()
-//
-// D3DPOOL AND HostVisible ARE THE SAME QUESTION ASKED TWICE. D3DPOOL_SYSTEMMEM
-// meant "the CPU can reach this and the GPU cannot render to it"; Vulkan calls
-// that host-visible memory, and it is a property of the allocation rather than
-// a pool the resource was created in. See VulkanTypes.h's note on
-// VulkanImageDesc.
-//
-// AND THREE DEVICE CALLS BECOME ONE. StretchRect, UpdateSurface and
-// GetRenderTargetData were three entry points because a D3D9 copy was
-// constrained by the pools at both ends: StretchRect for default-to-default,
-// UpdateSurface for sysmem-to-default, GetRenderTargetData for
-// default-to-sysmem. vkCmdBlitImage has no such rule -- it copies between
-// images, and where the memory lives is not part of the question -- so all
-// three become VulkanDevice::BlitTexture. THE ARGUMENT ORDER IS DESTINATION
-// FIRST, so every converted call swaps its first two pairs.
-//
-// The branches are kept anyway rather than merged, because they differ in
-// more than the call: the UpdateSurface branch copies to a POINT rather than
-// a rectangle, and the GetRenderTargetData branch sets OAPISURFACE_CAPTURE on
-// the target. Merging them would lose both.
+// The decision tree is kept and its tests are re-expressed.
+// D3DUSAGE_RENDERTARGET becomes VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, and
+// D3DPOOL_SYSTEMMEM / D3DPOOL_DEFAULT become HostVisible -- the same question
+// asked of the allocation rather than of a pool. StretchRect, UpdateSurface
+// and GetRenderTargetData were three entry points only because a D3D9 copy was
+// constrained by the pools at both ends; all three become BlitTexture, with
+// the DESTINATION named first. The branches stay separate because one copies
+// to a point and one sets OAPISURFACE_CAPTURE on the target.
 
-// -----------------------------------------------------------------------------------------------
-// D3DUSAGE_AUTOGENMIPMAP'S COUNTERPART, AND WHY IT HAS TO BE A CALL.
+// -----------------------------------------------------------------------------
+// D3DUSAGE_AUTOGENMIPMAP's counterpart, and why it has to be a call. On
+// Windows the flag is a standing instruction to the driver to regenerate the
+// whole chain whenever level 0 is dirtied, which is why
+// SurfNative::GenerateMipMaps() exists in the reference and is called from
+// nowhere in it. Vulkan has no such flag and no driver-side generation.
 //
-// NatCreateSurface turns OAPISURFACE_MIPMAPS into `Usage |=
-// D3DUSAGE_AUTOGENMIPMAP` on Windows (D3D9Surface.cpp:313). That flag is a
-// standing instruction to the driver: whenever level 0 of the texture is
-// dirtied -- by a StretchRect into it, by rendering to it, by an unlock --
-// D3D9 regenerates the whole chain by itself. Nothing in the client ever asks
-// for it, which is why `SurfNative::GenerateMipMaps()` exists in the reference
-// and is called from nowhere in it.
-//
-// Vulkan has no such flag and no driver-side mip generation. The levels are
-// declared at creation and stay exactly as they were last written. So the
-// regeneration D3D9 did implicitly has to be issued explicitly, at the same
-// moments -- and this helper is that instruction, called on every path below
-// that writes the target.
-//
-// WHAT IT COST TO NOT HAVE IT: the virtual-cockpit MFD screens were black.
-// Instrument::AllocSurface (Src/Orbiter/Mfd.cpp:715) gives an MFD two
-// surfaces -- `surf`, which the instrument draws into, and `tex`, which the
-// mesh samples -- and adds OAPISURFACE_MIPMAPS to `tex` in VC mode.
-// Instrument::Update ends with `gc->clbkBlt(tex, 0, 0, surf)`, which wrote
-// level 0 and left levels 1..9 of the 512x512 chain at their undefined
-// contents forever. A VC MFD panel is ~180 px on screen, so the sampler
-// (WrapS: MipFilter = LINEAR) reads about level 1-2 -- never the level that
-// had the picture in it.
-//
+// What it cost: the virtual-cockpit MFD screens were black. An MFD's `tex`
+// carries OAPISURFACE_MIPMAPS in VC mode and Instrument::Update ends with
+// clbkBlt into it, which wrote level 0 and left levels 1..9 of the 512x512
+// chain undefined. A VC MFD panel is ~180 px on screen, so the sampler reads
+// about level 1-2 -- never the level that had the picture in it.
 static bool AutoGenMips(SURFHANDLE tgt)
 {
 	if (tgt && SURFACE(tgt)->GetMipMaps() > 1) SURFACE(tgt)->GenerateMipMaps();
@@ -3078,11 +2606,9 @@ bool VulkanClient::clbkScaleBlt (SURFHANDLE tgt, DWORD tgtx, DWORD tgty, DWORD t
 	const VulkanImageDesc* td = SURFACE(tgt)->GetDesc();
 	const VulkanImageDesc* sd = SURFACE(src)->GetDesc();
 
-	// POINT tp = { tgtx, tgty } becomes the destination RECTANGLE of the
-	// source's size at that point, because BlitTexture takes rectangles at
-	// both ends where UpdateSurface took a point at one. Same copy: the
-	// UpdateSurface branch below is guarded by !bCL, so the two are the same
-	// size by construction.
+	// POINT tp becomes a destination RECTANGLE of the source's size at that
+	// point, because BlitTexture takes rectangles at both ends. The branch
+	// below is guarded by !bCL, so the two are the same size by construction.
 	RECT tp = _RECT(tgtx, tgty, tgtx + srcw, tgty + srch);
 
 
@@ -3161,15 +2687,9 @@ bool VulkanClient::clbkScaleBlt (SURFHANDLE tgt, DWORD tgtx, DWORD tgty, DWORD t
 		}
 
 
-		// Screen Capture: Target is in system memory and source is a render taeget
-		// 
-		// NOTE THE ARGUMENT ORDER OF THE WINDOWS LINE. GetRenderTargetData's
-		// signature is (pRenderTarget, pDestSurface), i.e. SOURCE first --
-		// and the call reads `GetRenderTargetData(pss, pts)`, which is
-		// correct: pss is the render target being read, pts the system-memory
-		// destination. The converted call names the destination first, as
-		// every BlitTexture does, so the two pointers swap places on the line
-		// while the copy stays the same direction.
+		// GetRenderTargetData's signature is (pRenderTarget, pDestSurface) --
+		// SOURCE first. BlitTexture names the destination first, so the two
+		// pointers swap places while the copy keeps its direction.
 		if ((td->HostVisible) && (sd->Usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT))
 		{
 			if (pDevice->BlitTexture(pts, &rt, pss, &rs, false)) {
@@ -3184,21 +2704,11 @@ bool VulkanClient::clbkScaleBlt (SURFHANDLE tgt, DWORD tgtx, DWORD tgty, DWORD t
 	}
 
 
-	// Scaling.. Format mismatch.. ColorKey.. Compressed Source..
-	// Go for SketchPad
-	//
-	// THE RARE ROUTE, AND IT REPORTS ITSELF ONCE. Everything above copies with
-	// a queue operation; this is the only branch that has to RENDER, and it is
-	// the one a COMPRESSED source is forced onto -- bSC gates both BlitTexture
-	// paths. It is also the branch with no failure reporting of its own: it
-	// ends in `return AutoGenMips(tgt)`, which is `return true` whatever
-	// happened, so a caller can never learn that nothing was drawn.
-	//
-	// Being able to see whether it was ENTERED is the difference between
-	// "the copy rendered nothing" and "the copy was never issued", and those
-	// two have completely different causes. The Delta-glider's registration
-	// panel drew black with no complaint anywhere in the log, and separating
-	// those two is exactly what was missing.
+	// The rare route, and it reports itself once. This is the only branch that
+	// has to RENDER, the one a compressed source is forced onto, and the only
+	// one with no failure reporting of its own -- it ends in AutoGenMips,
+	// which returns true whatever happened. Seeing whether it was ENTERED
+	// separates "rendered nothing" from "never issued".
 	{
 		static bool bSaid = false;
 		if (!bSaid && (bSC || bCK || bCL || sd->Format != td->Format)) {
@@ -3231,15 +2741,9 @@ bool VulkanClient::clbkScaleBlt (SURFHANDLE tgt, DWORD tgtx, DWORD tgty, DWORD t
 				clbkReleaseSketchpad_const(pSkp);
 				AutoGenMips(tgt);
 
-				// GROUND TRUTH FOR THE BLACK REGISTRATION PANEL.
-				//
-				// Every layer on this route reports success and the result is
-				// black, so the only thing left is to look at the pixels.
-				// ORBITER_VK_DUMPBLT=1 writes the source and the target to
-				// /tmp once, right after the copy: if the source is black the
-				// fault is in loading idpanel1.dds, and if the source is right
-				// and the target is black the fault is in this draw.
-				// Diagnostic only, env-gated, first fallback copy only.
+				// Ground truth for the black registration panel: every layer
+				// here reports success and the result is black, so
+				// ORBITER_VK_DUMPBLT=1 writes source and target to /tmp once.
 				{
 					static const bool bDump = (getenv("ORBITER_VK_DUMPBLT") != NULL);
 					static bool bDone = false;
@@ -3261,29 +2765,11 @@ bool VulkanClient::clbkScaleBlt (SURFHANDLE tgt, DWORD tgtx, DWORD tgty, DWORD t
 }
 
 
-// =======================================================================
-// THE GDI-CACHE BRANCH HAS NOTHING LEFT TO WORK AROUND.
-//
-// The Windows body has two paths. If the surface is a GDI surface it gets a
-// DC and StretchBlts into it. Otherwise -- and this is the whole of the else
-// branch -- it borrows a cache texture, gets a DC on THAT, blits into it, and
-// then copies the cache back over the real surface, because
-// IDirect3DSurface9::GetDC() does not work on a render target.
-//
-// There is no such restriction here. SurfNative::GetDC() returns a recording
-// DC from Src/Orbiter/Linux/Gdi.cpp for any surface, render target or not --
-// the finding is already recorded at the top of VulkanSurface.h, which is
-// where pDX7/CreateDX7/DX7Sync went for the same reason. So the two paths
-// become one, and GetGDICache, the StretchRect-back and the UpdateSurface-back
-// go with the restriction that made them necessary.
-//
-// WHAT THAT COSTS, STATED PLAINLY: a recording DC records draw commands and
-// does not rasterise into the surface's pixels, so a StretchBlt through it
-// puts nothing into the image. The bitmap copy is recorded on the DC for
-// whoever replays it. This is the same limitation Scene.cpp's GDI-overlay
-// clear ran into, and it is a property of the display-list GDI, not of this
-// function.
-//
+// The GDI-cache branch has nothing left to work around: it borrowed a cache
+// texture because IDirect3DSurface9::GetDC() does not work on a render target,
+// and SurfNative::GetDC() returns a recording DC for any surface. What that
+// costs, stated plainly: a recording DC does not rasterise into the surface's
+// pixels, so a StretchBlt through it puts nothing into the image.
 bool VulkanClient::clbkCopyBitmap(SURFHANDLE pdds, HBITMAP hbm, int x, int y, int dx, int dy)
 {
 	HDC                     hdcImage;
@@ -3356,35 +2842,20 @@ void VulkanClient::BltError(SURFHANDLE src, SURFHANDLE tgt, const LPRECT s, cons
 		(unsigned)abs(int(s->left - s->right)), (unsigned)abs(int(s->top - s->bottom)));
 	LogErr("Target Rect (%d,%d,%d,%d) (w=%u,h=%u)", (int)t->left, (int)t->top, (int)t->right, (int)t->bottom,
 		(unsigned)abs(int(t->left - t->right)), (unsigned)abs(int(t->top - t->bottom)));
-	// A DIAGNOSTIC THAT SEGFAULTS IS WORSE THAN NO DIAGNOSTIC, AND THIS ONE DID.
+	// A diagnostic that segfaults is worse than no diagnostic, and this one
+	// did: LogSpecs() hands pResource to NatDumpResource, which dereferences
+	// it, so given a dangling handle the crash lands inside the error reporter
+	// and the failure it was called to explain is never written.
 	//
-	// LogSpecs() reads name, Flags and pResource straight off the SurfNative
-	// and hands pResource to NatDumpResource, which dereferences it. Given a
-	// DANGLING handle that is a wild read, and the crash lands inside the
-	// error reporter -- so the failure it was called to explain is never
-	// written, the log ends mid-sentence, and the user gets a bare SIGSEGV.
+	// Measured: the DG's virtual-cockpit coolant readout blitted an 8x11 glyph
+	// and fell through to here. The target was healthy; the source's `name`
+	// read back as little-endian 16-bit 8,10,10,12,12,14 then 0,1,2, 1,3,2,
+	// 2,3,4 -- an INDEX BUFFER. The surface had been freed and its memory
+	// reused for mesh indices.
 	//
-	// MEASURED, 2026-09-10. The DG's virtual-cockpit coolant readout blitted
-	// an 8x11 glyph and clbkScaleBlt fell through to here. The core shows the
-	// TARGET healthy (name "DG\blittgt1.dds") and the SOURCE not a surface at
-	// all: its `name` reads
-	//
-	//     08 00 0A 00  0A 00 0C 00  0C 00 0E 00 ... 01 00 00 00 02 00 ...
-	//
-	// -- little-endian 16-bit 8,10,10,12,12,14 then 0,1,2, 1,3,2, 2,3,4:
-	// an INDEX BUFFER. The surface had been freed and its memory reused for
-	// mesh indices, so every field LogSpecs read was index data, and
-	// pResource came out as 0x22001400220020.
-	//
-	// SurfaceCatalog is exactly the question to ask, and asking it here is
-	// the reference's own idiom, not an invention: D3D9Client.cpp:2312 gates
-	// `delete SURFACE(surf)` on `SurfaceCatalog.count(...)` for the same
-	// reason, and VulkanClient.cpp:2900 carries that across. Every live
-	// SurfNative inserts itself at construction and erases at destruction.
-	//
-	// The dangling handle is a REAL DEFECT and is not fixed by this; what is
-	// fixed is that it now names itself instead of killing the process on the
-	// way to being reported.
+	// SurfaceCatalog is the reference's own idiom for this question. The
+	// dangling handle is a real defect and is not fixed by this; what is fixed
+	// is that it names itself instead of killing the process.
 	LogErr("Source Data Below: ----------------------------------");
 	if (src && SurfaceCatalog.count(SURFACE(src)))
 		SURFACE(src)->LogSpecs();
@@ -3406,27 +2877,12 @@ void VulkanClient::BltError(SURFHANDLE src, SURFHANDLE tgt, const LPRECT s, cons
 
 
 
-// =======================================================================
-// GDI functions
-// =======================================================================
-//
-// THE NULL-SURFACE BRANCH LOSES ITS IMAGE. On Windows a NULL surface with
+// The NULL-surface branch loses its image. On Windows a NULL surface with
 // GDIOverlay enabled meant "give me a DC on the scene's GDI overlay buffer",
-// and the first caller of the frame cleared that buffer to the colour key
-// through the same DC.
-//
-// Neither half survives as written. GetDC on a VulkanTexture does not exist:
-// Src/Orbiter/Linux/Gdi.cpp is a display-list recorder, so a DC is not tied to
-// an image at all -- the finding is recorded at the top of VulkanSurface.h.
-// And the clear has already moved: Scene's constructor clears GBUF_GDI with
-// ClearImage, which is what four GDI calls were doing the long way round.
-//
-// So bGDIClear has nothing to guard and the buffer has no DC to hand out.
-// What is left is a recording DC, which is what every other GetDC in this
-// client returns, so a module that draws an overlay gets a valid DC and its
-// commands go onto the display list rather than into GBUF_GDI. That is the
-// honest state of the GDI overlay under a recording GDI, and it is stated
-// here rather than hidden behind a NULL return.
+// and the first caller of the frame cleared it through the same DC. Neither
+// half survives: a DC is not tied to an image here, and the clear has moved
+// into Scene's constructor. A module that draws an overlay still gets a valid
+// DC, but its commands go onto the display list rather than into GBUF_GDI.
 
 HDC VulkanClient::clbkGetSurfaceDC(SURFHANDLE surf)
 {
@@ -3450,8 +2906,6 @@ void VulkanClient::clbkReleaseSurfaceDC(SURFHANDLE surf, HDC hDC)
 
 	if (hDC == NULL) { LogErr("VulkanClient::clbkReleaseSurfaceDC() Input hDC is NULL"); return; }
 	if (surf == NULL) {
-		// The counterpart of pGDI->ReleaseDC(hDC): the DC above was created
-		// here and is deleted here.
 		if (Config->GDIOverlay) DeleteDC(hDC);
 		return;
 	}
@@ -3466,28 +2920,11 @@ bool VulkanClient::clbkFilterElevation(OBJHANDLE hPlanet, int ilat, int ilng, in
 	return FilterElevationPhysics(hPlanet, lvl, ilat, ilng, elev_res, elev);
 }
 
-// =======================================================================
-// THE THREE ImGui CALLBACKS BELONG TO THE CORE NOW, and this is note 3 in the
-// file header.
-//
-// On Windows the CLIENT owned the ImGui backends: it called
-// ImGui_ImplDX9_Init in clbkImGuiInit, ImGui_ImplDX9_NewFrame each frame, and
-// ImGui_ImplDX9_RenderDrawData inside its own BeginScene/EndScene.
-//
-// Src/Orbiter/Linux/UIHost.cpp does all three, with imgui_impl_glfw and
-// imgui_impl_vulkan, and it does them around the same frame that calls this
-// client's scene callback -- ImGui::NewFrame before, ImGui::Render and
-// ImGui_ImplVulkan_RenderDrawData after. A second NewFrame or Render from
-// here would not be a second UI; it would be an assertion inside ImGui.
-//
-// What the client still owns is the LAST part of clbkImGuiRenderDrawData:
-// releasing the surfaces it protected for ImGui's use during the frame. That
-// is the client's own bookkeeping, nothing to do with a backend, and it is
-// kept.
-//
-// The multi-viewport block goes with the backend. UpdatePlatformWindows and
-// RenderPlatformWindowsDefault drive per-viewport backends that only the
-// backend owner can provide.
+// The three ImGui callbacks belong to the core now; this is note 3. UIHost.cpp
+// runs its own backends around the same frame that calls this client's scene
+// callback, so a second NewFrame or Render from here would be an assertion
+// inside ImGui. What the client still owns is releasing the surfaces it
+// protected for ImGui's use during the frame.
 
 void VulkanClient::clbkImGuiNewFrame()
 {
@@ -3509,9 +2946,7 @@ void VulkanClient::clbkImGuiRenderDrawData()
 void VulkanClient::clbkImGuiInit()
 {
 	_TRACE;
-	// ImGui_ImplDX9_Init(pDevice) has no counterpart: UIHost.cpp initialises
-	// imgui_impl_glfw and imgui_impl_vulkan before this module loads. See the
-	// note above clbkImGuiNewFrame.
+	// ImGui_ImplDX9_Init(pDevice) has no counterpart; see clbkImGuiNewFrame.
 }
 
 void VulkanClient::clbkImGuiShutdown()
@@ -3522,29 +2957,14 @@ void VulkanClient::clbkImGuiShutdown()
 		clbkReleaseSurface(surf);
 	}
 	ImTextures.clear();
-	// ImGui_ImplDX9_Shutdown() goes with the Init above -- UIHost.cpp shuts
-	// its own backends down.
+	// ImGui_ImplDX9_Shutdown() goes with the Init above.
 }
 
-// =======================================================================
-// AN ImGui TEXTURE ID IS A DESCRIPTOR SET HERE, NOT A TEXTURE POINTER.
-//
-// The Windows body returns the IDirect3DTexture9* itself, because
-// imgui_impl_dx9 takes exactly that as an ImTextureID. imgui_impl_vulkan
-// takes a VkDescriptorSet, which has to be ALLOCATED from the backend's own
-// pool -- so the client cannot mint one, and must not, since it does not own
-// the backend.
-//
-// Src/Orbiter/Linux/UIHost.cpp exports orbiter_ImGuiTextureFromView for this,
-// and caches by image view because ImGui_ImplVulkan_AddTexture allocates a
-// set per call and this is asked once per icon per frame. Returning a
-// texture pointer allocated nothing, which is why the reference needs no such
-// cache and this does.
-//
-// The per-frame reference hold is kept as the reference has it: the surface
-// is pushed onto ImTextures and its count raised, and clbkImGuiRenderDrawData
-// lets go at the end of the frame. It guards the same thing it always did --
-// a surface released mid-frame outliving the draw that names it.
+// An ImGui texture id is a descriptor set here, not a texture pointer.
+// imgui_impl_vulkan takes a VkDescriptorSet, which has to be ALLOCATED from
+// the backend's own pool, so the client cannot mint one. UIHost.cpp exports
+// orbiter_ImGuiTextureFromView and caches by image view, because
+// ImGui_ImplVulkan_AddTexture allocates a set per call.
 
 extern "C" unsigned long long orbiter_ImGuiTextureFromView(void *imageView);
 
@@ -3680,36 +3100,19 @@ void VulkanClient::WriteLog(const char *msg) const
 }
 
 
-// =======================================================================
-// THE SPLASH SCREEN IS THE PLACE THE CONVERSION HURTS MOST, so what survives
-// and what does not is stated here rather than three times below.
+// The splash screen is where the conversion hurts most, so what survives and
+// what does not is stated here rather than three times below.
 //
-// The Windows pair works like this: two D3D9 offscreen plain surfaces are
-// created, the splash image is decoded into the larger one, GDI TextOut writes
-// the build strings and the loading status ONTO those surfaces through
-// GetDC/ReleaseDC, and both are StretchRect'd onto the back buffer and
-// Present()ed -- outside the normal frame loop, because the simulation has not
-// started and there is no frame loop yet.
-//
-// Three of those five steps have no counterpart:
-//
-//   THE GDI TEXT DOES NOT LAND IN THE IMAGE. Src/Orbiter/Linux/Gdi.cpp is a
-//   display-list RECORDER: GetDC returns a DC that collects draw commands,
-//   and nothing rasterises them into a VkImage. The TextOut/MoveToEx/LineTo
-//   calls are kept -- they are correct, and they reach the core's own overlay
-//   when it replays the list -- but they do not write pixels here.
-//
-//   THE BLIT TO THE BACK BUFFER CANNOT HAPPEN. pBackBuffer is an attachment
-//   proxy with no VkImage; the swapchain images belong to UIHost.cpp.
-//
-//   THE PRESENT CANNOT HAPPEN. GetSwapChain(0)->Present is the one call this
-//   process has exactly one of, in UIHost.cpp's presentFrame.
-//
-// AND THE CORE ALREADY DRAWS A SPLASH SCREEN. UIHost.cpp has drawSplash() and
-// orbiter_ClearSplash(), which is what the user actually sees while loading.
-// So these two functions keep the state they are asked to keep -- the two
-// surfaces, the strings, the layout rectangle -- and stop where the display
-// belongs to someone else, rather than pretending to present.
+// The Windows pair creates two offscreen plain surfaces, decodes the splash
+// image into the larger, writes text onto them with GDI TextOut, and
+// StretchRects both onto the back buffer and Present()s. Three of those steps
+// have no counterpart: the GDI text does not land in the image (Gdi.cpp is a
+// display-list recorder, so the TextOut calls are kept and reach the core's
+// overlay when it replays the list, but they write no pixels); the blit cannot
+// happen, pBackBuffer being an attachment proxy; and the present cannot
+// happen, UIHost.cpp having the only one. The core already draws a splash
+// screen, so these two functions keep the state they are asked to keep and
+// stop where the display belongs to someone else.
 
 bool VulkanClient::OutputLoadStatus(const char *txt, int line)
 {
@@ -3755,9 +3158,8 @@ bool VulkanClient::OutputLoadStatus(const char *txt, int line)
 			pTextScreen->ReleaseDC(hDC);
 		}
 
-		// The two StretchRects onto the back buffer and the swap-chain
-		// Present go with the back buffer that has no image and the present
-		// this client does not own; see the note above.
+		// The two StretchRects and the Present go with the back buffer that has
+		// no image; see the note above.
 
 		// Prevent "Not Responding" during loading
 		MSG msg;
@@ -3790,15 +3192,10 @@ void VulkanClient::SplashScreen()
 	LogAlw("Splash Window LeftTop = [%d, %d]", (int)rS.left, (int)rS.top);
 
 	// TestCooperativeLevel() and Clear() have no counterpart: there is no lost
-	// device, and there is no frame open to clear -- this runs before the
-	// simulation's first frame, and the core's render pass has not begun.
+	// device, and no frame open to clear -- this runs before the first one.
 
-	// CreateOffscreenPlainSurface(w, h, D3DFMT_X8R8G8B8, D3DPOOL_DEFAULT)
-	// becomes NatCreateSurface with the flags that say the same thing: a
-	// plain surface the CPU can reach (SYSMEM) and take a DC on (GDI), in
-	// the client's 32-bit XRGB format. The "offscreen plain" resource TYPE
-	// has no counterpart -- there is one image type here -- so what is left
-	// of it is the usage.
+	// CreateOffscreenPlainSurface becomes NatCreateSurface with the flags that
+	// say the same thing. The "offscreen plain" TYPE has no counterpart.
 	const DWORD splashFlags = OAPISURFACE_PF_XRGB | OAPISURFACE_SYSMEM | OAPISURFACE_GDI;
 
 	pTextScreen   = SURFACE(NatCreateSurface(loadd_w, loadd_h, splashFlags));
@@ -3811,12 +3208,8 @@ void VulkanClient::SplashScreen()
 	pTextScreen->SetName("SplashText");
 	pSplashScreen->SetName("SplashScreen");
 
-	// D3DXGetImageInfoFromFile followed by D3DXLoadSurfaceFromFile becomes one
-	// decode plus one blit. D3DX could scale into a destination rectangle as
-	// part of loading; here the image is decoded to its own size and
-	// BlitTexture scales it into the same rectangle, which is the same two
-	// operations with the seam in a different place. THE FIT ARITHMETIC IS
-	// UNCHANGED, including the two branches' different reference sizes.
+	// D3DXGetImageInfoFromFile plus D3DXLoadSurfaceFromFile becomes one decode
+	// plus one blit; the fit arithmetic is unchanged.
 	VulkanTexture *pImg = NULL;
 	double imageW = 0.0, imageH = 0.0;
 
@@ -3834,11 +3227,7 @@ void VulkanClient::SplashScreen()
 		LPVOID pData = LockResource(hImage);
 		DWORD size = SizeofResource(hOrbiter, hRes);
 
-		// D3DXLoadSurfaceFromFileInMemory becomes NatCreateTextureFromMemory;
-		// see VulkanSurface.cpp. The comment below is the author's and is
-		// still the assumption the arithmetic makes.
-		//
-		// Splash screen image is 1920 x 1200 pixel
+		// D3DXLoadSurfaceFromFileInMemory becomes NatCreateTextureFromMemory.
 		pImg = NatCreateTextureFromMemory(pData, size);
 		imageW = 1920.0;
 		imageH = 1200.0;
@@ -3856,9 +3245,8 @@ void VulkanClient::SplashScreen()
 		static_cast<LONG>( round(_h + _t) )
 	};
 
-	// ColorFill(pSplashScreen, NULL, black) -- SurfNative::Fill is its
-	// counterpart; see VulkanFrame.h on why a whole-image fill and a
-	// sub-rectangle fill are two different Vulkan calls.
+	// ColorFill(pSplashScreen, NULL, black) becomes SurfNative::Fill; a
+	// whole-image fill and a sub-rectangle fill are two different calls.
 	pSplashScreen->Fill(NULL, 0);
 
 	if (pImg) {
@@ -3897,8 +3285,8 @@ void VulkanClient::SplashScreen()
 		if (m>12) m=0;
 
 		char dataA[256];
-		// "D3D9Client" becomes "VulkanClient", and the "via D3D9on12 emulator"
-		// suffix goes with Config->Enable9On12; see note 4 in the file header.
+		// "D3D9Client" becomes "VulkanClient"; the "via D3D9on12 emulator"
+		// suffix goes with the Enable9On12 setting, which has no counterpart.
 		strcpy(dataA, "VulkanClient");
 
 #ifdef _DEBUG
@@ -3918,10 +3306,6 @@ void VulkanClient::SplashScreen()
 		TextOut(hDC, xc, yc + 1*20, dataB, lstrlen(dataB));
 		TextOut(hDC, xc, yc + 2*20, dataA, lstrlen(dataA));
 
-		// DWORD VPOS = viewH - 50; and DWORD LSPACE = 20; stood here, both
-		// assigned and never read. Kept as a comment rather than as two
-		// variables GCC would warn about; they mark where a third block of
-		// text used to go.
 
 		SelectObject(hDC, hO);
 		DeleteObject(hF);
@@ -3930,29 +3314,16 @@ void VulkanClient::SplashScreen()
 	}
 
 	// The two StretchRects and the Present that ended the Windows function are
-	// gone with the back buffer that has no image and the present this client
-	// does not own. The core draws the loading screen; see the note above
-	// OutputLoadStatus. What this function has produced -- the two surfaces,
-	// with the image in the larger one -- is what clbkDisplayFrame draws
-	// through the Sketchpad while !bRunning.
+	// gone with the back buffer that has no image. What is produced here is
+	// what clbkDisplayFrame draws through the Sketchpad while !bRunning.
 }
 
 
-// =======================================================================
-// BeginScene/EndScene HAVE NO DEVICE CALL BEHIND THEM ANY MORE.
-//
-// IDirect3DDevice9::BeginScene told the runtime that draw calls were coming
-// and EndScene that they had stopped; a draw outside the pair was an error.
-// Vulkan's equivalent is being inside a render pass on a recording command
-// buffer, and the core has already begun both by the time the client's scene
-// callback runs -- see note 1 in the file header.
-//
-// bRendering IS THE PART THAT MATTERS AND IT STAYS. IsInScene() is read by
-// the Sketchpad and by the surface code to decide whether a draw is legal
-// right now, which is exactly the question the flag was always answering.
-// What changes is that it is set unconditionally rather than from an HRESULT,
-// because there is no call left to fail. S_OK is returned for the same
-// reason.
+// BeginScene/EndScene have no device call behind them any more: the Vulkan
+// equivalent is being inside a render pass on a recording command buffer, and
+// the core has already begun both. bRendering is the part that matters and it
+// stays -- IsInScene() is read by the Sketchpad and the surface code to decide
+// whether a draw is legal right now.
 
 HRESULT VulkanClient::BeginScene()
 {
@@ -3974,15 +3345,9 @@ void VulkanClient::EndScene()
 
 double sketching_time;
 
-// =======================================================================
-// 2D Drawing Interface
-//
-// The thread guard is the reference's, unchanged. GetCurrentThread() returns
-// the pseudo-handle (HANDLE)-2 on every thread, here as on Windows, so this
-// comparison is a constant against itself and the guard has never fired and
-// cannot. It is carried rather than repaired -- see the note at
-// VulkanClient::GetMainThread().
-//
+// The thread guard is the reference's, unchanged: GetCurrentThread() returns
+// the same pseudo-handle on every thread, so it cannot fire. Carried rather
+// than repaired -- see VulkanClient::GetMainThread().
 oapi::Sketchpad *VulkanClient::clbkGetSketchpad_const(SURFHANDLE surf) const
 {
 	if (ChkDev(__FUNCTION__)) return NULL;
@@ -4060,33 +3425,22 @@ void VulkanClient::clbkReleaseSketchpad_const(oapi::Sketchpad* sp) const
 
 		PopRenderTargets();
 
-		// The pad has just dirtied level 0, which is the other moment
-		// D3DUSAGE_AUTOGENMIPMAP fires on Windows -- see the note on
-		// AutoGenMips above clbkScaleBlt. It is a no-op for every surface the
-		// core currently draws on with a pad (the VC HUD is SKETCHPAD|TEXTURE
-		// and an MFD's `surf` carries no mipmaps either; only an MFD's `tex`
-		// does, and that one is written by clbkBlt), but the flag does not
+		// The pad has just dirtied level 0, the other moment
+		// D3DUSAGE_AUTOGENMIPMAP fires on Windows. A no-op for every surface
+		// the core currently draws on with a pad, but the flag did not
 		// distinguish how level 0 got dirty and neither should this.
 		AutoGenMips(hSrf);
 
-		// What the pad actually left in the VC HUD surface, identified by
-		// asking for it rather than by guessing at its size -- the VC MFDs are
-		// the same 512x512.
-		//
-		// AFTER PopRenderTargets, AND THE FIRST ATTEMPT AT THIS WAS BEFORE IT
-		// AND MEASURED NOTHING. EndDrawing only flushes the pad's geometry
-		// into the offscreen command buffer; it is PopRenderTargets that ends
-		// the pass and submits it. Reading the image between the two reads it
-		// before anything has executed -- which comes back all zeroes and
-		// looks exactly like "the sketchpad drew nothing".
+		// What the pad actually left in the VC HUD surface. After
+		// PopRenderTargets: EndDrawing only flushes the pad's geometry into
+		// the offscreen buffer, and it is PopRenderTargets that submits it.
 		{
 			static const bool bDumpSkp = (getenv("ORBITER_VK_DUMP_SKP") != NULL);
 			if (bDumpSkp) {
 				const VCHUDSPEC *spec = NULL;
 				SURFHANDLE hHud = GetVCHUDSurface(&spec);
-				// The VC MFDs go through exactly the same offscreen-sketchpad
-				// path, so dumping one alongside the HUD says whether the
-				// path is broken or only the HUD's content is missing.
+				// The VC MFDs take the same path, so dumping one alongside
+				// says whether the path is broken or only the HUD's content.
 				SURFHANDLE hMfd = GetMFDSurface(0);
 				if (hMfd == hSrf) {
 					static int m = 0;
@@ -4115,18 +3469,12 @@ void VulkanClient::clbkReleaseSketchpad_const(oapi::Sketchpad* sp) const
 							   spec ? spec->hudcnt.x : 0.0f,
 							   spec ? spec->hudcnt.y : 0.0f,
 							   spec ? spec->hudcnt.z : 0.0f);
-						// BOTH FORMATS, because the PNG is ambiguous: an
-						// all-zero surface is RGBA(0,0,0,0), which a viewer
-						// shows as transparent and reads as white. The JPEG
-						// drops alpha, so it shows the colour that is
-						// actually there.
+						// Both formats: an all-zero surface reads as
+						// transparent in PNG, and the JPEG drops alpha.
 						if (pT) {
 							NatSaveSurface("vchud.png", pT);
 							NatSaveSurface("vchud.jpg", pT);
 
-							// And the numbers, so neither picture has to be
-							// interpreted: how much of the surface is not
-							// black, and what the extremes are.
 							std::vector<unsigned char> px(size_t(pT->Width()) * pT->Height() * 4);
 							if (pDevice->ReadTexture(pT, 0, px.data(), px.size())) {
 								size_t nLit = 0, nAlpha = 0;

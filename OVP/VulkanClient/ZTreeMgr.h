@@ -12,19 +12,6 @@
 // Manage compressed and packed tile trees for planetary surface
 // and cloud layers.
 // --------------------------------------------------------------
-//
-// CONVERTED FROM OVP/D3D9Client/ZTreeMgr.h, read end to end (145 lines).
-//
-// This is a FILE FORMAT reader -- a header, a table of contents and inflate
-// -- and touches no graphics API on either platform. `#include <windows.h>`
-// stays as it is written: it resolves to the shim at
-// Src/Orbiter/Linux/windows.h, which supplies DWORD, BYTE, __int64 and
-// ARRAYSIZE. Nothing else in the file has a Windows spelling.
-//
-// One line changes, and it is the warning bar rather than the platform: the
-// TreeNode constructor's loop compared an int against ARRAYSIZE's size_t.
-// See it below.
-// --------------------------------------------------------------
 
 #ifndef __ZTREEMGR_H
 #define __ZTREEMGR_H

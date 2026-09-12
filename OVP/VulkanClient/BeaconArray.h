@@ -5,24 +5,6 @@
 // ==============================================================
 
 
-// CONVERTED FROM OVP/D3D9Client/BeaconArray.h, read end to end (83 lines).
-//
-//   D3D9Effect              -> VulkanEffect
-//   LPDIRECT3DDEVICE9       -> VulkanDevice*
-//   LPD3DXMATRIX            -> FMATRIX4*
-//   LPDIRECT3DVERTEXBUFFER9 -> VulkanBuffer*
-//   <d3d9.h> / <d3dx9.h>    -> VulkanTypes.h  (the first has a counterpart;
-//                              D3DX is a utility library and has none)
-//
-// The two structs are plain data and are untouched. LockVertexBuffer /
-// UnLockVertexBuffer keep their names -- the operation behind them is Map /
-// Unmap, which is the same protocol -- because renaming an interface the
-// callers are written against is not a conversion.
-//
-// WORTH KNOWING FOR THE SHADER WORK: this class draws POINT SPRITES.
-// D3DRS_POINTSPRITEENABLE has no Vulkan counterpart, so the GLSL translation
-// of BeaconArray.fx must write gl_PointSize itself. Recorded in the ledger.
-
 #ifndef __BEACONARRAY_H
 #define __BEACONARRAY_H
 
@@ -52,6 +34,9 @@ typedef struct {
 } BeaconPos;
 
 
+// This class draws point sprites. D3DRS_POINTSPRITEENABLE has no Vulkan
+// counterpart, so the GLSL translation of BeaconArray.fx has to write
+// gl_PointSize itself.
 /**
  * \brief BeaconArray object with a Vulkan vertex buffer
  */

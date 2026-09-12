@@ -5,34 +5,6 @@
 // Copyright (C) 2006-2026 Martin Schweiger
 //				 2012-2016 Jarmo Nikkanen
 // ==============================================================
-//
-// CONVERTED FROM OVP/D3D9Client/VObject.h, read end to end (277 lines).
-//
-// No Direct3D behaviour here at all -- vObject is bookkeeping (position,
-// rotation, camera distance, sun direction, bounding box) plus a set of
-// virtuals that take a render device. So the conversion is the type mapping
-// and nothing else:
-//
-//   D3DXMATRIX mWorld        -> FMATRIX4        (MWorld() returns FMATRIX4*)
-//   D3DXVECTOR3 / D3DXCOLOR  -> FVECTOR3 / FVECTOR4
-//   LPDIRECT3DDEVICE9 dev    -> VulkanDevice *dev
-//   D3D9Client/Pad/Mesh/Sun  -> Vulkan...
-//
-// Two things worth naming:
-//
-//  1. GetBoundingSpherePosDX() BECAME GetBoundingSpherePosF(). The "DX"
-//     distinguished the D3DXVECTOR3 form from the VECTOR3 form beside it;
-//     with D3DX gone the suffix names something that does not exist, and F
-//     says what it now returns (FVECTOR3) against the double-precision
-//     VECTOR3 of GetBoundingSpherePos().
-//
-//  2. "Scene.h" BECAME A FORWARD DECLARATION. The Windows header includes it,
-//     but every use of Scene in this file is through a pointer -- the
-//     constructor parameter, the scn member and GetScene(). Scene.h includes
-//     this file back, so the include is a cycle MSVC tolerates through
-//     include guards; a forward declaration is enough and lets this header
-//     stand on its own.
-// ==============================================================
 
 #ifndef __VOBJECT_H
 #define __VOBJECT_H
@@ -49,6 +21,9 @@
 extern class VulkanConfig *Config;
 
 class VulkanPad;
+// Scene is forward-declared rather than included: every use of it here is
+// through a pointer, and Scene.h includes this file back, so the include was a
+// cycle that only worked through the guards.
 class Scene;
 class SurfNative;
 class VulkanMesh;
@@ -141,7 +116,7 @@ public:
 	 * \return object handle
 	 */
 	// `const OBJHANDLE` / `const int` in the Windows original. A top-level
-	// const on a BY-VALUE return does nothing -- the caller gets a copy --
+	// const on a by-value return does nothing -- the caller gets a copy --
 	// so the compiler discards it and GCC reports it (-Wignored-qualifiers).
 	// Dropped rather than suppressed: no call site changes, and the
 	// declaration stops promising a protection it never gave. The trailing
@@ -165,7 +140,9 @@ public:
 	virtual bool IsVisible();
 	virtual DWORD GetMeshCount();
 
-	// Was GetBoundingSpherePosDX(). See the file header.
+	// Was GetBoundingSpherePosDX(): the "DX" distinguished the D3DXVECTOR3
+	// form from the VECTOR3 one below, and F now says it returns an FVECTOR3
+	// against the double-precision GetBoundingSpherePos().
 	FVECTOR3 GetBoundingSpherePosF();
 	VECTOR3 GetBoundingSpherePos();
 	float GetBoundingSphereRadius();

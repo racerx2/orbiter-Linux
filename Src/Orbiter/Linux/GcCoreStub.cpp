@@ -1,69 +1,49 @@
 // ===========================================================================
-// gcCore: THE ADD-ON'S IMPORT LIBRARY.
+// gcCore: the add-on's import library.
 //
 // gcCoreAPI.h declares the graphics-client core API with
 //     #define gc_interface static
-// so every entry point is a STATIC member function, and any module that
+// so every entry point is a static member function, and any module that
 // mentions one needs its definition at link time. The real definitions live
 // in the client (OVP/VulkanClient/gcCore.cpp), whose bodies reach straight
 // into it -- g_client, Scene, CAMERA(hCam).
 //
-// ---------------------------------------------------------------------------
-// WHY THESE CANNOT SIMPLY RETURN NOTHING, WHICH IS WHAT THEY USED TO DO
-// ---------------------------------------------------------------------------
-//
-// The original note here said the functions "are never CALLED in this
-// configuration", because Interpreter.cpp guards every call with
-// `if (pCore)`. That reasoning is right for LuaInterpreter -- which is why it
-// was written -- and WRONG for every add-on that uses gcCore, because
-// `gcGetCoreInterface()` does NOT return null when a client is present:
+// These cannot simply return nothing. Interpreter.cpp guards every call with
+// `if (pCore)`, which makes LuaInterpreter safe, but that guard protects no
+// add-on: `gcGetCoreInterface()` does not return null when a client is there:
 //
 //     if (pBindCoreMethod) return (pCoreInterface = new gcCore2(pBindCoreMethod));
 //
-// and gcCore2's constructor body is `#define fnc_binder` -- EMPTY. The object
+// and gcCore2's constructor body is `#define fnc_binder` -- empty. The object
 // it hands back is a token. Nothing is bound to it, and every `pCore->Foo()`
-// on it is an ordinary call to the STATIC member `gcCore::Foo`, resolved by
+// on it is an ordinary call to the static member `gcCore::Foo`, resolved by
 // the linker, not through the interface at all.
 //
-// ON WINDOWS that resolves into the client: the add-on links D3D9Client.lib
+// On Windows that resolves into the client: the add-on links D3D9Client.lib
 // and its import table points at D3D9Client.dll's copy. A DLL has its own
-// symbol namespace and an import library is how you reach into one.
-//
-// ON LINUX THERE IS NO SUCH THING. Measured on DX9ExtMFD:
+// symbol namespace and an import library is how you reach into one. Linux has
+// no such thing. Measured on DX9ExtMFD:
 //
 //   DX9ExtMFD.so    U _ZN6gcCore12RegisterSwapEP6HWND__Pvi   (imported)
 //   Orbiter          W _ZN6gcCore12RegisterSwapEP6HWND__Pvi   (this file)
 //   VulkanClient.so  T _ZN6gcCore12RegisterSwapEP6HWND__Pvi   (the real one)
 //
 // The executable is searched before any dlopen'd object, so the add-on bound
-// to the WEAK STUB HERE and got `return nullptr` -- silently, with no log
+// to the weak stub here and got `return nullptr` -- silently, with no log
 // line, because a stub has nothing to say. DX9ExtMFD's MFD display was blank
 // for exactly this reason: RegisterSwap answered null, clbkRefreshDisplay set
 // bFailed and never drew again. Weak-vs-strong does not help: ELF resolves by
 // search order, and a weak definition found first still wins.
 //
-// Same family as the RunwayLights preemption in
-// the porting notes -- the Win32 per-DLL symbol namespace has
-// no Linux counterpart -- but the mirror image of it. There the client bound
-// outward to the executable and `-Bsymbolic` kept it home; here an add-on
-// binds to the executable and needs to reach OUT to the client.
+// So each body forwards, which is what an import library does: it asks the
+// loaded client for its own implementation by name through the export the
+// header was already designed around -- `gcBindCoreMethod`, the same one
+// gcGetCoreInterface() looks up -- and calls it. The client's binder maps
+// every name in this file (gcCore.cpp, binder_start..binder_end).
 //
-// ---------------------------------------------------------------------------
-// SO THESE FORWARD, which is what an import library does
-// ---------------------------------------------------------------------------
-//
-// Each body asks the loaded client for its own implementation by name,
-// through the export the header was already designed around --
-// `gcBindCoreMethod`, the same one gcGetCoreInterface() looks up -- and calls
-// it. The client's binder maps every name in this file (gcCore.cpp,
-// binder_start..binder_end).
-//
-// With no client loaded, the old behaviour stands exactly: each returns the
-// "nothing happened" value for its type, which is what LuaInterpreter needs
-// and what these were written for.
-//
-// STILL WEAK, so a client that is linked directly rather than dlopen'd keeps
-// precedence, and so nothing here can clash.
+// With no client loaded each returns the "nothing happened" value for its
+// type, which is what LuaInterpreter needs. Still weak, so a client linked
+// directly rather than dlopen'd keeps precedence and nothing here can clash.
 // ===========================================================================
 
 #include "gcCoreAPI.h"
@@ -72,18 +52,11 @@
 
 namespace {
 
-// The client's binder, resolved lazily.
-//
-// RETRIED WHILE ABSENT rather than cached as a failure: a module's first
-// gcCore call can come before the graphics client is loaded, and a one-shot
-// "no client" answer would make that module gcCore-less for the whole
-// session. GetModuleHandle is a lookup in the loader index orb_LoadLibrary
-// maintains, so retrying costs a string compare.
-//
-// The module name is the Linux one unconditionally -- this file is
-// Src/Orbiter/Linux and is compiled nowhere else. gcCore.h's own
-// gcGetCoreInterface() has to carry both spellings because add-ons include it
-// on both platforms; see the note there.
+// The client's binder, resolved lazily and retried while absent rather than
+// cached as a failure: a module's first gcCore call can come before the
+// graphics client is loaded, and a one-shot "no client" answer would make that
+// module gcCore-less for the whole session. GetModuleHandle is a lookup in the
+// loader index orb_LoadLibrary maintains, so retrying costs a string compare.
 __gcBindCoreMethod gcBinder()
 {
 	static __gcBindCoreMethod pBind = nullptr;
@@ -107,7 +80,7 @@ void *gcBind(const char *name)
 
 } // namespace
 
-// The lookup is done ONCE PER CALL SITE and remembered, including a negative
+// The lookup is done once per call site and remembered, including a negative
 // answer -- the client logs "failed to bind" for a name it does not map, and
 // re-asking every frame would fill the log. `bound` is only set once a client
 // is actually there, so the retry above still works.

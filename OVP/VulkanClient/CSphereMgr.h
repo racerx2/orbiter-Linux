@@ -6,35 +6,6 @@
 // Copyright (C) 2006-2026 Martin Schweiger
 //				 2011-2016 Jarmo Nikkanen (D3D9Client modification) 
 // =======================================================================
-//
-// CONVERTED FROM OVP/D3D9Client/CSphereMgr.h, read end to end (156 lines).
-//
-// The background image manager. It reuses the LEGACY tile machinery --
-// TILEDESC, TEXCRDRANGE, VBMESH and TileBuffer all come from TileMgr.h --
-// and everything structural about it survives. The substitutions are the
-// ones already fixed for TileMgr.h:
-//
-//   LPDIRECT3DTEXTURE9 -> VulkanTexture*
-//   LPDIRECT3DDEVICE9  -> VulkanDevice*
-//   D3DXMATRIX         -> FMATRIX4
-//   oapi::D3D9Client   -> oapi::VulkanClient
-//   D3D9Config         -> VulkanConfig
-//
-// CreateDeviceObjects LOSES ITS FIRST PARAMETER. It was
-// `(LPDIRECT3D9 d3d, LPDIRECT3DDEVICE9 dev)`: the D3D9 OBJECT and the
-// device. There is no counterpart to LPDIRECT3D9 -- it was the factory that
-// enumerated adapters and created the device, and in this port the core owns
-// the VkInstance and hands the client a finished device (see
-// VulkanClient.h's note 4 on g_pD3DObject). Dropping a parameter that names
-// a thing that no longer exists is the conversion; keeping a NULL placeholder
-// would not be.
-//
-// `float4x4` in CelDataStruct is VulkanUtil.h's alias for FMATRIX4, which is
-// what it aliased on Windows too -- it is the HLSL spelling, used here
-// because these two structs are the CPU-side mirror of a shader constant
-// buffer. #pragma pack(push,4) stays for the same reason: the GLSL block
-// that mirrors it must agree, and `layout(scalar)` is what makes it do so.
-// =======================================================================
 
 #ifndef __CSPHEREMGR_H
 #define __CSPHEREMGR_H
@@ -51,17 +22,12 @@ class CSphereManager
 {
 public:
 
-// The pack is DELIBERATE -- these two structs are the CPU-side mirror of a
-// shader constant buffer and their layout has to be the shader's, not the C++
-// ABI's -- and the members are FMATRIX4P rather than FMATRIX4 (float4x4)
-// because pack(4) lowers a member's alignment WITHOUT changing the type: an
-// ORB_ALIGN16 FMATRIX4 here would still be assumed 16-byte aligned by the
-// compiler and its constructor coalesced into aligned SSE stores, which
-// SEGFAULTS the moment the struct lands on a 4-aligned address. See the note
-// at FVECTOR4P in VulkanUtil.h -- that crash is what this avoids.
-//
-// -Wpacked-not-aligned therefore stays ON: with no over-aligned member left
-// there is nothing to report, and if one is put back the compiler will say so.
+// These two structs mirror a shader constant buffer, so the pack stays. The
+// members are FMATRIX4P, not FMATRIX4 (float4x4), because pack(4) lowers a
+// member's alignment without changing its type: an ORB_ALIGN16 FMATRIX4 here
+// would still be assumed 16-byte aligned, its constructor coalesced into
+// aligned SSE stores, and segfault the moment the struct lands on a 4-aligned
+// address.
 #pragma pack(push, 4)
 	struct CelDataStruct
 	{
@@ -78,9 +44,8 @@ public:
 	} CelFlow;
 #pragma pack(pop)
 
-	// Measured, not assumed: two 64-byte matrices then two floats, packed to
-	// 4. The GLSL block mirroring CelDataStruct must be layout(scalar) and
-	// must agree with these offsets.
+	// The GLSL block mirroring CelDataStruct must be layout(scalar) and must
+	// agree with these offsets.
 	static_assert(sizeof(CelDataStruct) == 136, "CelDataStruct must be 136 bytes under pack(4)");
 	static_assert(offsetof(CelDataStruct, mViewProj) == 64, "CelDataStruct::mViewProj at 64");
 	static_assert(offsetof(CelDataStruct, fAlpha) == 128, "CelDataStruct::fAlpha at 128");
@@ -109,19 +74,12 @@ public:
 	 */
 	static void GlobalExit ();
 
-	// Was CreateDeviceObjects(LPDIRECT3D9 d3d, LPDIRECT3DDEVICE9 dev).
-	//
-	// BOTH parameters go, and one is replaced. LPDIRECT3D9 was the D3D9
-	// factory object, which has no counterpart here (the core owns the
-	// VkInstance -- see VulkanClient.h note 4). The device was passed only to
-	// call dev->GetViewport(), and a VkDevice answers no such question; the
-	// render-target size lives on CVulkanFramework, which is reached through
-	// the client. So this takes the client, exactly as GlobalInit does and
-	// for exactly the same two lines of work.
-	//
-	// WORTH KNOWING: this function has NO CALLER anywhere in the Windows
-	// tree. It is dead code, converted rather than dropped because deleting
-	// it is a decision and this is a conversion.
+	// Was CreateDeviceObjects(LPDIRECT3D9 d3d, LPDIRECT3DDEVICE9 dev). Both
+	// parameters go: LPDIRECT3D9 was the D3D9 factory object, which has no
+	// counterpart here, and the device was passed only for dev->GetViewport(),
+	// which a VkDevice cannot answer -- the render-target size lives on
+	// CVulkanFramework, reached through the client. Note this function has no
+	// caller anywhere in the Windows tree.
 	static void CreateDeviceObjects(oapi::VulkanClient *gclient);
 	static void DestroyDeviceObjects();
 

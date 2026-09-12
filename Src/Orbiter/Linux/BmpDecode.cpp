@@ -7,12 +7,10 @@
 //
 // This is a decoder for exactly the format the resources are in, not a general
 // BMP reader: BITMAPINFOHEADER, bottom-up, uncompressed or RLE8. Anything else
-// is reported as unsupported rather than half-decoded, because a silently
-// wrong image is harder to notice than a missing one.
+// is reported as unsupported rather than half-decoded.
 //
-// OUTPUT
-//   RGBA8, top-down -- the orientation a texture upload wants, and the inverse
-//   of BMP's own bottom-up storage.
+// Output is RGBA8, top-down -- the orientation a texture upload wants, and the
+// inverse of BMP's own bottom-up storage.
 
 #include <windows.h>
 #include "ResourceTemplates.h"
@@ -20,11 +18,9 @@
 #include <vector>
 #include <cstring>
 
-// Declared, not implemented, here. The implementation lives in
-// Src/Orbiter/Linux/WinCodec.cpp, which defines STB_IMAGE_IMPLEMENTATION for
-// the whole executable; including stb_image.h again would either duplicate the
-// definitions or, without the macro, add a second copy of the declarations.
-// Only the ICO decoder's PNG branch needs these two.
+// Declared rather than included: WinCodec.cpp defines STB_IMAGE_IMPLEMENTATION
+// for the whole executable, and including stb_image.h again would duplicate
+// it. Only the ICO decoder's PNG branch needs these two.
 extern "C" unsigned char *stbi_load_from_memory(unsigned char const *buffer,
                                                 int len, int *x, int *y,
                                                 int *channels_in_file,
@@ -102,8 +98,7 @@ bool DecodeBMP(const unsigned char *data, int size,
     };
 
     if (compress == BI_RLE8) {
-        // Run-length encoded 8-bit. Used by at least one of the larger
-        // resources; the encoding is a sequence of (count, index) pairs with
+        // Run-length encoded 8-bit: a sequence of (count, index) pairs with
         // escape codes for line ends and absolute runs.
         const unsigned char *p   = data + pixelOffset;
         const unsigned char *end = data + size;
@@ -187,19 +182,19 @@ bool DecodeBMP(const unsigned char *data, int size,
 // ===========================================================================
 //
 // An .ico is a small directory of images, and rc.exe embeds the whole file for
-// an ICON resource exactly as it does for a BITMAP. Windows then picks a size
-// out of it inside LoadIcon; here the caller says which one it wants.
+// an ICON resource exactly as it does for a BITMAP. Windows picks a size out
+// of it inside LoadIcon; here the caller says which one it wants.
 //
 // Orbiter.ico carries six: 16, 24, 32, 48 and 64 as 32-bit DIBs, and 256 as a
-// PNG. Both encodings occur in one file, which is normal for icons written
-// since Vista, so both are handled -- a decoder that assumed DIB would silently
-// skip the largest image, which is the one a modern desktop actually wants.
+// PNG. Both encodings in one file is normal for icons written since Vista, so
+// both are handled -- a decoder that assumed DIB would silently skip the
+// largest image.
 //
-// THE DIB IN AN ICON IS NOT A .BMP. It has no 14-byte file header, and its
-// BITMAPINFOHEADER declares DOUBLE the real height: the extra half is the
-// 1-bit AND mask that predates alpha channels. DecodeBMP above cannot be
-// reused for that reason, and feeding it these bytes returns a half-height
-// image rather than an error.
+// The DIB in an icon is not a .bmp: it has no 14-byte file header, and its
+// BITMAPINFOHEADER declares double the real height, the extra half being the
+// 1-bit AND mask that predates alpha channels. That is why DecodeBMP above
+// cannot be reused -- feeding it these bytes returns a half-height image
+// rather than an error.
 //
 // For 32-bit entries the alpha channel is authoritative and the AND mask is
 // ignored, which is what every renderer since XP does.
@@ -238,9 +233,7 @@ bool DecodeICO(const unsigned char *data, int size, int index,
 
     const unsigned char *img = data + offset;
 
-    // PNG-encoded entry. stb_image is already in this executable
-    // (Src/Orbiter/Linux/WinCodec.cpp defines STB_IMAGE_IMPLEMENTATION), so
-    // this costs no new dependency.
+    // PNG-encoded entry.
     static const unsigned char kPngSig[8] =
         { 0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n' };
     if (memcmp(img, kPngSig, 8) == 0) {
@@ -270,7 +263,7 @@ bool DecodeICO(const unsigned char *data, int size, int index,
 
     // Only the 32-bit form is decoded. Every entry in Orbiter.ico is 32-bit,
     // and a palettised icon would need the colour table and the AND mask
-    // handled together -- unsupported is better than approximated.
+    // handled together.
     if (bpp != 32) return false;
 
     const size_t need = (size_t)40 + (size_t)w * H * 4;

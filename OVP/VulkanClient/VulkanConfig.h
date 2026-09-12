@@ -5,44 +5,23 @@
 //				 2012-2016 Jarmo Nikkanen
 // ==============================================================
 //
-// CONVERTED FROM OVP/D3D9Client/D3D9Config.h, read end to end (118 lines),
-// against D3D9Config.cpp read end to end (310 lines).
+// Four D3D9Config settings are gone, because what they controlled does not
+// exist here:
 //
-// NO DIRECT3D IN EITHER FILE -- it is config-file I/O through the Orbiter
-// SDK, which is already cross-platform. Beyond the D3D9Config -> VulkanConfig
-// rename, the only change is that FOUR SETTINGS ARE GONE, because what they
-// controlled does not exist on this platform. Each was checked for its call
-// sites first, and in every case those sites are code already removed by the
-// conversion of the file that held them:
+//   Enable9On12 ("EnableDX12Wrapper")  chose Direct3DCreate9On12 over
+//       Direct3DCreate9. No D3D9, and no DX12 to run it on.
+//   DisableDriverManagement ("DisableDrvMgm")  set
+//       D3DCREATE_DISABLE_DRIVER_MANAGEMENT on CreateDevice. Vulkan has no
+//       driver-managed pool to disable, and no CreateDevice to flag.
+//   NVPerfHUD  selected D3DDEVTYPE_REF on adapter 1 for NVIDIA's PerfHUD, a
+//       Direct3D-only tool.
+//   PresentLocation  chose whether PresentScene ran at clbkDisplayFrame or at
+//       clbkRenderScene. The client never presents -- UIHost owns the only
+//       vkQueuePresentKHR -- so there is no location to choose.
 //
-//   Enable9On12 ("EnableDX12Wrapper")   selected pDirect3DCreate9On12 over
-//       Direct3DCreate9 (D3D9Client.cpp:3222, :3235, :5938). Running D3D9 on
-//       top of DX12 has no meaning where there is no D3D9 and no DX12.
-//
-//   DisableDriverManagement ("DisableDrvMgm")   set
-//       D3DCREATE_DISABLE_DRIVER_MANAGEMENT on CreateDevice
-//       (D3D9Frame.cpp:8004). Vulkan has no driver-managed resource pool to
-//       disable -- the application owns every allocation -- and there is no
-//       CreateDevice call left to pass a flag to.
-//
-//   NVPerfHUD   selected D3DDEVTYPE_REF on adapter 1 (D3D9Frame.cpp:8005,
-//       :8466) for NVIDIA's PerfHUD, a Direct3D-only tool that was already
-//       discontinued on Windows.
-//
-//   PresentLocation   chose whether PresentScene() ran at clbkDisplayFrame or
-//       at clbkRenderScene (D3D9Client.cpp:4064, :4153). The client does not
-//       present at all here: UIHost.cpp's renderFrame owns the only command
-//       buffer that reaches the swapchain and presentFrame the only
-//       vkQueuePresentKHR, so there is no location to choose between.
-//
-// A setting is dropped only when it is inexpressible, never merely unused --
-// SceneAntialias, Anisotrophy and DisableVisualHelperReadout all still mean
-// something here and all stay.
-//
-// THE CONFIG FILE IS NOW VulkanClient.cfg. It has to be: this is a different
-// client with a different set of keys, and writing the four dropped keys back
-// into a user's D3D9Client.cfg -- or silently discarding them from it -- would
-// corrupt the settings of a D3D9Client they may still run under WINE.
+// The config file is VulkanClient.cfg, not D3D9Client.cfg: writing this
+// client's key set back over a user's D3D9Client.cfg would corrupt the
+// settings of a D3D9Client they may still run under WINE.
 // ==============================================================
 
 #ifndef __VULKANCONFIG_H

@@ -4,15 +4,6 @@
 // Dual licensed under GPL v3 and LGPL v3
 // Copyright (C) 2012-2018 Peter Schneider (Kuddel)
 // ==============================================================
-//
-// CONVERTED FROM OVP/D3D9Client/OapiExtension.h, read end to end (174 lines),
-// against OapiExtension.cpp read end to end (302 lines).
-//
-// No Direct3D. Beyond the D3D9Config -> VulkanConfig rename, ONE MEMBER IS
-// GONE: LogD3D9Modules(). See OapiExtension.cpp for that and for the other
-// three changes the platform forces (the WINE probe, GetCommandLine and
-// GetFullPathName).
-// ==============================================================
 
 #ifndef __OAPIEXTENSION_H
 #define __OAPIEXTENSION_H
@@ -86,7 +77,7 @@ public:
 	 * \return Whether we run Orbiter 2010
 	 */
 	// `static const bool` in the Windows original, here and in the three
-	// accessors below. A top-level const on a BY-VALUE return has no effect --
+	// accessors below. A top-level const on a by-value return has no effect --
 	// the caller gets a copy either way -- so the compiler discards it and
 	// GCC says so (-Wignored-qualifiers). Dropped rather than suppressed: it
 	// changes nothing at any of the call sites and it stops the declaration

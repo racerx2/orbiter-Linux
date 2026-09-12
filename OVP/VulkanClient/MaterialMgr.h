@@ -4,26 +4,6 @@
 // Dual licensed under GPL v3 and LGPL v3
 // Copyright (C) 2012-2026 Jarmo Nikkanen
 // ==============================================================
-//
-// CONVERTED FROM OVP/D3D9Client/MaterialMgr.h, read end to end (90 lines).
-//
-// Per-vessel material and environment-camera overrides, read from and written
-// to a text file. Nothing here touches a graphics API; the types change:
-//
-//   D3D9Client   -> VulkanClient
-//   D3D9Mesh     -> VulkanMesh
-//   D3D9MatExt   -> VulkanMatExt   (field for field; see VulkanUtil.h)
-//   D3DXVECTOR3  -> FVECTOR3
-//
-// `#include <d3d9.h>` and `<d3dx9.h>` become `VulkanTypes.h`, which is this
-// port's counterpart of the first and has no counterpart to the second --
-// D3DX is a utility library, and what this file used from it (the vector
-// types) now comes from the SDK.
-//
-// `#include "vObject.h"` becomes `"VObject.h"`. The file on disk has always
-// been VObject.h; NTFS did not care and ext4 does. Same class as
-// `MeshMgr.cpp`'s `Meshmgr.h`.
-// ==============================================================
 
 #ifndef __MATERIALMGR_H
 #define __MATERIALMGR_H

@@ -4,16 +4,6 @@
 // Dual licensed under GPL v3 and LGPL v3
 // Copyright (C) 2007-2026 Martin Schweiger
 // ==============================================================
-//
-// CONVERTED FROM OVP/D3D9Client/RingMgr.h, read end to end (65 lines).
-//
-// Planet rings. Types only:
-//   oapi::D3D9Client        -> oapi::VulkanClient
-//   LPDIRECT3DDEVICE9       -> VulkanDevice*
-//   D3DXMATRIX              -> FMATRIX4
-//   D3D9Mesh                -> VulkanMesh
-//   LPDIRECT3DTEXTURE9      -> VulkanTexture*
-// ==============================================================
 
 #ifndef __RINGMGR_H
 #define __RINGMGR_H

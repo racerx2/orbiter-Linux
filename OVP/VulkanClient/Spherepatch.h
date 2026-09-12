@@ -8,28 +8,6 @@
 // spherepatch.h
 // Create meshes for spheres and sphere patches
 // ==============================================================
-//
-// CONVERTED FROM OVP/D3D9Client/Spherepatch.h, read end to end (47 lines).
-//
-// Four types change and nothing else does:
-//
-//   LPDIRECT3DVERTEXBUFFER9 / LPDIRECT3DINDEXBUFFER9 -> VulkanBuffer*.
-//   Vulkan has ONE buffer type; which of the two a buffer is comes from the
-//   usage flag it was created with and, at the draw, from whether it is given
-//   to vkCmdBindVertexBuffers or vkCmdBindIndexBuffer. The two pointers stay
-//   two pointers because the mesh really does hold two buffers -- see
-//   Vtxmgr and Idxmgr in VulkanCatalog.h, which allocate them.
-//
-//   LPDIRECT3DDEVICE9 -> VulkanDevice*, on all four functions. Worth knowing:
-//   NONE of them uses it. Every allocation in Spherepatch.cpp goes through
-//   the g_pVtxmgr_vb / g_pIdxmgr_ib / g_pMemgr_* managers, which carry their
-//   own device. The parameter was already vestigial on Windows and is kept
-//   because the call sites pass it.
-//
-//   D3DXVECTOR3 bsCnt -> FVECTOR3. The same three floats.
-//
-// The include guard keeps its name: it never contained D3D9.
-// ==============================================================
 
 #ifndef __SPHEREPATCH_H
 #define __SPHEREPATCH_H
@@ -61,6 +39,11 @@ struct VBMESH {
 	bool bBox;						// true if bounding box data is valid
 };
 
+// The device parameter on these functions (and on VBMESH::MapVertices) is
+// vestigial, as it already was on Windows: none of the bodies reads it. Every
+// allocation in Spherepatch.cpp goes through the g_pVtxmgr_vb / g_pIdxmgr_ib /
+// g_pMemgr_* managers, which carry their own device. It is kept because the
+// call sites pass it.
 void CreateSphere(VulkanDevice *pDev, VBMESH &mesh, DWORD nrings, bool hemisphere, int which_half, int texres);
 void CreateSpherePatch(VulkanDevice *pDev, VBMESH &mesh, int nlng, int nlat, int ilat, int res, int bseg = -1, bool reduce = true, bool outside = true, bool store_vtx = false, bool shift_origin = false);
 void ClearVBMesh (VBMESH &mesh);

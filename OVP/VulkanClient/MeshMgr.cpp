@@ -9,23 +9,10 @@
 // class MeshManager (implementation)
 // Simple management of persistent mesh templates
 // ==============================================================
-//
-// CONVERTED FROM OVP/D3D9Client/MeshMgr.cpp, read end to end (80 lines).
-//
-// A growable array of mesh templates. No Direct3D call anywhere in it. Three
-// changes:
-//
-//   D3D9Mesh -> VulkanMesh, D3D9Client -> VulkanClient.
-//
-//   D3DXVECTOR3 -> FVECTOR3, for GetGroupSize's return.
-//
-//   THE INCLUDE'S CASE. The Windows file writes `#include "Meshmgr.h"` and
-//   the file on disk is MeshMgr.h. NTFS does not care and ext4 does, so this
-//   is a hard compile error here and was invisible there. Same class as the
-//   TileMgr2.h / Tilemgr2.h correction in Spherepatch.cpp; see
-//   the porting notes.
-// ==============================================================
 
+// The Windows file spells this include "Meshmgr.h" while the file on disk is
+// MeshMgr.h -- invisible on NTFS, a hard compile error on a case-sensitive
+// filesystem.
 #include "MeshMgr.h"
 
 using namespace oapi;

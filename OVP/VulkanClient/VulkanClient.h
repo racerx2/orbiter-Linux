@@ -1,72 +1,20 @@
-// ==============================================================
-// VulkanClient.h
-// Part of the ORBITER VISUALISATION PROJECT (OVP)
-// Dual licensed under GPL v3 and LGPL v3
-// Copyright (C) 2006-2026 Martin Schweiger
-//				 2012-2016 Jarmo Nikkanen
-// ==============================================================
+// The client class is an oapi::GraphicsClient override set and that API is
+// already cross-platform, so most of this file is signatures that do not
+// change. What changed:
 //
-// CONVERTED FROM OVP/D3D9Client/D3D9Client.h, read end to end (1485 lines).
+//  - The resource types: LPDIRECT3DDEVICE9 -> VulkanDevice*,
+//    LPDIRECT3DTEXTURE9 and LPDIRECT3DSURFACE9 -> VulkanTexture* (a Vulkan
+//    render target is an image like any other), LPD3DXMATRIX -> FMATRIX4*,
+//    D3DCAPS9 -> VkPhysicalDeviceProperties.
 //
-// The client class itself is an oapi::GraphicsClient override set, and the
-// GraphicsClient API is already cross-platform -- so most of this file is
-// signatures that do not change and the SDK documentation that goes with
-// them. What changed:
+//  - class RenderState is gone; see the note at the foot of this file.
 //
-//  1. THE DEVICE AND RESOURCE TYPES, per the tree-wide mapping:
-//     LPDIRECT3DDEVICE9 -> VulkanDevice*, LPDIRECT3DTEXTURE9 ->
-//     VulkanTexture*, LPDIRECT3DSURFACE9 -> VulkanTexture* (a Vulkan render
-//     target is an image like any other; D3D9's separate surface interface
-//     has no counterpart), LPD3DXMATRIX -> FMATRIX4*, D3DCAPS9 ->
-//     VkPhysicalDeviceProperties, CD3DFramework9 -> CVulkanFramework.
+//  - IsLimited() is always false; g_pD3DObject is gone, the VkInstance coming
+//    from the core's context; and so are the _MSC_VER <fstream.h> branch and
+//    the NVAPI stereo handle, which has no Linux counterpart.
 //
-//  2. class RenderState IS GONE, and this is the largest single removal in
-//     the file. It captured thirteen pieces of D3D9 device render state --
-//     ALPHABLENDENABLE, ZENABLE, ZWRITEENABLE, CULLMODE, COLORWRITEENABLE,
-//     SCISSORTESTENABLE, FILLMODE, STENCILENABLE, ALPHATESTENABLE, BLENDOP,
-//     SRCBLEND, DESTBLEND and the scissor rect -- so that the Sketchpad could
-//     restore them after drawing over a scene. It is used twice, both in
-//     D3D9Pad.cpp.
-//
-//     VULKAN HAS NO DEVICE RENDER STATE. Every one of those thirteen except
-//     the scissor rect is immutable pipeline state, fixed when the
-//     VkPipeline is created; the scissor and viewport are dynamic state set
-//     per command buffer. A draw cannot inherit or corrupt another draw's
-//     state, because a draw brings its own pipeline. There is nothing to
-//     capture and nothing to restore, so VulkanPad simply binds the pipeline
-//     it needs.
-//
-//     Worth recording, because it says the removal is safe rather than
-//     merely convenient: D3D9Frame.cpp sets D3DCREATE_PUREDEVICE
-//     unconditionally (Pure = true in Clear(), never cleared anywhere in the
-//     file), and a pure device FAILS GetRenderState. So on Windows this class
-//     was already capturing nothing and restoring nothing, thirteen logged
-//     HR errors at a time.
-//
-//  3. IsLimited() IS ALWAYS false. It asked whether the hardware has only
-//     conditional non-power-of-two texture support
-//     (D3DPTEXTURECAPS_POW2 && NONPOW2CONDITIONAL). Vulkan core requires full
-//     NPOT support of every conforming implementation, so the condition
-//     cannot arise. Kept as a function because callers ask.
-//
-//  4. g_pD3DObject IS GONE. The VkInstance comes from the core's context; see
-//     VulkanFrame.h.
-//
-//  5. GetBackBuffer()/GetDepthStencil() RETURN CLIENT IMAGES, NOT THE
-//     SWAPCHAIN'S. The client does not own the swapchain image and never
-//     acquires or presents one -- UIHost.cpp does both. See VulkanFrame.h.
-//
-//  6. THE _MSC_VER FSTREAM BRANCH IS GONE. It selected <fstream.h> for
-//     pre-2003 MSVC. <fstream> is correct everywhere this builds.
-//
-//  7. THE NVAPI STEREO HANDLE IS GONE. It sat behind #ifdef _NVAPI_H, which
-//     is never defined in this tree, and NVAPI is a Windows-only Direct3D
-//     library with no Linux counterpart.
-//
-// WindowMgr.h, which this includes, needed NO CHANGES AT ALL -- it is pure
-// Win32 GDI and gcGUI, and compiles against Src/Orbiter/Linux/windows.h as
-// written. Checked by compiling it, not by reading it hopefully.
-// ==============================================================
+//  - GetBackBuffer()/GetDepthStencil() return client images, not the
+//    swapchain's: the client never acquires or presents a swapchain image.
 
 #ifndef __VULKANCLIENT_H
 #define __VULKANCLIENT_H
@@ -314,22 +262,17 @@ public:
 	/**
 	 * \brief Write surface to file (sub-function of \ref clbkSaveSurfaceToImage)
 	 *
-	 * Was (const D3DSURFACE_DESC*, D3DLOCKED_RECT&, ...). A D3DSURFACE_DESC is
-	 * format, type, usage, pool, multisample settings, width and height; a
-	 * D3DLOCKED_RECT is a mapped pointer plus a row pitch. Vulkan splits those
-	 * across VkImageCreateInfo, the memory allocation and vkGetImageSubresourceLayout,
-	 * and the client already carries the assembled facts in VulkanTexture --
-	 * so the description is the texture itself, and the mapped bits and pitch
-	 * are passed alongside as what they are.
+	 * Was (const D3DSURFACE_DESC*, D3DLOCKED_RECT&, ...). Vulkan splits what
+	 * those two carried across VkImageCreateInfo, the memory allocation and
+	 * vkGetImageSubresourceLayout, and VulkanTexture already holds the
+	 * assembled facts -- so the description is the texture itself, and the
+	 * mapped bits and pitch are passed alongside.
 	 *
-	 * THE SIZE IS A PARAMETER AGAIN, and that is the reference's shape rather
-	 * than a departure from it: the Windows body reads desc->Width and
-	 * desc->Height out of the D3DSURFACE_DESC it is handed, never out of a
-	 * texture. It matters for the back-buffer case, where the pixels come
-	 * from orbiter_CaptureBackBuffer and the SurfNative standing in for the
-	 * back buffer is a proxy whose recorded size was fixed at session start
-	 * -- a window resize would otherwise write a JPEG of the wrong dimensions
-	 * out of a correctly captured frame.
+	 * The size stays a parameter, as in the reference, and it matters for the
+	 * back-buffer case: the pixels come from orbiter_CaptureBackBuffer while
+	 * the SurfNative standing in for it is a proxy whose recorded size was
+	 * fixed at session start, so a window resize would otherwise write a JPEG
+	 * of the wrong dimensions out of a correct capture.
 	 *
 	 * \param pTex source texture (format description; may be the back-buffer proxy)
 	 * \param pBits mapped pixel data
@@ -922,11 +865,8 @@ public:
 	inline bool			IsControlPanelOpen() const { return bControlPanel; }
 	inline bool 		IsRunning() const { return bRunning; }
 
-	// Was (pCaps->TextureCaps & D3DPTEXTURECAPS_POW2) &&
-	//     (pCaps->TextureCaps & D3DPTEXTURECAPS_NONPOW2CONDITIONAL)
-	// -- "this card only does non-power-of-two textures under conditions".
-	// Vulkan requires full NPOT support of every conforming implementation,
-	// so the condition cannot arise. Kept because callers ask.
+	// Was a D3DPTEXTURECAPS_POW2 / NONPOW2CONDITIONAL test. Vulkan requires
+	// full non-power-of-two support of every conforming implementation.
 	inline bool			IsLimited() const { return false; }
 
 	const FMATRIX4 *	GetIdentity() const { return &ident; }
@@ -939,15 +879,9 @@ public:
 	const void *		GetConfigParam (DWORD paramtype) const;
 	bool				RegisterRenderProc(__gcRenderProc proc, DWORD id, void *pParam = NULL);
 	bool				RegisterGenericProc(__gcGenericProc proc, DWORD id, void *pParam = NULL);
-	// const FMATRIX4* rather than LPD3DXMATRIX. The Windows parameters were
-	// LPD3DXMATRIX -- non-const -- and every caller passed Scene's
-	// GetViewMatrix()/GetProjectionMatrix(), whose `const LPD3DXMATRIX`
-	// return type is a const POINTER to a NON-const matrix and which cast the
-	// const off their own members to produce it. Scene.h drops those three
-	// casts and returns `const FMATRIX4 *`, which is what the callers
-	// actually want; this signature follows, since nothing here writes
-	// through either pointer and the callback (__gcRenderProc) is handed
-	// neither.
+	// const FMATRIX4* rather than LPD3DXMATRIX. `const LPD3DXMATRIX` is a
+	// const pointer to a non-const matrix, and Scene cast the const off its own
+	// members to produce one; Scene.h now returns const FMATRIX4 * instead.
 	void				MakeRenderProcCall(Sketchpad *pSkp, DWORD id, const FMATRIX4 *pV, const FMATRIX4 *pP);
 	void				MakeGenericProcCall(DWORD id, int iUser, void *pUser) const;
 	bool				IsGenericProcEnabled(DWORD id) const;
@@ -958,31 +892,15 @@ public:
 
 	// hMainThread = GetCurrentThread(), carried across verbatim.
 	//
-	// GetCurrentThread() returns a PSEUDO-HANDLE -- the constant (HANDLE)-2,
-	// meaning "whichever thread is asking" -- not a handle identifying a
-	// particular thread. So both users compare that constant against itself:
-	//
-	//   D3D9Client.cpp:3130   if (GetCurrentThread() != hMainThread)  never true
-	//   D3D9Surface.cpp:494   assert(GetCurrentThread() == ...)       never fails
-	//
-	// Two thread-affinity guards that have never caught anything, and CANNOT.
-	//
-	// AN EARLIER VERSION OF THIS PORT "FIXED" THEM, and that was a mistake
-	// worth recording. It reasoned that both were asking "am I on the main
-	// thread", which is a question about thread IDs, and so returned a real
-	// one from GetCurrentThreadId(). That makes the guards LIVE on Linux and
-	// only on Linux: Src/Orbiter/Linux/Platform.cpp implements
-	// GetCurrentThreadId over pthread_self, so the surface assert fails for
-	// every surface built off the main thread -- which is exactly what
-	// TileLoader::Load_ThreadProc does on every tile it loads -- and the
-	// Sketchpad guard can reach HALT() from a worker thread. A dormant
-	// Windows check became a Linux-only abort.
-	//
-	// So the shim grew GetCurrentThread() returning the same pseudo-handle
-	// Windows returns (see Src/Orbiter/Linux/windows.h), and this is the
-	// reference's accessor unchanged. The guards stay dead here exactly as
-	// they are dead there. Repairing them is a change to the client, not a
-	// conversion of it, and belongs in a separate decision.
+	// GetCurrentThread() returns a pseudo-handle -- the constant (HANDLE)-2,
+	// "whichever thread is asking" -- so both users compare that constant
+	// against itself and neither thread-affinity guard can ever fire. An
+	// earlier version of this port returned a real id from GetCurrentThreadId()
+	// instead, which makes the guards live on Linux and only on Linux: the
+	// surface assert then fails for every surface built off the main thread,
+	// which is what TileLoader::Load_ThreadProc does on every tile it loads.
+	// So the shim grew GetCurrentThread(), and the guards stay dead here
+	// exactly as they are dead there.
 	HANDLE				GetMainThread() const { return hMainThread; }
 
 
@@ -1128,8 +1046,7 @@ public:
 	bool OutputLoadStatus (const char *msg, int line);
 
 private:
-	// The scene hook the host calls back on. See the long note above
-	// RenderSceneWork in VulkanClient.cpp: the only command buffer that
+	// The scene hook the host calls back on. The only command buffer that
 	// reaches the swapchain exists for the duration of this callback, so the
 	// whole of what the reference does in clbkRenderScene happens here.
 	static void SceneRenderThunk(void *cmdBuf, void *renderPass,
@@ -1151,17 +1068,11 @@ private:
 	lpSurfNative			pDefaultTex;
 	lpSurfNative			pScatterTest;
 	VulkanTexture *			pNoiseTex;
-	// WERE LPDIRECT3DSURFACE9 FROM CreateOffscreenPlainSurface; THEY ARE
-	// CLIENT SURFACES NOW, AND HAVE TO BE.
-	//
-	// The two splash-screen surfaces are written with GDI -- SplashScreen()
-	// and OutputLoadStatus() both do GetDC / TextOut / ReleaseDC on them --
-	// and drawn to the screen with StretchRect. A bare VulkanTexture answers
-	// neither: GetDC is SurfNative's (see VulkanSurface.h on why it exists at
-	// all here), and the blit has to go through the Sketchpad because the
-	// back buffer is an attachment proxy with no image. A SurfNative is
-	// exactly the object that has both, so these become client surfaces
-	// rather than raw images. Everything else about their use is unchanged.
+	// Were LPDIRECT3DSURFACE9 from CreateOffscreenPlainSurface. The two splash
+	// surfaces are written with GDI -- GetDC / TextOut / ReleaseDC -- and
+	// blitted to the screen, and a bare VulkanTexture answers neither: GetDC
+	// is SurfNative's, and the blit has to go through the Sketchpad because
+	// the back buffer is an attachment proxy with no image.
 	lpSurfNative			pSplashScreen;
 	lpSurfNative			pTextScreen;
 	VulkanTexture *			pBackBuffer;
@@ -1210,18 +1121,12 @@ private:
 	HFONT hLblFont1;
 	HFONT hLblFont2;
 
-	// THE COUNTERPART OF CD3DFramework9's pLargeFont, MOVED HERE.
-	//
-	// The framework created two LPD3DXFONTs and handed them out with
-	// GetLargeFont()/GetSmallFont(). D3DXCreateFontIndirect wraps GDI glyph
-	// rasterisation, and Src/Orbiter/Linux/Gdi.cpp is a display-list RECORDER
-	// rather than a rasteriser -- there are no glyph pixels to blit -- so
-	// neither survives as a D3DX font. The small one was never used at all.
-	// The large one has exactly three call sites, all in
-	// VulkanClient::clbkRenderScene's debug overlay ("Record", "Replay",
-	// "Frozen"), so it becomes an ordinary client font drawn through the
-	// client's own Sketchpad, with the same parameters the framework asked
-	// D3DX for: 30px, bold, Arial.
+	// The counterpart of CD3DFramework9's pLargeFont, moved here.
+	// D3DXCreateFontIndirect wraps GDI glyph rasterisation and
+	// Src/Orbiter/Linux/Gdi.cpp records display lists rather than rasterising,
+	// so there are no glyph pixels to blit. The small font was never used; the
+	// large one's three call sites are all in clbkRenderScene's debug overlay,
+	// so it becomes an ordinary client font at the same 30px bold Arial.
 	oapi::Font *pOverlayFont;
 
 	char pLoadLabel[128];
@@ -1293,26 +1198,17 @@ protected:
 
 
 // ======================================================================
-// class RenderState DID NOT CONVERT.
+// class RenderState did not convert.
 //
-// It stood here, capturing thirteen pieces of D3D9 device render state with
-// GetRenderState so that the Sketchpad could put them back after drawing over
-// a scene, and it is used twice, both in D3D9Pad.cpp.
+// It captured thirteen pieces of D3D9 device render state with GetRenderState
+// so the Sketchpad could put them back after drawing over a scene. Vulkan has
+// no device render state to capture: eleven of the thirteen are immutable
+// VkPipeline state and the scissor pair is dynamic state set per command
+// buffer, so a draw cannot inherit another draw's state.
 //
-// Vulkan has no device render state to capture. ALPHABLENDENABLE, ZENABLE,
-// ZWRITEENABLE, CULLMODE, COLORWRITEENABLE, FILLMODE, STENCILENABLE,
-// ALPHATESTENABLE, BLENDOP, SRCBLEND and DESTBLEND are all immutable
-// VkPipeline state, fixed at pipeline creation; SCISSORTESTENABLE and the
-// scissor rect are dynamic state set per command buffer. A draw cannot
-// inherit another draw's state because a draw brings its own pipeline, so
-// there is nothing to save and nothing to restore -- VulkanPad binds the
-// pipeline it wants.
-//
-// And the Windows version was already inert: D3D9Frame.cpp sets
-// D3DCREATE_PUREDEVICE unconditionally (Pure = true in Clear(), never
-// cleared), and a pure device fails GetRenderState. Capture() was logging
-// thirteen HR errors and storing nothing; Restore() was putting that nothing
-// back.
+// The Windows version was inert in any case: D3D9Frame.cpp sets
+// D3DCREATE_PUREDEVICE unconditionally, and a pure device fails
+// GetRenderState -- Capture() logged thirteen HR errors and stored nothing.
 // ======================================================================
 
 #endif // !__VULKANCLIENT_H

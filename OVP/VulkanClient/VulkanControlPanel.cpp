@@ -5,39 +5,8 @@
 // Copyright (C) 2012-2026 Jarmo Nikkanen
 // ===========================================================================================
 //
-// CONVERTED FROM OVP/D3D9Client/D3D9ControlPanel.cpp, read end to end (351 lines).
-//
 // The debug statistics overlay: a full-screen Sketchpad page of surface, mesh
 // and tile counters, and a stacked bar showing where the frame's time went.
-// Almost all of it is arithmetic over the client's own counters drawn through
-// the Sketchpad, so it converts line for line. Four things are worth knowing.
-//
-//  1. <psapi.h> IS NOT A DIRECT3D HEADER, and it did not need reimplementing:
-//     Src/Orbiter/Linux/psapi.h already answers GetProcessMemoryInfo, for
-//     Src/Orbiter/Memstat.h. What it did NOT carry is
-//     PROCESS_MEMORY_COUNTERS_EX -- the extended form -- and PrivateUsage is
-//     an EX-only field. That is the one addition this file forced; the
-//     reasoning is in psapi.h beside the structure.
-//
-//  2. GetAvailableTextureMem() HAS NO EXACT COUNTERPART. D3D9 reported what
-//     was FREE; core Vulkan reports only what EXISTS. See
-//     VulkanDevice::GetLocalMemorySize -- the total size of the device-local
-//     heaps, which is an upper bound rather than the same number, and the
-//     label above it now says so.
-//
-//  3. D3DPOOL_DEFAULT BECAME !HostVisible, which is the same question asked
-//     the other way round. D3DPOOL_DEFAULT meant "this lives in device
-//     memory" and D3DPOOL_SYSTEMMEM meant "the CPU can reach it"; Vulkan has
-//     one property where D3D9 had a pool enumeration, and SurfNative already
-//     carries it. See VulkanSurface.h.
-//
-//  4. THE TWO ARGB TESTS IN TextureSizeInBytes COLLAPSE INTO ONE, and that is
-//     the only place in this file where a mechanical rename would have been
-//     silently wrong. See the note on that function.
-//
-// NOT CONVERTED, because it needed nothing: everything that draws. The
-// Sketchpad, the pen, the brush and the fonts are oapi:: types the SDK
-// defines, and the whole page is Text/Rectangle/SetFont calls against them.
 // ===========================================================================================
 
 
@@ -47,13 +16,10 @@
 #include "VulkanConfig.h"
 #include "VulkanClient.h"
 #include "VulkanSurface.h"
-// NOT IN THE WINDOWS INCLUDE LIST, and it has to be here. DrawTimeBar builds
-// a VulkanPadBrush, which on Windows arrived transitively: D3D9Surface.h
-// includes D3D9Pad.h. The converted D3D9Surface.h does not -- it forward-
-// declares VulkanPad instead, because D3D9Pad.h includes D3D9Surface.h back
-// and the cycle only survives on MSVC's include guards. So the file that uses
-// the type names it. Same finding as VPlanetAtmo.cpp's "Scene.h" and
-// TileMgr.cpp's.
+// Not in the Windows include list. DrawTimeBar builds a VulkanPadBrush, which
+// on Windows arrived transitively through D3D9Surface.h -> D3D9Pad.h; the
+// converted VulkanSurface.h forward-declares VulkanPad instead, because that
+// include cycle only survives on MSVC's guards.
 #include "VulkanPad.h"
 #include "VulkanCatalog.h"
 #include "Mesh.h"
@@ -66,28 +32,18 @@ using namespace oapi;
 
 
 // -------------------------------------------------------------------------------------------
-// Was TextureSizeInBytes(LPDIRECT3DTEXTURE9).
-//
 // GetLevelDesc(0, &desc) asked the runtime what the texture is; a VkImage
-// answers no such question, so the client's own record is read instead --
-// VulkanTexture::Desc(), which is what it was created with. GetLevelCount()
-// is Mips().
+// answers no such question, so the client's own record is read instead.
 //
-// THE TWO ARGB LINES BECOME ONE, and this is the trap the file header names.
-// D3DFMT_A8R8G8B8 and D3DFMT_X8R8G8B8 are different D3D formats but ONE
-// Vulkan format -- VK_FORMAT_B8G8R8A8_UNORM -- because "X8" only ever meant
-// "there is an alpha channel and I am ignoring it". Renaming both lines
-// mechanically would leave two identical tests, and a 32-bit surface would be
-// shifted left twice: sixteen bytes per pixel instead of four.
+// The two ARGB lines become one. D3DFMT_A8R8G8B8 and D3DFMT_X8R8G8B8 are
+// different D3D formats but one Vulkan format, VK_FORMAT_B8G8R8A8_UNORM,
+// because "X8" only meant "alpha present, ignored". Renaming both lines
+// mechanically would leave two identical tests, shifting a 32-bit surface
+// left twice: sixteen bytes per pixel instead of four.
 //
-// D3DFMT_A4R4G4B4 is dropped rather than mapped, on the decision already
-// recorded at SurfNative::StaticFormatSizeInBytes: nothing in this client
-// produces it. The remaining spellings are that same table's, deliberately --
-// two size tables that disagree is exactly how this file would rot.
-//
-// The function has NO CALLER anywhere in the tree; SurfNative::GetSizeInBytes
-// is what the panel below actually uses. Converted rather than deleted, on
-// the same principle as CSphereManager::CreateDeviceObjects.
+// D3DFMT_A4R4G4B4 is dropped rather than mapped -- nothing in this client
+// produces it. The remaining spellings match SurfNative::StaticFormatSizeInBytes
+// on purpose; two size tables that disagree is how this file would rot.
 // -------------------------------------------------------------------------------------------
 
 DWORD TextureSizeInBytes(VulkanTexture *pTex)
@@ -96,7 +52,7 @@ DWORD TextureSizeInBytes(VulkanTexture *pTex)
 	DWORD lev = pTex->Mips();
 	DWORD size = desc.Height*desc.Width;
 	if (desc.Format==VK_FORMAT_BC1_RGBA_UNORM_BLOCK) size=size>>1;
-	if (desc.Format==VK_FORMAT_B8G8R8A8_UNORM) size=size<<2;		// A8R8G8B8 AND X8R8G8B8
+	if (desc.Format==VK_FORMAT_B8G8R8A8_UNORM) size=size<<2;		// A8R8G8B8 and X8R8G8B8
 	if (desc.Format==VK_FORMAT_R5G6B5_UNORM_PACK16) size=size<<1;
 	if (desc.Format==VK_FORMAT_R8G8B8_UNORM) size=size*3;
 
@@ -159,18 +115,17 @@ void VulkanClient::DrawTimeBar(double t, double s, double f, DWORD color, const 
 void VulkanClient::RenderControlPanel()
 {
 	static std::map<DWORD, DWORD> TileBuf;
-	// Two label tables that nothing in the function reads -- left over from
-	// rows this panel no longer prints. GCC reports them under
-	// -Wunused-variable and MSVC does not; commented out in place rather than
-	// deleted, so the reference's own lines stay visible. Finding 35's family.
+	// Two label tables nothing in the function reads. GCC reports them under
+	// -Wunused-variable; MSVC does not. Commented out in place rather than
+	// deleted, so the reference's own lines stay visible.
 	// static const char *OnOff[]={"Off","On"};
 	// static const char *SkpU[]={"Auto","GDI"};
 
 	VulkanDevice *dev = pDevice;
 
-	// PROCESS_MEMORY_COUNTERS_EX and the cast are the Windows call unchanged.
-	// GetProcessMemoryInfo fills whichever of the two structures it is given
-	// and tells them apart by the byte count, on both platforms. See psapi.h.
+	// Src/Orbiter/Linux/psapi.h already answered GetProcessMemoryInfo, but
+	// carried only the plain counters structure. PrivateUsage is an _EX field,
+	// so the extended form was added there for this call.
 	PROCESS_MEMORY_COUNTERS_EX memstats;
 	memstats.cb = sizeof(PROCESS_MEMORY_COUNTERS_EX);
 	GetProcessMemoryInfo(GetCurrentProcess(), (PPROCESS_MEMORY_COUNTERS)&memstats, sizeof(memstats));
@@ -193,18 +148,15 @@ void VulkanClient::RenderControlPanel()
 	
 	pItemsSkp->SetTextColor(0x00FF00);
 	pItemsSkp->SetFont(largef);
-	// The client's own name, so it follows the rename -- and the length with
-	// it. Sketchpad::Text takes an EXPLICIT character count, 21 for
-	// "D3D9Client Statistics"; "VulkanClient Statistics" is 23, and leaving
-	// the 21 would have printed "VulkanClient Statisti" with nothing to say
-	// it had been cut.
+	// Sketchpad::Text takes an explicit character count: 21 for "D3D9Client
+	// Statistics", 23 for the new name. Leaving the 21 would silently print
+	// "VulkanClient Statisti".
 	pItemsSkp->Text(20,70,"VulkanClient Statistics",23);
 	pItemsSkp->SetFont(smallf);
 	LabelPos = 130;
 	
 	// Zeroed and never touched again -- the loop below counts plain textures
-	// into textr_*, not these. Two more of finding 35, and the same
-	// treatment: commented out, reference line left readable.
+	// into textr_*, not these. Commented out for -Wunused-variable.
 	// DWORD plain_count = 0, plain_size = 0;
 	DWORD textr_count = 0, textr_size = 0;
 	DWORD rendt_count = 0, rendt_size = 0;
@@ -217,10 +169,9 @@ void VulkanClient::RenderControlPanel()
 
 	for (auto pSurf : SurfaceCatalog)
 	{
-		// Was desc.Pool == D3DPOOL_DEFAULT -- "does this live in device
-		// memory". D3DPOOL_DEFAULT and D3DPOOL_SYSTEMMEM are the only two
-		// pools the client ever asks for, so the enumeration is one boolean
-		// here and the test is its negation. See VulkanSurface.h.
+		// Was desc.Pool == D3DPOOL_DEFAULT, "does this live in device memory".
+		// DEFAULT and SYSTEMMEM are the only pools the client ever asks for,
+		// so the enumeration is one boolean here and the test is its negation.
 		if (!pSurf->desc.HostVisible) {
 			if (pSurf->IsRenderTarget()) {	
 				if (pSurf->IsTexture()) {
@@ -243,16 +194,10 @@ void VulkanClient::RenderControlPanel()
 		}
 	}
 
-	// %lu against SIZE_T is right here and was not on Windows: SIZE_T is
-	// size_t, which is 'unsigned long' on this platform and 'unsigned long
-	// long' on Win64, where %lu reads only the low four bytes. Left as
-	// written because it is correct as written HERE.
 	Label("Application Size.....: %lu MB", memstats.PrivateUsage >> 20);
-	// Was dev->GetAvailableTextureMem(), which reported FREE video memory.
-	// There is no such query in core Vulkan -- see
-	// VulkanDevice::GetLocalMemorySize -- so this is the total device-local
-	// heap size, and the label says which. The DWORD cast keeps the Windows
-	// argument type, since GetLocalMemorySize returns a 64-bit VkDeviceSize.
+	// Was dev->GetAvailableTextureMem(), which reported *free* video memory.
+	// Core Vulkan has no such query, so this is the total device-local heap
+	// size -- a different number, and the label now says so.
 	Label("Video memory (total).: %u MB", DWORD(dev->GetLocalMemorySize()>>20));
 	Label("Surface Handles......: %lu", nSurf);
 	Label("SystemMem Surfaces...: %u (%u MB)", sysme_count, sysme_size>>20);

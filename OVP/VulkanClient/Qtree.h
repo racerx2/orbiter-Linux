@@ -8,24 +8,13 @@
 // qtree.h
 // Quad-tree framework for planet render engines
 // ==============================================================
-//
-// CONVERTED FROM OVP/D3D9Client/Qtree.h, read end to end (157 lines).
-// NOTHING CHANGED, and the file is listed here so that is on the record
-// rather than assumed.
-//
-// It is a template with no includes at all: no Direct3D type, no Win32 call,
-// no D3DX helper. The one Microsoft spelling in it is _ASSERT, which the
-// shim already defines as assert() -- Src/Orbiter/Linux/windows.h:2457, and
-// like the debug CRT's it compiles away under NDEBUG. Everything else is
-// pointers, new and delete.
-//
-// It has no includes because it does not stand alone: T must have SetNode,
-// PreDelete and Level, and NULL and _ASSERT must already be declared. The
-// includer supplies all of that -- Tilemgr2.h, through VulkanClient.h.
-// ==============================================================
 
 #ifndef __QTREE_H
 #define __QTREE_H
+
+// This template has no includes because it does not stand alone: T must supply
+// SetNode, PreDelete and Level, and NULL and _ASSERT must already be declared.
+// The includer provides all of it -- Tilemgr2.h, through VulkanClient.h.
 
 template<typename T>
 class QuadTreeNode {
@@ -76,9 +65,8 @@ private:
 // The initialiser list is written in declaration order: `entry` is declared
 // before `parent`, so the Windows spelling `parent(_parent), entry(_entry)`
 // initialises them in an order the list does not show. Harmless here --
-// neither initialiser reads the other member -- but it is the twelfth
-// instance of the class in this client and GCC's -Wreorder is inside -Wall.
-// Note it only fires where the template is INSTANTIATED, which is why this
+// neither initialiser reads the other member -- but GCC's -Wreorder is inside
+// -Wall. It only fires where the template is instantiated, which is why this
 // header passed its standalone check.
 template<typename T>
 QuadTreeNode<T>::QuadTreeNode (QuadTreeNode<T> *_parent, T *_entry):

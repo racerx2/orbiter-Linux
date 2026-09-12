@@ -1,10 +1,6 @@
 // Linux <ddraw.h> — DirectDraw types, no runtime.
 //
-// Src/Orbiter/D3dmath.h includes this. The only DirectDraw name reachable
-// from here is LPDIRECTDRAWSURFACE7, which d3dtypes.h already forward-declares
-// as a pointer to an undefined struct, so this header only has to forward.
-//
-// Kept as a separate file rather than aliased to d3dtypes.h so that the
+// Kept as a separate file rather than folded into d3dtypes.h so that the
 // include graph on Linux mirrors the Windows one.
 
 #ifndef ORBITER_LINUX_DDRAW_H
@@ -19,11 +15,11 @@
 // DirectDraw return codes referenced by error-checking macros.
 #define DD_OK      0
 
-// Src/Orbiter/Log.cpp maps these to strings in LogOut_DDErr for diagnostics.
-// The values are the SDK's: MAKE_DDHRESULT(n) = 0x88760000 | n, except for the
-// handful that alias standard COM codes. They only ever reach a log line here,
-// but keeping the real numbers means a code copied from a Windows bug report
-// still resolves to the same name.
+// Log.cpp maps these to strings in LogOut_DDErr. The values are the SDK's:
+// MAKE_DDHRESULT(n) = 0x88760000 | n, except for the handful that alias
+// standard COM codes. They only ever reach a log line here, but keeping the
+// real numbers means a code copied from a Windows bug report still resolves to
+// the same name.
 #define MAKE_DDHRESULT(code) ((HRESULT)(0x88760000 | (code)))
 
 #define DDERR_GENERIC                       E_FAIL
@@ -152,10 +148,10 @@
 struct _DDCAPS;
 typedef struct _DDCAPS DDCAPS, *LPDDCAPS;
 
-// Surface and pixel format descriptors. Src/Orbiter/Texture.{h,cpp} uses these
-// when loading DDS textures: the fields carry image dimensions and the
-// compressed-format FourCC, both of which are read from the file header, so
-// the layouts here match the DirectDraw SDK.
+// Surface and pixel format descriptors. Texture.{h,cpp} uses these when
+// loading DDS textures: the fields carry image dimensions and the
+// compressed-format FourCC, both read straight from the file header, so the
+// layouts here match the DirectDraw SDK.
 
 typedef struct _DDPIXELFORMAT {
     DWORD dwSize;
@@ -202,12 +198,11 @@ typedef struct _DDCOLORKEY {
     DWORD dwColorSpaceHighValue;
 } DDCOLORKEY, *LPDDCOLORKEY;
 
-// DUMMYUNIONNAMEN is the Windows SDK's way of naming the anonymous unions in
-// these structures when NONAMELESSUNION is defined, and of expanding to
-// nothing when it is not. The unions above are written unnamed here, so the
-// second behaviour is the right one -- and the client's own copy of
-// DDSURFACEDESC2 (OVP/VulkanClient/Texture.cpp) spells its unions with this
-// macro, which is why it has to exist rather than simply not be used.
+// The SDK's way of naming the anonymous unions in these structures when
+// NONAMELESSUNION is defined, and of expanding to nothing when it is not. The
+// unions above are written unnamed, so the empty expansion is the right one;
+// the macro has to exist anyway because a client's own copy of DDSURFACEDESC2
+// spells its unions with it.
 #ifndef DUMMYUNIONNAMEN
 #define DUMMYUNIONNAMEN(n)
 #endif
@@ -309,10 +304,9 @@ typedef struct IDirectDraw7 *LPDIRECTDRAW7;
 #define DDCKEY_SRCBLT      0x00000008
 #define DDCKEY_SRCOVERLAY  0x00000010
 
-// Surfaces are handles as far as the core is concerned, but OrbiterAPI.cpp
-// calls SetColorKey on one when a vessel sets a transparent panel colour, so
-// the interface needs that method. Pure virtual for the same reason as the
-// Direct3D device: vtable dispatch, no bodies required to link the callers.
+// Surfaces are opaque handles as far as the core is concerned, but
+// OrbiterAPI.cpp calls SetColorKey on one when a vessel sets a transparent
+// panel colour, so the interface needs real methods.
 struct IDirectDrawSurface7 {
     virtual ULONG   Release     () = 0;
     virtual HRESULT SetColorKey (DWORD flags, LPDDCOLORKEY key) = 0;

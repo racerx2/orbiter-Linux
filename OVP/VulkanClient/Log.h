@@ -15,25 +15,6 @@
 // LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 // IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 // =================================================================================================================================
-//
-// CONVERTED FROM OVP/D3D9Client/Log.h, read end to end (73 lines), against
-// Log.cpp read end to end (490 lines).
-//
-// THIS FILE CONTAINS NO DIRECT3D AT ALL, and neither does its .cpp. The only
-// changes here are the D3D9 -> Vulkan renames the tree-wide rule requires:
-// D3D9Time, D3D9DebugLog, D3D9DebugLogVec, D3D9InitLog, D3D9CloseLog,
-// D3D9GetTime, D3D9SetTime and D3D9DebugQueue.
-//
-// Everything the implementation touches that looks like Win32 is already in
-// Src/Orbiter/Linux/windows.h -- read there rather than assumed:
-// CRITICAL_SECTION with all four of its functions (:2424-2456),
-// QueryPerformanceFrequency/Counter over LARGE_INTEGER (:2465-2493),
-// GetCurrentThreadId (:1167), DebugBreak as raise(SIGTRAP) (:2508),
-// _vsnprintf_s (:2519), fprintf_s (:2527), fopen_s (:1255), sprintf_s,
-// strcpy_s and strcat_s in both the explicit-size and array-deducing forms,
-// ARRAYSIZE (:1565), lstrlen (:1213), MessageBoxA (:671) and __int64 (:160).
-// So the logger crosses as written.
-// =================================================================================================================================
 #ifndef __LOGGING_H
 #define __LOGGING_H
 

@@ -13,42 +13,17 @@
 // Implemented as transparent overlay on planetary disc
 // ============================================================================
 //
-// CONVERTED FROM OVP/D3D9Client/HazeMgr.cpp, read end to end (530 lines).
+// Two changes here propagated into the layers underneath. HazeManager::Render
+// draws the inner haze ring with the winding reversed (D3DRS_CULLMODE =
+// D3DCULL_CW), which VulkanEffectFile::PassOverride could not express while its
+// cull field was a bool -- hence the three-valued cullMode. And ShaderClass
+// gained SetTopology, because HazeManager2's draws are triangle strips where
+// ShaderClass built every pipeline as a triangle list: topology is baked into a
+// VkPipeline, so it has to be known before the bind.
 //
-// TWO CLASSES, TWO DIFFERENT DRAW PATHS, and both needed something added to
-// the layers underneath. The colour arithmetic -- the sunset ramp in
-// HazeManager::Render, the sky-dome and ring geometry in HazeManager2 --
-// converts line for line and is not mentioned again below.
-//
-//   1. D3DRS_CULLMODE = D3DCULL_**CW**. HazeManager::Render draws the inner
-//      haze ring with the winding reversed and puts CCW back afterwards.
-//      VulkanEffectFile::PassOverride carried a BOOLEAN `cullNone`, which
-//      cannot say "CW", so it became a three-valued `cullMode`. That is the
-//      one change this file forced on the effect layer; see PassOverride in
-//      VulkanEffect.h.
-//
-//   2. ShaderClass GAINED SetTopology. HazeManager2's two draws are
-//      D3DPT_TRIANGLESTRIP, and ShaderClass built every pipeline as
-//      TRIANGLE_LIST because no earlier caller needed anything else. Same
-//      reasoning as VulkanEffectFile::SetTopology: topology is baked into a
-//      VkPipeline, so it has to be known before the bind.
-//
-// The rest is the usual list:
-//   D3DXCOLOR -> FVECTOR4, and its implicit conversion to a packed D3DCOLOR
-//   written as .dword_argb();
-//   D3DMAT_ -> VMAT_, D3DXMatrixMultiply -> VMAT_MatrixMultiply,
-//   D3DXMatrixRotationAxis -> VMAT_RotationFromAxis,
-//   D3DXVec3TransformCoord -> TransformCoord;
-//   DrawIndexedPrimitiveUP -> FX->DrawUP with a PRIMITIVE count turned into
-//   an INDEX count;
-//   CreateVertexBuffer/Lock/Unlock -> CreateBuffer/Map/Unmap;
-//   memcpy_s -> memcpy;
-//   Modules/D3D9Client/NewPlanet.hlsl -> Modules/VulkanClient/NewPlanet.glsl.
-//
-// ONE RESTORE HAS NO COUNTERPART AND IS NOT NEEDED: HazeManager2 sets
-// D3DCULL_NONE before each draw and D3DCULL_CCW after. ShaderClass builds
-// every pipeline with VK_CULL_MODE_NONE and nothing is global, so the "set"
-// is already true and the "restore" has nothing to restore -- the next
+// HazeManager2's D3DCULL_NONE / D3DCULL_CCW pairs have no counterpart and need
+// none. ShaderClass builds every pipeline with VK_CULL_MODE_NONE, so the "set"
+// is already true and the "restore" has nothing global to put back -- the next
 // pipeline bind carries its own cull mode whatever this one did.
 // ============================================================================
 
@@ -123,7 +98,6 @@ void HazeManager::Render(VulkanDevice *pDevice, FMATRIX4 &wmat, bool dual)
 	float cosp, sinp, cost, sint, h1, h2, r1, r2, intr, intg, intb;
 
 	VMAT_MatrixInvert (&imat, &wmat);
-	// imat._41.._43 are imat.m41..m43.
 	VECTOR3 rpos = {imat.m41, imat.m42, imat.m43};   // camera in local coords (planet radius = 1)
 	double cdist = length (rpos);
 
@@ -164,8 +138,6 @@ void HazeManager::Render(VulkanDevice *pDevice, FMATRIX4 &wmat, bool dual)
 	cost = (float)rpos.y, sint = (float)sqrt (1.0-cost*cost);
 	phi = atan2 (rpos.z, rpos.x), cosp = (float)cos(phi), sinp = (float)sin(phi);
 
-	// Was D3DXMATRIX(...) with sixteen floats; FMATRIX4 has the same
-	// constructor in the same row order.
 	FMATRIX4 rmat = FMATRIX4(cost*cosp, -sint, cost*sinp, 0,
 		              sint*cosp,  cost, sint*sinp, 0,
 					  -sinp,      0,    cosp,      0,
@@ -208,10 +180,9 @@ void HazeManager::Render(VulkanDevice *pDevice, FMATRIX4 &wmat, bool dual)
 		else if (csun < minblue) intb = 0.0f;
 		else                     intb = (float)((csun-minblue)*2.5);
 
-		// Was a D3DXCOLOR assigned to a DWORD, which invoked D3DXCOLOR's
-		// conversion operator: clamp each channel and pack 0xAARRGGBB.
-		// FVECTOR4::dword_argb() is that operator, under a name that says
-		// which byte order it produces.
+		// Was a D3DXCOLOR assigned to a DWORD, invoking D3DXCOLOR's conversion
+		// operator: clamp each channel and pack 0xAARRGGBB. dword_argb() is
+		// that operator, under a name that says which byte order it produces.
 		FVECTOR4 col = FVECTOR4(intr*min(1.0f,dens*(float)basecol.x), intg*min(1.0f,dens*(float)basecol.y), intb*min(1.0f,dens*(float)basecol.z), (float)alpha);
 
 		Vtx[j].dcol = col.dword_argb();
@@ -227,9 +198,8 @@ void HazeManager::Render(VulkanDevice *pDevice, FMATRIX4 &wmat, bool dual)
 	FX->SetMatrix(eW, &transm);
 	FX->SetTexture(eTex0, SURFACE(horizon)->GetTexture());	
 
-	// Was pDev->SetVertexDeclaration(pHazeVertexDecl); the topology joins it
-	// because a D3DPT_TRIANGLESTRIP argument to DrawIndexedPrimitiveUP is
-	// pipeline state here.
+	// The topology joins SetVertexDecl because a D3DPT_TRIANGLESTRIP argument
+	// to DrawIndexedPrimitiveUP is pipeline state here.
 	FX->SetVertexDecl(pHazeVertexDecl);
 	FX->SetTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP);
 
@@ -237,11 +207,9 @@ void HazeManager::Render(VulkanDevice *pDevice, FMATRIX4 &wmat, bool dual)
 	FX->Begin(&numPasses, 0);		// was D3DXFX_DONOTSAVESTATE
 	FX->BeginPass(0);
 	
-	// DrawIndexedPrimitiveUP(TRIANGLESTRIP, 0, 2*NSEG, 2*NSEG, Idx,
-	//                        INDEX16, Vtx, sizeof(HVERTEX)):
-	// the fourth argument is a PRIMITIVE count, and a strip of N triangles
-	// has N+2 indices -- which is exactly nIdx, HORIZON_NSEG*2+2. DrawUP
-	// takes the index count.
+	// DrawIndexedPrimitiveUP's fourth argument is a primitive count, and a
+	// strip of N triangles has N+2 indices -- which is exactly nIdx,
+	// HORIZON_NSEG*2+2. DrawUP takes the index count.
 	FX->DrawUP(Vtx, 2*HORIZON_NSEG, sizeof(HVERTEX), Idx, nIdx);
 	
 	if (dual) {
@@ -258,12 +226,10 @@ void HazeManager::Render(VulkanDevice *pDevice, FMATRIX4 &wmat, bool dual)
 		}
 
 		// Was SetRenderState(D3DRS_CULLMODE, D3DCULL_CW), the draw, then
-		// D3DCULL_CCW again. THE FIRST IS WHY PassOverride's cull field is
-		// three-valued rather than a bool: D3DCULL_CW and D3DCULL_CCW are the
-		// same Vulkan cull mode with opposite front-face windings, so "not
-		// none" is not enough information. The restore has no counterpart --
-		// the pipeline for the next draw carries its own cull mode -- so it
-		// is simply the end of this override's scope.
+		// D3DCULL_CCW again. D3DCULL_CW and D3DCULL_CCW are the same Vulkan
+		// cull mode with opposite front-face windings, so "not none" is not
+		// enough information -- which is why PassOverride's cull field is
+		// three-valued. The restore is just the end of the override's scope.
 		VulkanEffectFile::PassOverride ovr;
 		ovr.cullMode = VulkanEffectFile::PassOverride::CULL_CW;
 
@@ -341,8 +307,8 @@ void HazeManager2::GlobalInit(VulkanClient *gclient)
 
 void HazeManager2::GlobalExit()
 {
-	// Was SAFE_RELEASE on the vertex buffers -- a COM reference count. A
-	// Vulkan buffer is destroyed by the device that made it.
+	// Were SAFE_RELEASE calls on a COM refcount; a Vulkan buffer is destroyed
+	// by the device that made it.
 	for (int i=0;i<6;i++) { if (pSkyVB[i]) { pDev->DestroyBuffer(pSkyVB[i]); pSkyVB[i] = NULL; } }
 	if (pRingVB) { pDev->DestroyBuffer(pRingVB); pRingVB = NULL; }
 	SAFE_DELETE(pDome);
@@ -379,8 +345,7 @@ void HazeManager2::RenderSky(VECTOR3 cpos, VECTOR3 cdir, double rad, double apr)
 	VECTOR3 ux = unit(crossp(cdir, ur));
 	VECTOR3 uy = unit(crossp(ur, ux));
 
-	// _D3DXVECTOR3(v) built a D3DXVECTOR3 from a VECTOR3; FVEC(v) is that,
-	// under the name VulkanUtil.h gives it.
+	// _D3DXVECTOR3(v) built a D3DXVECTOR3 from a VECTOR3; FVEC(v) is that.
 	FMATRIX4 mWL, mL;
 	VMAT_Identity(&mWL);
 	VMAT_FromAxisT(&mWL, ptr(FVEC(ux)), ptr(FVEC(ur)), ptr(FVEC(uy)));
@@ -397,8 +362,8 @@ void HazeManager2::RenderSky(VECTOR3 cpos, VECTOR3 cdir, double rad, double apr)
 
 	//vp->GetScatterConst()->mVP = vp->GetScene()->PushCameraFrustumLimits(hd * 0.1, hd * 5.0);
 
-	// The topology is new; see the file header. Setup builds the pipeline, so
-	// it has to be told before the call, not at the draw.
+	// Setup builds the pipeline, so the topology has to be set before that
+	// call rather than at the draw.
 	pDome->SetTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP);
 	pDome->Setup(pPositionDecl, false, 2);
 	pDome->ClearTextures();
@@ -411,10 +376,8 @@ void HazeManager2::RenderSky(VECTOR3 cpos, VECTOR3 cdir, double rad, double apr)
 	pDome->SetVSConstants("Const", vp->GetScatterConst(), sizeof(ConstParams));
 	pDome->UpdateTextures();
 
-	// SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE) stood here, and the
-	// matching CCW restore after the loop. ShaderClass builds every pipeline
-	// with VK_CULL_MODE_NONE, so the first is already true and the second has
-	// nothing global to put back. See the file header.
+	// SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE) stood here, and the matching
+	// CCW restore after the loop. See the file header.
 
 	for (int i=0;i<24;i++) {
 		double x = al;
@@ -422,10 +385,9 @@ void HazeManager2::RenderSky(VECTOR3 cpos, VECTOR3 cdir, double rad, double apr)
 		for (int j=0;j<6;j++) {
 			float r1 =  float(sin(x));	 float h1 = -float(cos(x));
 			float r2 =  float(sin(x+b)); float h2 = -float(cos(x+b)); 
-			// D3DXVECTOR3 * D3DXVECTOR3 was a COMPONENT-WISE product, not a
+			// D3DXVECTOR3 * D3DXVECTOR3 was a component-wise product, not a
 			// dot or a cross. FVECTOR3 has no such operator, so it is written
-			// out per component -- which also makes it obvious that it is
-			// component-wise, which the operator did not.
+			// out per component.
 			const float s = (r1+r2)*0.5f;
 			FVECTOR3 vCnt(vTileCenter.x * s, (h1+h2)*0.5f, vTileCenter.z * s);
 			vCnt = TransformCoord(vCnt, mWL);
@@ -447,8 +409,8 @@ void HazeManager2::RenderSkySegment(FMATRIX4 &wmat, double rad, double dmin, dou
 	float h2 = -float(rad * cos(dmax)); 
 
 	ShaderParams sprm;
-	// memcpy_s's destination size is its second argument; with both sizes
-	// equal the check can never fire, and plain memcpy is the same copy.
+	// memcpy_s's destination size is its second argument; with both sizes equal
+	// the check can never fire, so plain memcpy is the same copy.
 	memcpy(&sprm.mWorld, &wmat, sizeof(sprm.mWorld));
 	sprm.vTexOff = FVECTOR4(r1, r2, h1, h2);
 	
@@ -459,33 +421,20 @@ void HazeManager2::RenderSkySegment(FMATRIX4 &wmat, double rad, double dmin, dou
 
 	pDome->SetVSConstants("Prm", &sprm, sizeof(ShaderParams));
 
-	// AND COMMIT IT. THIS CALL HAS NO LINE IN THE REFERENCE AND THE DRAW IS
-	// WRONG WITHOUT IT.
+	// This call has no line in the reference, and the draw is wrong without it.
+	// SetVSConstants on Windows wrote through ID3DXConstantTable into the
+	// device's constant registers, so the next DrawPrimitive saw the new value.
+	// Here Set*Constants only accumulates into a CPU-side block, and
+	// UpdateTextures() is what copies it into this frame's uniform arena and
+	// binds the descriptor set.
 	//
-	// pDome->SetVSConstants on Windows wrote through ID3DXConstantTable into
-	// the device's constant REGISTERS, so the very next DrawPrimitive saw the
-	// new value -- which is why RenderSky can call UpdateTextures() once
-	// before the loop and this function can set `Prm` and draw.
-	//
-	// Here the Set*Constants calls only accumulate into a CPU-side block;
-	// BindResources is what copies that block into this frame's uniform arena
-	// and binds the descriptor set, and UpdateTextures() is what calls it.
-	// Its own note says so: "Every call site in the client already calls
-	// UpdateTextures() immediately before its draw, after setting its
-	// constants and textures." This one did not.
-	//
-	// The cost was the whole daytime sky. All 144 sky-dome segments were
-	// drawn with whatever `Prm` happened to be committed before the loop --
-	// mWorld and vTexOff from the previous frame's last segment, or zero on
-	// the first -- so HorizonVS transformed every vertex by the same stale
-	// matrix and the dome collapsed. What reached the screen was the shader's
-	// noise term alone: a grey gradient of 1..4/255 where the sky should be,
-	// measured, with r == g == b because `+0.0008f` is the only thing added
-	// to all three channels equally.
-	//
-	// HazeManager2::RenderRing, the same class's other draw, already does
-	// this correctly -- it sets every constant and then calls
-	// UpdateTextures() before its vkCmdDraw.
+	// The cost was the whole daytime sky: all 144 sky-dome segments drew with
+	// whatever `Prm` had last been committed -- the previous frame's final
+	// segment, or zero -- so HorizonVS transformed every vertex by the same
+	// stale matrix and the dome collapsed. What reached the screen was the
+	// shader's noise term alone: a measured grey gradient of 1..4/255 where the
+	// sky should be. RenderRing, the same class's other draw, already did this
+	// correctly.
 	pDome->UpdateTextures();
 
 	// SetStreamSource + DrawPrimitive(TRIANGLESTRIP, 0, prims). A strip of
@@ -550,8 +499,8 @@ void HazeManager2::RenderRing(VECTOR3 cpos, VECTOR3 cdir, double rad, double hra
 
 	UINT nPrims = HORIZON2_NSEG * HORIZON2_NRING * 2 - 2;
 
-	// The two SetRenderState(D3DRS_CULLMODE, ...) around this draw are gone
-	// for the reason in the file header.
+	// The two SetRenderState(D3DRS_CULLMODE, ...) around this draw are gone:
+	// cull is immutable pipeline state here, carried on the manager instead.
 	if (pDev->IsRecording() && pRingVB) {
 		VkCommandBuffer cmd = pDev->GetCommandBuffer();
 		VkBuffer vb = pRingVB->Buffer();
@@ -593,9 +542,8 @@ void HazeManager2::CreateRingBuffers()
 		y+=d;
 	}
 
-	// Was CreateVertexBuffer(bytes, 0, 0, D3DPOOL_DEFAULT, &pRingVB, NULL)
-	// followed by Lock/memcpy/Unlock. One host-visible buffer with the vertex
-	// usage flag, then Map/memcpy/Unmap.
+	// Was CreateVertexBuffer(..., D3DPOOL_DEFAULT) plus Lock/memcpy/Unlock: one
+	// host-visible buffer with the vertex usage flag, then Map/memcpy/Unmap.
 	pRingVB = pDev->CreateBuffer(v*sizeof(FVECTOR3), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, true);
 
 	if (pRingVB && (pBuf = (FVECTOR3 *)pRingVB->Map()) != NULL) {

@@ -5,49 +5,13 @@
 // Copyright (C) 2017-2026 Martin Schweiger (martins/apogee)
 //                    Peter Schneider (Kuddel)
 // ==============================================================
-//
-// CONVERTED FROM OVP/D3D9Client/TileLabel.cpp, read end to end (464 lines).
-//
-// THERE IS NO DIRECT3D IN THIS FILE AT ALL. It reads a surface-label list
-// from a tile file or a compressed archive, keeps it, and draws it through
-// the Sketchpad. So the conversion is small and every piece of it is Win32
-// or filesystem, not graphics:
-//
-//  1. D3D9Pad -> VulkanPad in Render(), following the pad's own rename.
-//     Every call on it -- SetFont, SetTextColor, Ellipse, MoveTo, LineTo,
-//     Rectangle, GetLineHeight, TextW -- is oapi::Sketchpad's interface and
-//     is unchanged.
-//
-//  2. THE LABEL PATH. "%s\\Label\\%02d\\%06d\\%06d.lab" is built for
-//     TexturePath() and then handed to std::ifstream. A backslash is a legal
-//     filename character on Linux, so this does not fail as a bad path: it
-//     asks for one file literally named `Earth\Label\08\000053\000265.lab`,
-//     misses, and reports the same "no labels" a body with no label data
-//     gives -- surface labels would simply never appear. Seventh instance of
-//     the class recorded in the porting notes (finding 24).
-//
-//  3. THREE INCLUDES ADDED, none of them a change of behaviour:
-//     <fstream> for std::ifstream, <algorithm> for std::rotate and <cmath>
-//     for the NaN test. The Windows file names all three and includes none
-//     of them; MSVC's <sstream> and <memory> drag them in and libstdc++
-//     does not.
-//
-//  4. _isnan -> std::isnan. _isnan is the MSVC CRT spelling; the C++
-//     standard one is std::isnan from <cmath>, and it is what the shim's
-//     own headers use. Same test, same answer -- alt is read with
-//     toDoubleOrNaN, which returns quiet_NaN on a malformed altitude field,
-//     and this is the branch that then computes the elevation instead.
-//
-// MultiByteToWideChar, LPWSTR, WCHAR, COLORREF, RGB and strcpy_s are Win32
-// and CRT, not Direct3D, and the shim supplies all of them. GetWBuffer
-// stands as written.
-// ==============================================================
 
 #include "TileLabel.h"
 #include <limits>
 #include <memory>
 #include <sstream>
-// See point 3 in the file header.
+// std::ifstream, std::rotate and std::isnan are all used below. MSVC drags
+// them in through <sstream> and <memory>; libstdc++ does not.
 #include <fstream>
 #include <algorithm>
 #include <cmath>
@@ -82,12 +46,9 @@ TileLabel::TileLabel (const SurfTile *stile)
 	, nrenderlabel(0), nrenderbuf(0)
 	, renderlabel(NULL)
 {
-	// The list is reordered into declaration order -- tile, nlabel, nbuf,
-	// label, nrenderlabel, nrenderbuf, renderlabel. The Windows spelling
-	// pairs them by meaning (nlabel/nrenderlabel, nbuf/nrenderbuf,
-	// label/renderlabel), which reads better and is not the order the
-	// members are actually initialised in. Every value is a constant, so
-	// nothing observable changes. Thirteenth instance of the class here.
+	// Initialiser list reordered to declaration order (-Wreorder). The
+	// Windows spelling pairs the members by meaning, which reads better but
+	// is not the order they are initialised in. All constants; no change.
 }
 
 TileLabel::~TileLabel ()
@@ -216,9 +177,9 @@ bool TileLabel::Read ()
 	//}
 
 	if (tile->smgr->DoLoadIndividualFiles(4)) { // try loading from individual tile file
-		// "%s\\Label\\%02d\\%06d\\%06d.lab" on Windows. See point 2 in the
-		// file header: this becomes a filesystem path and the separator
-		// is '/'.
+		// Was "%s\\Label\\%02d\\%06d\\%06d.lab". The backslash spelling opens
+		// nothing on Linux and misses silently -- surface labels would just
+		// never appear. Same class as ZTreeMgr::OpenArchive.
 		sprintf_s(path, MAX_PATH, "%s/Label/%02d/%06d/%06d.lab", tile->mgr->CbodyName(), lvl+4, ilat, ilng);
 		tile->mgr->GetClient()->TexturePath(path, texpath);
 
@@ -278,9 +239,7 @@ bool TileLabel::ExtractAncestorData (const SurfTile *atile)
 				}
 				renderlabel[nrenderlabel++] = alabel[i];
 				if (!alabel[i]->pos.x && !alabel[i]->pos.y && !alabel[i]->pos.z) {
-					// _isnan is the MSVC CRT spelling. See point 4 in the
-					// file header.
-					if (std::isnan(alabel[i]->alt))
+					if (std::isnan(alabel[i]->alt))   // was _isnan, MSVC CRT
 						alabel[i]->alt = Elevation(lat, lng, latmin, latmax, lngmin, lngmax, 1.0);
 					double rad = tile->mgr->CbodySize() + alabel[i]->alt;
 					oapiEquToLocal(tile->mgr->Cbody(), lng, lat, rad, &alabel[i]->pos);

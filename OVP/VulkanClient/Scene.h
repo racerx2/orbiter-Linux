@@ -16,51 +16,8 @@
 // windows (or into MFD display surfaces, etc.)
 // ==============================================================
 //
-// CONVERTED FROM OVP/D3D9Client/Scene.h, read end to end (553 lines).
-//
-// THIS FILE IS ALMOST ENTIRELY CAMERA AND VISIBILITY MATHEMATICS, and none of
-// that is Direct3D. The frustum, the aperture and aspect, the proxy-body and
-// near-body tracking, the apparent-radius tests, the visual list, the custom
-// camera set, the particle streams, the label fonts -- all of it is Orbiter
-// SDK arithmetic and bookkeeping, and all of it converts by changing type
-// names only. Four kinds of change and no others:
-//
-//   1. D3DX math types become the SDK's own: D3DXMATRIX -> FMATRIX4,
-//      D3DXVECTOR2/3 -> FVECTOR2/FVECTOR3, D3DXCOLOR -> FVECTOR4. The class
-//      already returns FMATRIX4 from PushCameraFrustumLimits and already
-//      takes oapi::FVECTOR2 in WorldToScreenSpace2, so this removes a
-//      conversion rather than adding one.
-//
-//   2. Resource handles become the client's own types.
-//      LPDIRECT3DSURFACE9, LPDIRECT3DTEXTURE9 AND LPDIRECT3DCUBETEXTURE9 ALL
-//      BECOME VulkanTexture* -- three D3D9 interfaces, one Vulkan type. A
-//      cube map is a VkImage with six array layers and a CUBE view, not a
-//      separate object, which is why pBlrTemp and pIrradTemp lose their
-//      distinct type without losing anything else.
-//
-//   3. D3DCOLOR becomes DWORD. It always was one -- a typedef for a packed
-//      0xAARRGGBB -- and calling it DWORD says what it is without implying a
-//      Direct3D type still exists.
-//
-//   4. The three static D3DXHANDLEs that name TECHNIQUES become TECHHANDLE
-//      and the three that name PARAMETERS stay HANDLE. Same split as
-//      VulkanEffect.h, same reason.
-//
-// TWO SENTINELS NEEDED CARE. RESTORE and CURRENT are
-//     #define RESTORE ((LPDIRECT3DSURFACE9)(-1))
-//     #define CURRENT ((LPDIRECT3DSURFACE9)(-2))
-// -- impossible pointer values passed where a render target is expected, to
-// mean "put the previous one back" and "leave it alone". Nothing about them
-// is D3D9 except the type of the cast, so they carry over with the type
-// changed. They are the one place in this header where a pointer is not a
-// pointer, so they are worth knowing about before reading Scene.cpp.
-//
-// CelSphere.h IS FORWARD-DECLARED RATHER THAN INCLUDED. The Windows header
-// includes it for one member -- `D3D9CelestialSphere *m_celSphere` -- which is
-// a pointer, so the declaration is enough. It is done that way here because
-// CelSphere.h is not converted yet and this header is on the critical path
-// for VulkanEffect.cpp; it is also simply the right dependency, and the same
-// reasoning VulkanSurface.h applies to D3D9Pad.h.
+// CelSphere.h is forward-declared rather than included: the Windows header
+// includes it for one member, m_celSphere, which is a pointer.
 // ==============================================================
 
 #ifndef __SCENE_H
@@ -106,8 +63,9 @@ class SurfNative;
 #define RENDERPASS_MAINOVERLAY	0x0007
 #define RENDERPASS_NORMAL_DEPTH	0x0008
 
-// See the file header: two impossible pointer values used as commands where a
-// render target is expected. Only the cast's type changed.
+// Two impossible pointer values passed where a render target is expected, to
+// mean "put the previous one back" and "leave it alone". Only the cast's type
+// changed.
 #define RESTORE ((VulkanTexture*)(-1))
 #define CURRENT ((VulkanTexture*)(-2))
 
@@ -269,9 +227,6 @@ public:
 	inline const SHADOWMAPPARAM * GetSMapData() const { return &smap; }
 	/**
 	 * \brief Get the ambient background colour
-	 *
-	 * Was D3DCOLOR, which is a typedef for a packed 0xAARRGGBB DWORD and
-	 * nothing more.
 	 */
 	inline DWORD GetBgColour() const { return bg_rgba; }
 
@@ -284,9 +239,8 @@ public:
 	 * \brief Get the viewport dimension (height)
 	 */
 	inline DWORD ViewH() const { return viewH; }
-	// The `const DWORD` return on those two is dropped: a top-level const on
-	// a by-value return does nothing and GCC reports it. See the same note in
-	// VObject.h.
+	// The `const DWORD` return on those two is dropped: a top-level const on a
+	// by-value return does nothing and GCC reports it.
 
 	bool UpdateCamVis();
 	void Initialise ();
@@ -317,9 +271,9 @@ public:
 	void RenderSecondaryScene(std::set<class vVessel*> &RndList, std::set<class vVessel*> &AdditionalLightsList, DWORD flags = 0xFF);
 	int RenderShadowMap(FVECTOR3 &pos, FVECTOR3 &ld, float rad, bool bInternal = false, bool bListExists = false);
 
-	// pSrc was LPDIRECT3DCUBETEXTURE9 and pOut LPDIRECT3DTEXTURE9. Both are
-	// VulkanTexture* -- see the file header: a cube map is an image with six
-	// array layers, not a distinct interface.
+	// pSrc was LPDIRECT3DCUBETEXTURE9 and pOut LPDIRECT3DTEXTURE9. A cube map
+	// is an image with six array layers and a CUBE view, not a distinct
+	// interface, so both are VulkanTexture*.
 	bool IntegrateIrradiance(vVessel *vV, VulkanTexture *pSrc, VulkanTexture *pOut);
 	bool RenderBlurredMap(VulkanDevice *pDev, VulkanTexture *pSrc);
 	void RenderMesh(DEVMESHHANDLE hMesh, const oapi::FMATRIX4 *pWorld);
@@ -394,10 +348,9 @@ public:
 
 	// Camera Matrix Access =========================================================================================================
 	//
-	// The three getters returned `const LPD3DXMATRIX`, which is a const
-	// POINTER to a non-const matrix -- and each cast the const away from its
-	// own member to produce it. They return `const FMATRIX4 *` here, which is
-	// what the callers actually want and removes three casts.
+	// The three getters returned `const LPD3DXMATRIX` -- a const pointer to a
+	// non-const matrix -- and each cast the const away from its own member to
+	// produce it. `const FMATRIX4 *` removes those three casts.
 	void				GetAdjProjViewMatrix(FMATRIX4 *mP, float znear, float zfar);
 	const FMATRIX4 *	GetProjectionViewMatrix() const { return &Camera.mProjView; }
 	const FMATRIX4 *	GetProjectionMatrix() const { return &Camera.mProj; }
@@ -534,7 +487,7 @@ private:
 	DWORD                  nstream; // number of streams
 
 
-	DWORD bg_rgba;             // ambient background colour (was D3DCOLOR)
+	DWORD bg_rgba;             // ambient background colour
 
 	// GDI resources ====================================================================
 	//
@@ -587,21 +540,20 @@ private:
 
 	// Blur Sampling Kernel ==============================================================
 	//
-	// Were LPDIRECT3DCUBETEXTURE9 and LPDIRECT3DTEXTURE9. See the file header:
-	// one Vulkan type covers both, so the cube maps and the 2D maps below now
-	// differ by how they were created rather than by their declared type.
+	// pBlrTemp and pIrradTemp were cube textures; one Vulkan type covers both,
+	// so they now differ from the 2D maps by how they were created rather than
+	// by declared type.
 	VulkanTexture *pBlrTemp[5];
 	VulkanTexture *pIrradTemp;
 	VulkanTexture *pIrradTemp2, *pIrradTemp3;
 
 	// Deferred Experiment ===============================================================
 	//
-	// psgBuffer/ptgBuffer were a SURFACE and a TEXTURE for each G-buffer --
-	// the same storage reached through two interfaces, because a D3D9 texture
+	// psgBuffer/ptgBuffer were a SURFACE and a TEXTURE for each G-buffer: the
+	// same storage reached through two interfaces, because a D3D9 texture
 	// could not be bound as a render target without GetSurfaceLevel(0). One
-	// VkImage is both, so THE TWO ARRAYS ARE THE SAME FIVE IMAGES. Both names
-	// are kept because Scene.cpp spells one or the other at ~80 sites, exactly
-	// as SurfNative keeps GetSurface() and GetTexture().
+	// VkImage is both, so the two arrays are now the same five images. Both
+	// names are kept because Scene.cpp spells one or the other at ~80 sites.
 	VulkanTexture *psgBuffer[GBUF_COUNT];
 	VulkanTexture *ptgBuffer[GBUF_COUNT];
 	VulkanTexture *pOffscreenTarget;
@@ -616,11 +568,10 @@ private:
 
 	// Rendering Technique related parameters ============================================
 	//
-	// FX is this class's OWN effect, separate from VulkanEffect::FX: it loads
+	// FX is this class's own effect, separate from VulkanEffect::FX: it loads
 	// SceneTech.fx, which holds LineTech, StarTech and LabelTech. eLine and
 	// eStar name techniques and are TECHHANDLE; the other three name
-	// parameters and stay HANDLE. See VulkanEffect.h for why those are now
-	// different types.
+	// parameters and stay HANDLE.
 	static VulkanEffectFile	*FX;
 	static TECHHANDLE	eLine;
 	static TECHHANDLE	eStar;

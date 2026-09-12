@@ -12,19 +12,6 @@
 // Defines runway lights used in vBase.
 // ==============================================================
 
-// CONVERTED FROM OVP/D3D9Client/RunwayLights.h, read end to end (128 lines).
-//
-// Two classes, both of which only build BeaconArrays and hand them a matrix:
-//
-//   LPDIRECT3DDEVICE9    -> VulkanDevice*
-//   LPD3DXMATRIX         -> oapi::FMATRIX4*   (qualified: this header
-//                          includes no using-directive, and adding one to a
-//                          header pollutes every file that includes it)
-//   <d3d9.h> / <d3dx9.h> -> VulkanTypes.h + DrawAPI.h (the matrix type is
-//                          the SDK's own now, so its header is named)
-//
-// Everything else is runway geometry in doubles.
-
 #ifndef __RUNWAYLIGHTS_H
 #define __RUNWAYLIGHTS_H
 

@@ -5,13 +5,6 @@
 // Copyright (C) 2007-2026 Martin Schweiger
 //				 2011-2016 Jarmo Nikkanen
 // ==============================================================
-//
-// CONVERTED FROM OVP/D3D9Client/D3D9Config.cpp, read end to end (310 lines).
-// See VulkanConfig.h for the four settings that are gone and why. Everything
-// else here is the Windows file with D3D9Config renamed and the config file
-// renamed; oapiOpenFile/oapiReadItem_*/oapiWriteItem_* are SDK calls that
-// already build on Linux, and strcpy_s comes from Src/Orbiter/Linux/windows.h.
-// ==============================================================
 
 #include "VulkanConfig.h"
 #include "Orbitersdk.h"

@@ -16,43 +16,15 @@
 // IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 // =================================================================================================================================
 //
-// CONVERTED FROM OVP/D3D9Client/Log.cpp, read end to end (490 lines).
+// max() is a macro from MSVC's <windows.h> and the Windows file relies on it.
+// The Linux shim deliberately does not define it -- that would break
+// <algorithm> for everything including the shim -- so the one call site names
+// std::max.
 //
-// No Direct3D in the file. Beyond the D3D9 -> Vulkan renames, four changes:
-//
-//  1. THE TWO ERROR MESSAGES SAID THE WRONG THING. MissingRuntimeError told
-//     the user to install a DirectX runtime and read /Doc/D3D9Client.pdf;
-//     FailedDeviceError told them to set EnableDX12Wrapper in D3D9Client.cfg.
-//     Neither the runtime, the document nor the option exists here, so both
-//     name what actually goes wrong on this platform: a missing or too-old
-//     Vulkan driver, and a device the core could not stand up.
-//
-//  2. max() BECAME std::max(). MSVC's <windows.h> defines max as a macro and
-//     the Windows file relies on it. The Linux shim deliberately does not --
-//     it would break <algorithm> for everything that includes it -- so the
-//     one call site names the function.
-//
-//  3. THE LOG'S OWN TITLE AND HEADING say VulkanClient, because they are what
-//     a user reads at the top of the generated HTML.
-//
-//  4. LogAttribs PASSES ITS BUFFER AS A FORMAT STRING -- LogDbg("BlueViolet",
-//     buf) -- so a '%' arriving in 'origin' would send LogDbg reading
-//     arguments that were never passed. That is a live defect on both
-//     platforms, not a porting one, and it is fixed here rather than carried
-//     forward because it is a one-word change: the buffer is passed as an
-//     argument to a "%s".
-//
-//  5. THE THREAD ID IS CAST TO unsigned long AT EVERY %lX. DWORD is
-//     'unsigned long' on MSVC and 'uint32_t' -- i.e. unsigned int -- in
-//     Src/Orbiter/Linux/windows.h:115, so the Windows "%lX" is correct there
-//     and a varargs type mismatch here. Both are 32 bits on the platforms
-//     that matter, so it prints the right number today, but it is undefined
-//     behaviour that -Wformat reports, and it is one cast per call site.
-//
-// Everything else -- the critical section, the performance counters, the
-// thread id, the secure-CRT calls, DebugBreak -- is supplied by
-// Src/Orbiter/Linux/windows.h and needed no change. See Log.h for where each
-// one lives.
+// DWORD is 'unsigned long' on MSVC but uint32_t (unsigned int) on Linux, so
+// the thread id is cast at every "%lX". Both are 32 bits, so the number
+// printed is right either way, but the varargs mismatch is undefined
+// behaviour that -Wformat reports.
 // =================================================================================================================================
 
 #include <Windows.h>
@@ -135,8 +107,8 @@ void LogAttribs(DWORD attrib, DWORD w, DWORD h, LPCSTR origin)
 	if (attrib&OAPISURFACE_NOALPHA)		 strcat_s(buf, 512, "OAPISURFACE_NOALPHA ");
 	if (attrib&OAPISURFACE_UNCOMPRESS)	 strcat_s(buf, 512, "OAPISURFACE_UNCOMPRESS ");
 	if (attrib&OAPISURFACE_SYSMEM)		 strcat_s(buf, 512, "OAPISURFACE_SYSMEM ");
-	// buf is DATA, not a format. 'origin' is a caller-supplied string and a
-	// '%' in it would send LogDbg reading arguments nobody passed.
+	// Windows passed buf straight in as the format string: a '%' in the
+	// caller-supplied 'origin' would send LogDbg reading absent arguments.
 	LogDbg("BlueViolet", "%s", buf);
 }
 

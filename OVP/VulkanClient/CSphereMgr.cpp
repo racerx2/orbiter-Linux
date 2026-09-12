@@ -6,41 +6,6 @@
 // Copyright (C) 2007-2026 Martin Schweiger
 // Copyright (C) 2011-2026 Jarmo Nikkanen (D3D9Client modification) 
 // ==============================================================
-//
-// CONVERTED FROM OVP/D3D9Client/CSphereMgr.cpp, read end to end (556 lines).
-//
-// Most of this file is trigonometry and bookkeeping: the patch templates, the
-// tile-centre and tile-extent arithmetic, the texture-set matching in
-// LoadTextures and the two-hemisphere walk in Render all convert unchanged.
-// Four things do not:
-//
-//   1. dev->GetViewport(). A VkDevice answers NO questions about itself, and
-//      there is no viewport to ask -- in Vulkan a viewport is a value written
-//      into a pipeline or a command buffer, not device state. The render
-//      target's size is what the two callers actually wanted, and that lives
-//      on CVulkanFramework. Both GlobalInit and CreateDeviceObjects change
-//      the same two lines the same way.
-//
-//   2. The four D3DX matrix calls -- D3DMAT_Identity, D3DMAT_RotY,
-//      D3DXMatrixMultiply and D3DXVec3TransformCoord. The first two are the
-//      CLIENT'S OWN helpers renamed VMAT_; the third is VMAT_MatrixMultiply
-//      (aliasing-safe, which matters because Render passes wmat as both an
-//      input and the output); the fourth is DrawAPI.h's own TransformCoord.
-//
-//   3. RenderTile's draw. SetStreamSource + SetIndices +
-//      DrawIndexedPrimitive become vkCmdBindVertexBuffers +
-//      vkCmdBindIndexBuffer + vkCmdDrawIndexed. The PRIMITIVE count becomes
-//      an INDEX count -- mesh.nf triangles is 3*mesh.nf indices -- and that
-//      multiplication is the only arithmetic that changes in this file.
-//
-//   4. The shader file name: Modules/D3D9Client/CelSphere.hlsl becomes
-//      Modules/VulkanClient/CelSphere.glsl, matching MeshShader's
-//      NewMesh.glsl.
-//
-// Four defects in the Windows source are noted where they appear: an
-// assignment inside an if condition (twice), two int/size_t comparisons over
-// std::vector::size(), and CreateDeviceObjects having no caller at all.
-// ==============================================================
 
 #include "VulkanUtil.h"
 #include "CSphereMgr.h"
@@ -83,10 +48,8 @@ VBMESH *CSphereManager::PATCH_TPL[15] = {
 };
 
 
-// Defined in TileMgr.cpp, as on Windows. There it was pTex->Release() -- a
-// COM reference count; here it destroys through the device that made the
-// texture, which is why the declaration is the same shape and the definition
-// is not.
+// Defined in TileMgr.cpp. On Windows it was pTex->Release(), a COM reference
+// count; here it destroys through the device that made the texture.
 void ReleaseTex(VulkanTexture *pTex);
 
 
@@ -104,9 +67,6 @@ CSphereManager::CSphereManager(VulkanClient *gc, const Scene *scene) : gc(gc), t
 	NLAT = TileManager::NLAT;
 
 	// Modules/D3D9Client/CelSphere.hlsl -> Modules/VulkanClient/CelSphere.glsl.
-	// The two entry point names, the effect name and the (empty) option
-	// string are unchanged; see ShaderClass in VulkanUtil.h for how the two
-	// stages are compiled now.
 	pShader = new ShaderClass(gc->GetDevice(), "Modules/VulkanClient/CelSphere.glsl", "CelVS", "CelPS", "CelSphere", "");
 
 	// Get Handles for faster access
@@ -161,8 +121,8 @@ CSphereManager::CSphereManager(VulkanClient *gc, const Scene *scene) : gc(gc), t
 	ecl2gal = mul (_M(1,0,0, 0,cost,sint, 0,-sint,cost), ecl2gal);
 	ecl2gal = mul (_M(cosl,0,sinl, 0,1,0, -sinl,0,cosl), ecl2gal);
 
-	// D3DMAT_ was the client's own set of matrix helpers, and became VMAT_.
-	// The element names lose D3DXMATRIX's leading underscore: _11 is m11.
+	// D3DMAT_ were the client's own matrix helpers, renamed VMAT_. The element
+	// names lose D3DXMATRIX's leading underscore: _11 is m11.
 	VMAT_Identity (&trans);
 	trans.m11 = float(ecl2gal.m11);
 	trans.m12 = float(ecl2gal.m12);
@@ -208,18 +168,12 @@ void CSphereManager::GlobalInit(oapi::VulkanClient *gclient)
 
 	VulkanDevice *dev = gclient->GetDevice();
 
-	// Was:
-	//     D3DVIEWPORT9 vp;
-	//     dev->GetViewport(&vp);
-	//     vpX0 = vp.X, vpX1 = vpX0 + vp.Width; ...
-	//
-	// A VkDevice has no viewport to report. In Vulkan a viewport is a value
-	// written into a pipeline (or set dynamically on a command buffer), never
-	// device state that can be read back. What these four numbers are used
-	// for is clipping arithmetic against the RENDER TARGET, and its size is
-	// held by CVulkanFramework -- the same object that on Windows had created
-	// the device the viewport belonged to. The X/Y origin was always 0 for a
-	// full-target viewport, which is the only kind this client sets.
+	// Was dev->GetViewport(&vp). A VkDevice has no viewport to report: in
+	// Vulkan a viewport is a value written into a pipeline or a command
+	// buffer, never device state that can be read back. These four numbers
+	// are clipping arithmetic against the render target, whose size
+	// CVulkanFramework holds. The X/Y origin was always 0 for a full-target
+	// viewport, the only kind this client sets.
 	const DWORD vpW = gclient->GetFramework()->GetWidth();
 	const DWORD vpH = gclient->GetFramework()->GetHeight();
 	vpX0 = 0, vpX1 = vpW;
@@ -316,9 +270,8 @@ void CSphereManager::GlobalExit ()
 }
 
 // =======================================================================
-// NOTHING IN THE TREE CALLS THIS, on Windows or here. It is left in place,
-// converted, because deleting dead code is a decision separate from porting
-// it. See the header for why its two parameters became one.
+// Nothing in the tree calls this, on Windows or here; it is converted rather
+// than deleted.
 
 void CSphereManager::CreateDeviceObjects (oapi::VulkanClient *gclient)
 {
@@ -374,12 +327,10 @@ void CSphereManager::LoadTextures ()
 		int lvl = maxbaselvl;
 		int ntex = patchidx[lvl];
 		m_texbuf.resize(ntex);
-		// `if (ntex = LoadPlanetTextures(...))` -- an assignment used as a
-		// condition. GCC asks for the second pair of parentheses
-		// (-Wparentheses) precisely because it is normally a typo for ==.
-		// Here it is deliberate, so the parentheses say so. The int/size_t
-		// comparisons below get a cast for the same reason: nothing about
-		// the logic changes, the intent is just written down.
+		// Was `if (ntex = LoadPlanetTextures(...))`: a deliberate assignment
+		// used as a condition, parenthesised so -Wparentheses can tell it
+		// from a typo'd ==. The int/size_t comparisons below get a cast for
+		// the same reason; no logic changes.
 		if ((ntex = LoadPlanetTextures(fname, m_texbuf.data(), 0, ntex)) != 0) {
 			while (ntex < patchidx[lvl])
 				--lvl;
@@ -495,7 +446,6 @@ void CSphereManager::Render (VulkanDevice *dev, int level, double bglvl)
 
 	RenderParam.camdir = _V(rcam.m13, rcam.m23, rcam.m33);
 
-	// Win32, not Direct3D: the shim implements both over pthreads. Unchanged.
 	WaitForSingleObject (tilebuf->hQueueMutex, INFINITE);
 
 	CelFlow.bAlpha = m_bBkgImg;
@@ -511,9 +461,8 @@ void CSphereManager::Render (VulkanDevice *dev, int level, double bglvl)
 
 	for (hemisp = idx = 0; hemisp < 2; hemisp++) {
 		if (hemisp) { // flip world transformation to southern hemisphere
-			// D3DXMatrixMultiply with the destination also an input.
-			// VMAT_MatrixMultiply builds into a local and assigns at the end,
-			// so the aliasing is safe here as it was there.
+			// Destination is also an input. VMAT_MatrixMultiply builds into a
+			// local and assigns at the end, so the aliasing is safe.
 			VMAT_MatrixMultiply(&RenderParam.wmat, &TileManager::Rsouth, &RenderParam.wmat);
 		}
 		for (ilat = nlat-1; ilat >= 0; ilat--) {
@@ -579,16 +528,12 @@ void CSphereManager::RenderTile (int lvl, int hemisp, int ilat, int nlat, int il
 	pShader->SetVSConstants(hVSConst, &CelData, sizeof(CelData));
 	pShader->UpdateTextures();
 
-	// Was:
-	//     pDev->SetStreamSource(0, mesh.pVB, 0, sizeof(VERTEX_2TEX));
-	//     pDev->SetIndices(mesh.pIB);
-	//     pDev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, mesh.nv, 0, mesh.nf);
-	//
-	// The stride moves from the bind to the pipeline's vertex input state
-	// (pPatchVertexDecl, given to Setup above), and D3DFMT_INDEX16 -- which
-	// D3D9 baked into the index buffer -- moves the other way, from creation
-	// to the bind. The last argument was a PRIMITIVE count; vkCmdDrawIndexed
-	// takes an INDEX count, and mesh.nf triangles is 3*mesh.nf indices.
+	// Was SetStreamSource + SetIndices + DrawIndexedPrimitive. The vertex
+	// stride moves from the bind to the pipeline's vertex input state
+	// (pPatchVertexDecl, given to Setup above), and the index format, which
+	// D3D9 baked into the buffer at creation, moves the other way to the
+	// bind. DrawIndexedPrimitive took a primitive count; vkCmdDrawIndexed
+	// takes an index count, so mesh.nf triangles is 3*mesh.nf indices.
 	VulkanDevice *pDev = pShader->GetDevice();
 	if (!pDev->IsRecording() || !mesh.pVB || !mesh.pIB) return;
 
@@ -633,9 +578,9 @@ void CSphereManager::TileExtents (int hemisp, int ilat, int nlat, int ilng, int 
 bool CSphereManager::TileInView (int lvl, int ilat)
 {
 	VBMESH &mesh = PATCH_TPL[lvl][ilat];
-	// Was D3DXVec3TransformCoord(&vP, &mesh.bsCnt, &mWorld) -- transform by
-	// the matrix and divide by w. DrawAPI.h declares exactly that as
-	// TransformCoord (DrawAPI.h:729), in the same row-vector convention.
+	// Was D3DXVec3TransformCoord: transform by the matrix and divide by w.
+	// DrawAPI.h declares exactly that as TransformCoord, same row-vector
+	// convention.
 	FVECTOR3 vP = TransformCoord(mesh.bsCnt, mWorld);
 	return gc->GetScene()->IsVisibleInCamera(&vP, mesh.bsRad);
 }

@@ -4,26 +4,6 @@
 // Copyright (C) 2006-2026 Martin Schweiger
 // ==============================================================
 
-// CONVERTED FROM OVP/D3D9Client/GDIPad.h, read end to end (279 lines).
-//
-// THE ONE SKETCHPAD THAT IS NOT A RENDERER. Every method here is a GDI call:
-// TextOut, MoveToEx, LineTo, Rectangle, Ellipse, Polygon. Not one Direct3D
-// type appears in the whole declaration -- HDC and HFONT are Win32 -- so
-// there is nothing in it to convert except the two includes:
-//
-//   D3D9Client.h         -> VulkanClient.h
-//   <d3d9.h> / <d3dx9.h> -> dropped. NOTHING IN THIS FILE USED THEM. They
-//                           were included by habit; DrawAPI.h (through
-//                           OrbiterAPI.h) supplies IVECTOR2 and the
-//                           Sketchpad base, and the shim supplies HDC.
-//
-// WORTH KNOWING BEFORE READING GDIPad.cpp: on Linux `Gdi.cpp` is a DISPLAY
-// LIST RECORDER, not a rasteriser -- TextOutA appends a DrawCmd and
-// orbiter_ReplayDC turns the list into ImGui draw commands. So these calls
-// still work and still produce a picture; what they do NOT do is leave pixels
-// in a bitmap that something else can read back. That is the reason
-// VulkanTextMgr had to be rewritten on stb_truetype and this file did not.
-
 #ifndef __GDIPAD_H
 #define __GDIPAD_H
 
@@ -34,6 +14,12 @@
 // ======================================================================
 // class GDIPad
 // ======================================================================
+// On Linux the GDI these methods call is a display-list recorder rather than a
+// rasteriser: TextOutA and friends append a DrawCmd, and orbiter_ReplayDC turns
+// the list into ImGui draw commands. The calls therefore still produce a
+// picture, but they leave no pixels in a bitmap that something else can read
+// back -- which is why VulkanTextMgr had to be rebuilt on stb_truetype while
+// this pad could stay as it is.
 /**
  * \brief The GDIPad class defines the context for 2-D drawing using
  *   Windows GDI calls.

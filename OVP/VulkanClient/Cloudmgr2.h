@@ -4,11 +4,6 @@
 //   Dual licensed under GPL v3 and LGPL v3
 // ==============================================================
 
-// CONVERTED FROM OVP/D3D9Client/Cloudmgr2.h, read end to end (48 lines).
-// NOTHING CHANGED. CloudTile is Tile's other subclass and its declaration
-// names no Direct3D type at all -- three overrides, a quadtree node pointer
-// and a double. Listed here so that is on the record rather than assumed.
-
 #ifndef __CLOUDMGR2_H
 #define __CLOUDMGR2_H
 

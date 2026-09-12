@@ -1,32 +1,20 @@
 // The shim's HANDLE object, and everything CloseHandle has to know about.
 //
-// WHY THIS IS A FILE OF ITS OWN, rather than staying where it grew inside
-// Platform.cpp.
-//
-// HANDLE is an opaque pointer in this shim, and every one of them points at an
+// HANDLE is an opaque pointer here, and every one of them points at an
 // OrbHandle carrying a kind tag. That is what lets CloseHandle do the right
 // thing for a thread, a mutex, an event, a directory watch or an open file
 // without the caller having to say which it holds -- exactly the property the
-// Win32 call sites assume -- and it means CloseHandle has to be compiled
-// against the object's definition.
+// Win32 call sites assume -- so CloseHandle must be compiled against this
+// definition.
 //
-// Platform.cpp is where the object grew, and Platform.cpp is not a translation
-// unit a standalone utility can link: it also carries dynamic module loading,
-// the registry, the console and the file choosers, and it deliberately leaves
-// InitLib and ExitLib undefined for the executable to supply. Measured with
-// nm -u on a standalone compile: those two are its ONLY non-libc undefined
-// symbols, and they are enough to make it unlinkable anywhere else.
-//
-// Utils/texpack is the case that forced the split. It is pure zlib and file
-// I/O -- no graphics API anywhere in it -- and from the shim it needs the
-// directory walk plus four entry points: CreateFile, ReadFile, GetFileSizeEx
-// and CloseHandle. Only the last of those was implemented, and only inside
-// Platform.cpp, so the tool could not be built at all.
-//
-// So the handle object, CloseHandle, the thread-local last-error store and
-// the Win32 file and directory-enumeration API live here, in a translation
-// unit whose only dependencies are libc and pthreads. Platform.cpp includes
-// this header and creates OrbHandles exactly as it did before.
+// The object lives here rather than in Platform.cpp so that Handles.cpp
+// depends on nothing but libc and pthreads. Platform.cpp cannot be linked on
+// its own: it leaves InitLib and ExitLib undefined for the executable to
+// supply, and those two are its only non-libc undefined symbols. Utils/texpack
+// is the case that forced the split -- pure zlib and file I/O, needing
+// CreateFile, ReadFile, GetFileSizeEx, CloseHandle and the directory walk
+// without dragging in module loading, the registry, the console and the file
+// choosers.
 
 #ifndef ORBITER_LINUX_HANDLES_H
 #define ORBITER_LINUX_HANDLES_H
@@ -44,14 +32,9 @@ struct OrbHandle {
         Thread, Mutex, Event, Process, Watch, StdStream, Module, File, Find
     } kind;
 
-    // PSEUDO-HANDLES THE CALLER DOES NOT OWN: the three standard streams, the
+    // Pseudo-handles the caller does not own: the three standard streams, the
     // current process, and the module that stands for the executable itself.
-    // CloseHandle must leave them alone.
-    //
-    // It used to recognise them by comparing their addresses, which is only
-    // possible while they and CloseHandle sit in one file. They stay in
-    // Platform.cpp -- they are about processes, modules and the console -- so
-    // the fact travels on the object instead.
+    // CloseHandle must leave these alone.
     bool            pinned = false;
 
     // Thread
@@ -77,31 +60,29 @@ struct OrbHandle {
     void           *dlHandle = nullptr;
     std::string     path;
 
-    // Datafile module: LOAD_LIBRARY_AS_DATAFILE maps the image WITHOUT
-    // running any of its code, so there is no dl handle at all -- just the
-    // file mapped read-only and its symbol table read directly.
+    // Datafile module: LOAD_LIBRARY_AS_DATAFILE maps the image without running
+    // any of its code, so there is no dl handle at all -- just the file mapped
+    // read-only and its symbol table read directly.
     void           *mapBase = nullptr;
     size_t          mapSize = 0;
 
-    // Module enumerated through EnumProcessModules: its load address and the
-    // span of its PT_LOAD segments, recorded at scan time because such a
-    // handle has no dl handle to interrogate later. See collectModule.
+    // Module enumerated through EnumProcessModules: load address and the span
+    // of its PT_LOAD segments, recorded at scan time because such a handle has
+    // no dl handle to interrogate later. See collectModule.
     void           *modBase = nullptr;
     size_t          modSize = 0;
 
-    // Directory search opened by FindFirstFile. `dirp` is the DIR*, kept as
-    // void* so this header does not have to pull in <dirent.h> for the sake
-    // of one member; `pattern` is the wildcard the caller gave, split off
-    // from the directory part of its argument.
+    // Directory search opened by FindFirstFile. `dirp` is the DIR*, held as
+    // void* to keep <dirent.h> out of this header; `pattern` is the wildcard
+    // the caller gave, split off from the directory part of its argument.
     void           *dirp = nullptr;
     std::string     pattern;
 };
 
 extern "C" {
 
-// The thread-local last-error store behind GetLastError. Declared here
-// because Platform.cpp sets it from thirty-odd call sites and the store now
-// lives in Handles.cpp with GetLastError itself.
+// The thread-local last-error store behind GetLastError, which lives in
+// Handles.cpp alongside GetLastError itself.
 void  orb_SetLastError(DWORD e);
 
 // Maps errno onto the Win32 codes the tree checks for. Anything unmapped is

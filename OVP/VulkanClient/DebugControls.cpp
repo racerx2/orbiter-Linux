@@ -4,58 +4,17 @@
 // Copyright (C) 2012-2026 Jarmo Nikkanen
 // ===========================================================================================
 //
-// CONVERTED FROM OVP/D3D9Client/DebugControls.cpp, read end to end (2104 lines).
+// Two things recur through the file:
 //
-// The mesh/material debugger: a Win32 dialog, an ImGui graphics panel, and one
-// texture-processing utility. Almost all of it is dialog traffic and material
-// arithmetic that converts by renaming types; the Direct3D is concentrated in
-// Execute() and SaveEnvMap(), which between them used five D3DX entry points.
+//   vObj->GetObjectA() is vObj->Object(). <windows.h> defines GetObject as
+//   GetObjectA, so the name in the Windows source is the name after the macro
+//   ran; vObject declares Object() and nothing else.
 //
-// SIX things are worth knowing, in rough order of how much they matter.
-//
-//  1. Execute() WAS D3DX'S IMAGE PIPELINE IN ONE FUNCTION, and two of its
-//     three actions have no Vulkan counterpart. See the long note on that
-//     function. The short version: decode + format override + mip build is
-//     three steps here instead of one call, and neither DXT5 compression nor
-//     A4R4G4B4 can be produced -- both are decisions already recorded in
-//     VulkanSurface.cpp (NatCompressSurface) and the porting notes,
-//     and this file follows them rather than inventing a second answer.
-//
-//  2. SAFE_RELEASE(pSave) AFTER SetMicroTexture(pSave) MUST NOT BECOME
-//     DestroyTexture(pSave). That release dropped the CALLER'S reference while
-//     vPlanet kept the one SetMicroTexture had taken. Nothing here is
-//     reference counted, so the same line spelled the obvious way hands the
-//     planet a destroyed VkImage. This is the one place in the file where a
-//     mechanical rename is a use-after-free rather than a compile error.
-//
-//  3. FVECTOR2/3 CANNOT BE INDEXED. D3DXVECTOR2/3/4 all convert to float*, so
-//     the reference writes Mat.Diffuse[clr] and Mat.Roughness[clr]. FVECTOR4
-//     has data[4]; FVECTOR2 and FVECTOR3 are unions of named fields with no
-//     array member and no operator[] (DrawAPI.h:186, :356). Comp() below is
-//     that index, and it is the only addition of its kind in the file.
-//
-//  4. FVECTOR4's DWORD CONSTRUCTOR READS ABGR, D3DXCOLOR's READ ARGB. The
-//     pixel DWORDs here are A8R8G8B8 / VK_FORMAT_B8G8R8A8_UNORM, which is ARGB
-//     read as a little-endian DWORD either way -- so every D3DXCOLOR(dword)
-//     becomes FCOLOR_ARGB(dword) (VulkanUtil.h) and every implicit
-//     `DWORD = D3DXCOLOR` becomes an explicit .dword_argb(). VulkanUtil.h
-//     spells out why the wrong one of these is invisible.
-//
-//  5. abs() AND pow() IN VectorHelpers.h TAKE NON-CONST REFERENCES, so the
-//     reference's `C *= pow(a, -abs(C)*fMip)` does not compile here: MSVC
-//     binds an rvalue to a non-const reference as an extension and GCC does
-//     not. The expression is unchanged; the intermediate gets a name.
-//
-//  6. vObj->GetObjectA() IS vObj->Object(). <windows.h> defines GetObject as
-//     GetObjectA, so the name in the Windows source is the name AFTER the
-//     macro ran; vObject declares Object() and nothing else. Same finding as
-//     VVessel.cpp's GetClassNameA, in the same direction.
-//
-// NOT CONVERTED, because none of it needed converting: the whole material
-// editor (GetMaterialValue, UpdateMeshMaterial, the sliders and their scales),
-// the tooltips, the dialog procedures, CreateSamplingKernel, and the ImGui
-// panel. The tooltip API compiles and does not yet display -- the reason is in
-// Src/Orbiter/Linux/commctrl.h and the same note is on AtmoControls.cpp.
+//   FVECTOR4's DWORD constructor reads ABGR where D3DXCOLOR's read ARGB. The
+//   pixel DWORDs here are A8R8G8B8 / VK_FORMAT_B8G8R8A8_UNORM, so every
+//   D3DXCOLOR(dword) becomes FCOLOR_ARGB(dword) (VulkanUtil.h) and every
+//   implicit `DWORD = D3DXCOLOR` becomes an explicit .dword_argb(). Picking
+//   the wrong one swaps red and blue with no diagnostic.
 // ===========================================================================================
 
 
@@ -65,31 +24,18 @@
 #include "VulkanSurface.h"
 #include "DebugControls.h"
 #include "Commctrl.h"
-// "vObject.h" / "vVessel.h" / "vPlanet.h" in the Windows source. The files are
-// VObject.h, VVessel.h and VPlanet.h; NTFS resolves either spelling, ext4
-// resolves only the real one. See the include-case audit note in the
-// conversion doc -- this class of error is a hard failure here and invisible
-// there.
+// "vObject.h" / "vVessel.h" / "vPlanet.h" in the Windows source. NTFS resolves
+// either spelling; ext4 resolves only the real one.
 #include "VObject.h"
 #include "VVessel.h"
 #include "VPlanet.h"
 #include "Mesh.h"
 #include "MaterialMgr.h"
 #include "VectorHelpers.h"
-// NOT IN THE WINDOWS INCLUDE LIST, and all three have to be here.
-//
-//   VulkanUtil.h  -- SURFACE(), _PTR(), RemovePath() and FCOLOR_ARGB(). On
-//                    Windows these arrived through D3D9Surface.h -> D3D9Util.h;
-//                    the converted VulkanSurface.h does not include it.
-//   Scene.h       -- GetVisObject(), GetCameraProxyVisual() and
-//                    CreateSunGlare() are called through g_client->GetScene(),
-//                    and VulkanClient.h forward-declares Scene rather than
-//                    including it. Same finding as VPlanetAtmo.cpp's and
-//                    TileMgr.cpp's.
-//   commdlg.h     -- OPENFILENAMEA, GetOpenFileNameA and GetSaveFileName. The
-//                    Windows <windows.h> pulls the common dialogs in; the shim
-//                    keeps them in their own header, so the file that uses
-//                    them names it.
+// Not in the Windows include list. VulkanUtil.h supplies SURFACE(), _PTR(),
+// RemovePath() and FCOLOR_ARGB(), which arrived through D3D9Surface.h ->
+// D3D9Util.h; Scene.h because VulkanClient.h only forward-declares Scene; and
+// commdlg.h because the shim keeps the common dialogs out of <windows.h>.
 #include "VulkanUtil.h"
 #include "Scene.h"
 #include "commdlg.h"
@@ -141,22 +87,17 @@ void OpenGFXDlgClbk(void *context);
 
 
 // -------------------------------------------------------------------------------------------
-// Component access by index. See note 3 in the file header.
-//
-// The reference writes Mat.Diffuse[clr], Mat.Roughness[clr] and so on, which
-// works because every D3DXVECTOR type has `operator FLOAT*`. FVECTOR4 has a
-// data[4] member; FVECTOR2 and FVECTOR3 have neither an array member nor an
-// operator[], only the named fields inside their unions. A switch rather than
-// pointer arithmetic off &v.x, because reading across union members that way
-// is exactly the sort of thing that works everywhere until it does not.
+// Component access by index. The reference writes Mat.Diffuse[clr] and the
+// like, which works because every D3DXVECTOR type has `operator FLOAT*`.
+// FVECTOR4 has a data[4] member; FVECTOR2 and FVECTOR3 have neither an array
+// member nor an operator[], only the named fields inside their unions -- hence
+// the named returns rather than pointer arithmetic off &v.x.
 // -------------------------------------------------------------------------------------------
 
 static inline float &Comp(FVECTOR4 &v, DWORD i) { return v.data[i]; }
-// The packed members of VulkanMatExt (Diffuse, Specular, SpecialFX) are
-// FVECTOR4P, not FVECTOR4 -- see the note at FVECTOR4P in VulkanUtil.h. It
-// converts to FVECTOR4 implicitly, but that yields a temporary and this
-// returns a reference the caller assigns THROUGH, so it needs its own
-// overload rather than relying on the conversion.
+// Some VulkanMatExt members are FVECTOR4P. It converts to FVECTOR4 implicitly,
+// but that yields a temporary and this returns a reference the caller assigns
+// through, so it needs its own overload.
 static inline float &Comp(FVECTOR4P &v, DWORD i) { return v.data[i]; }
 static inline float &Comp(FVECTOR3 &v, DWORD i) { return (i == 0) ? v.x : ((i == 1) ? v.y : v.z); }
 static inline float &Comp(FVECTOR2 &v, DWORD i) { return (i == 0) ? v.x : v.y; }
@@ -213,11 +154,8 @@ struct _Params {
 };
 
 
-// `= { 0 }` in the Windows source. The first member of the first _Variable is
-// a float, so `0` initialises it and every other member is zero-initialised by
-// the rule for aggregates -- which is exactly what `{}` says without also
-// saying it in a way GCC reports (-Wmissing-field-initializers). Same change,
-// same reason, as VideoTab.cpp's nine TVITEMA initialisers.
+// `= { 0 }` in the Windows source; `= {}` zeroes identically without
+// -Wmissing-field-initializers.
 _Params Params[20] = {};
 
 
@@ -249,12 +187,9 @@ float GetFloatFromBox(HWND hWnd, int item)
 }
 
 // =============================================================================================
-// The tooltip API is not Direct3D and is unchanged. It compiles and does not
-// yet display: the shim carries TOOLTIPS_CLASS, TOOLINFO and the TTM_* sends
-// as declarations, stores the text, and has no hover display. The reasoning is
-// in Src/Orbiter/Linux/commctrl.h, beside the declarations, and the same note
-// is on AtmoControls.cpp -- supplying the display is the shim's job, not this
-// file's.
+// The tooltip API compiles but does not display: the shim carries
+// TOOLTIPS_CLASS, TOOLINFO and the TTM_* sends as declarations, stores the
+// text, and has no hover display. See Src/Orbiter/Linux/commctrl.h.
 //
 HWND CreateToolTip(int toolID, HWND hDlg, PTSTR pszText)
 {
@@ -264,18 +199,14 @@ HWND CreateToolTip(int toolID, HWND hDlg, PTSTR pszText)
     HWND hwndTool = GetDlgItem(hDlg, toolID);
     // Create the tooltip. g_hInst is the global instance handle.
     //
-    // `CreateWindowEx(NULL, ...)` on Windows. The first parameter is the
-    // DWORD extended style, not a pointer, and GCC reports NULL there
-    // (-Wconversion-null); 0 is the value that was meant. Same family as the
-    // `dwCmd = NULL` in Release().
+    // `CreateWindowEx(NULL, ...)` on Windows: the first parameter is the DWORD
+    // extended style, not a pointer (-Wconversion-null).
     HWND hwndTip = CreateWindowEx(0, TOOLTIPS_CLASS, NULL, WS_POPUP |TTS_ALWAYSTIP | TTS_BALLOON, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, hDlg, NULL, g_hInst, NULL);
     
     if (!hwndTool || !hwndTip) return NULL;
                                                           
     // Associate the tooltip with the tool.
-    // `= { 0 }` on Windows; `= {}` for the same reason as Params[20] and as
-    // VideoTab.cpp's TVITEMA -- identical zeroing, without
-    // -Wmissing-field-initializers naming all eight remaining members.
+    // `= { 0 }` on Windows; see Params[20] above.
     TOOLINFO toolInfo = {};
     toolInfo.cbSize = sizeof(toolInfo);
     toolInfo.hwnd = hDlg;
@@ -319,10 +250,6 @@ void Create()
 
 	cpr = cpg = cpb = cpa = 0.0f;
 
-	// The two custom-command labels are the module's own name shown to the
-	// user, and they follow the module. Same rename, same reason, as
-	// "D3D9Client Statistics" -> "VulkanClient Statistics" in
-	// VulkanControlPanel.cpp.
 	if (Config->EnableMeshDbg) {
 		dwCmd = oapiRegisterCustomCmd((char*)"Vulkan Debug Controls", (char*)"This dialog allows to control various debug and development features", OpenDlgClbk, NULL);
 	}
@@ -356,10 +283,8 @@ void Create()
 	SaveTex.lpstrInitialDir = "Textures\0";
 	SaveTex.nMaxFile = sizeof(SaveFileName);
 	// "*.dds\0" on Windows, because D3DXSaveTextureToFileA(D3DXIFF_DDS) wrote
-	// one. NatSaveSurface REFUSES a .dds by name -- there is no DDS writer in
-	// this client -- and writes PNG, BMP or JPG through stb_image_write. The
-	// filter says what can actually be produced rather than offering a format
-	// the save will decline; see the note on Execute().
+	// one. There is no DDS writer here: NatSaveSurface refuses a .dds by name
+	// and writes PNG, BMP or JPG, so the filter offers what it can produce.
 	SaveTex.lpstrFilter = "*.png;*.bmp;*.jpg\0";
 	SaveTex.nFilterIndex = 0;
 	SaveTex.lpstrFileTitle = NULL;
@@ -431,9 +356,8 @@ void Release()
 	gfxDlg = NULL;
 	if (dwCmd) oapiUnregisterCustomCmd(dwCmd);
 	if (dwGFX) oapiUnregisterCustomCmd(dwGFX);
-	// `dwCmd = NULL` on Windows. Both are DWORDs, and assigning NULL to an
-	// integer is a pointer-to-integer conversion GCC reports; 0 is the value
-	// that was meant and the value that was stored.
+	// `dwCmd = NULL` on Windows; both are DWORDs, and NULL to an integer is a
+	// conversion GCC reports.
 	dwCmd = 0;
 	dwGFX = 0;
 }
@@ -540,10 +464,8 @@ void InitMatList(WORD shader)
 //
 void OpenDlgClbk(void *context)
 {
-	// `DWORD idx = 0;` stood here and is never read. Dropped rather than kept,
-	// because GCC reports it (-Wunused-variable) and MSVC's C4189 is off by
-	// default -- the same finding as the ten in WindowMgr.cpp. No initialiser
-	// with a side effect is lost: it is a literal.
+	// `DWORD idx = 0;` stood here and is never read; dropped
+	// (-Wunused-variable).
 	HWND l_hDlg = oapiOpenDialog(g_hInst, IDD_D3D9MESHDEBUG, WndProc);
 
 	if (l_hDlg) hDlg = l_hDlg; // otherwise open already
@@ -745,8 +667,7 @@ void OpenDlgClbk(void *context)
 
 
 // =============================================================================================
-// D3DCOLORVALUE -> COLOUR4. Both are { float r, g, b, a } and nothing else;
-// see VulkanUtil.h's note 2.
+// D3DCOLORVALUE -> COLOUR4. Both are { float r, g, b, a } and nothing else.
 //
 void SetTuningValue(int idx, COLOUR4 *pClr, DWORD clr, float value)
 {
@@ -824,9 +745,8 @@ void UpdateShader()
 }
 
 // =============================================================================================
-// Mat.Diffuse[clr] -> Comp(Mat.Diffuse, clr) throughout. See note 3 in the
-// file header: the D3DXVECTOR types are indexable and the FVECTOR types are
-// not. Nothing else in this function changes.
+// Mat.Diffuse[clr] -> Comp(Mat.Diffuse, clr) throughout: the D3DXVECTOR types
+// are indexable and the FVECTOR types are not.
 //
 void UpdateMeshMaterial(float value, DWORD MatPrp, DWORD clr)
 {
@@ -1040,9 +960,6 @@ void SetMaterialModified(DWORD MatPrp, bool bState)
 
 
 // =============================================================================================
-// The reader half. This one already spells its components out by name --
-// pMat->Diffuse.x rather than pMat->Diffuse[clr] -- so nothing here needs
-// Comp(); only the type names change.
 //
 float GetMaterialValue(DWORD MatPrp, DWORD clr)
 {
@@ -1062,11 +979,8 @@ float GetMaterialValue(DWORD MatPrp, DWORD clr)
 	if (!pMat) return 0.0f;
 
 	VulkanTune Tune;
-	// `bool bTune = hMesh->GetTexTune(&Tune, texidx);` on Windows. bTune is
-	// never read in THIS function -- only the writing half, UpdateMeshMaterial,
-	// uses its answer -- but the CALL fills Tune, which cases 11..17 below
-	// read. So the call stays and only the variable goes, which is the same
-	// rule the ten dropped variables in WindowMgr.cpp followed.
+	// `bool bTune = ...` on Windows. bTune is never read here, but the call
+	// fills Tune, which the cases below read, so only the variable goes.
 	hMesh->GetTexTune(&Tune, texidx);
 
 	switch(MatPrp) {
@@ -1243,11 +1157,8 @@ void DisplayMat(bool bRed, bool bGreen, bool bBlue, bool bAlpha)
 	float b = GetMaterialValue(MatPrp, 2);
 	float a = GetMaterialValue(MatPrp, 3);
 
-	// The four `else sprintf_s(lbl,32,"")` lines are `lbl[0] = 0` here. An
-	// empty format string is what GCC's -Wformat-zero-length reports, and
-	// sprintf into a zero-length format is a call to write exactly the one
-	// byte the assignment writes. Same result, and the warning was pointing
-	// at a real oddity rather than at the conversion.
+	// The four `else sprintf_s(lbl,32,"")` lines are `lbl[0] = 0` here:
+	// -Wformat-zero-length, and the two write the same single byte.
 	if (bRed) sprintf_s(lbl,32,"%3.3f", r);
 	else	  lbl[0] = 0;
 	SetWindowText(GetDlgItem(hDlg, IDC_DBG_RED),   lbl);
@@ -1517,10 +1428,9 @@ void UpdateVisual()
 		Emitters[0] = NULL;
 
 		// `char line[64];` on Windows. An emitter that is neither a spot nor a
-		// point light reaches the strcat_s below with nothing written into it,
-		// which GCC reports (-Wmaybe-uninitialized) and MSVC does not. The
-		// entry is dropped by the test at the bottom either way, so the fix is
-		// the one that changes no behaviour: start the buffer empty.
+		// point light reaches strcat_s below with the buffer uninitialised.
+		// The entry is dropped further down either way, so it just starts
+		// empty.
 		char line[64] = "";
 
 		vVessel *vV = static_cast<vVessel*>(vObj);
@@ -1595,23 +1505,16 @@ struct PCParam {
 
 
 // =============================================================================================
-// D3DXCOLOR / D3DXVECTOR4 -> FVECTOR4, and three expressions have to be
-// respelled because FVECTOR4 is not D3DXVECTOR4 in two small ways:
+// D3DXCOLOR / D3DXVECTOR4 -> FVECTOR4. Two expressions have to be respelled:
+// FVECTOR4's += takes a FLOAT only, so `C += v` becomes `C = C + v`; and
+// VectorHelpers.h's abs() and pow() take non-const references, which MSVC will
+// bind a temporary to and GCC will not, so the intermediate gets a name.
 //
-//   `C += v` where v is a vector. FVECTOR4 has += against a FLOAT only
-//   (DrawAPI.h:521); the vector form is `C = C + v`, which the type does have.
-//
-//   `pow(a, -abs(C)*fMip)`. Both helpers in VectorHelpers.h take a NON-CONST
-//   REFERENCE, so the temporary cannot bind: MSVC allows that as an
-//   extension, GCC does not. The intermediate gets a name and the arithmetic
-//   is untouched.
-//
-// THE CHANNEL SWAP ON THE FIRST LINE IS THE REFERENCE'S OWN AND IS KEPT AS
-// WRITTEN. (C.z, C.y, C.z, C.x) uses z twice and drops w, which is almost
+// The channel swap on the first line is the reference's own and is kept as
+// written. (C.z, C.y, C.z, C.x) uses z twice and drops w, which is almost
 // certainly not what was meant -- but it is what the Windows client does to
-// every pixel it processes, and changing it here would make this tool produce
-// different images from the reference for reasons that have nothing to do with
-// Linux.
+// every pixel, and changing it here would make this tool produce different
+// images for reasons that have nothing to do with Linux.
 //
 FVECTOR4 ProcessColor(FVECTOR4 C, PCParam *prm, int x, int y)
 {
@@ -1648,83 +1551,39 @@ FVECTOR4 ProcessColor(FVECTOR4 C, PCParam *prm, int x, int y)
 }
 
 // =============================================================================================
-// THE ONE FUNCTION IN THIS FILE THAT WAS REALLY DIRECT3D, and the place where
-// the conversion cannot be a rename. What the Windows version does, in order,
-// and what each step becomes:
+// The one function here that was really Direct3D, and the place the conversion
+// cannot be a rename.
 //
-//  1. D3DXCreateTextureFromFileExA(..., MipLevels 0, D3DFMT_A8R8G8B8,
-//     D3DPOOL_SYSTEMMEM, ...) -- ONE call doing THREE things: decode the file
-//     (DDS, JPG, PNG, HDR, BMP or TGA), force the result to A8R8G8B8 whatever
-//     the file held, and build a complete mip chain (MipLevels 0). There is no
-//     D3DX, so those are three steps:
-//         NatLoadSurface()                decode, whatever format the file is
-//         CreateTexture + BlitTexture     the format override; vkCmdBlitImage
-//                                         converts, which is what D3DX's
-//                                         format argument was doing, and it
-//                                         also decompresses a BC source --
-//                                         the same pattern SurfNative::
-//                                         Decompress already uses
-//         GenerateMipmaps()               MipLevels 0
-//     D3DXIMAGE_INFO goes with it: the client asks the loaded surface its
-//     size, which is the same two numbers.
+//  1. D3DXCreateTextureFromFileExA(..., MipLevels 0, D3DFMT_A8R8G8B8, ...) did
+//     three things in one call: decode the file, force the result to A8R8G8B8
+//     whatever the file held, and build a complete mip chain. Here that is
+//     NatLoadSurface, then CreateTexture + BlitTexture (vkCmdBlitImage does the
+//     format conversion, and decompresses a BC source), then GenerateMipmaps.
 //
-//  2. LockRect / process / UnlockRect on every level of two SYSTEMMEM
-//     textures. Vulkan cannot map device-local memory at all, so the pair
-//     becomes VulkanDevice::ReadTexture (vkCmdCopyImageToBuffer) and
-//     UploadTexture (vkCmdCopyBufferToImage) around a CPU buffer. That is the
-//     same read-modify-write; only the transport differs. The pixel loop
-//     itself is untouched.
+//  2. LockRect / process / UnlockRect on two SYSTEMMEM textures. Vulkan cannot
+//     map device-local memory at all, so the pair becomes ReadTexture
+//     (vkCmdCopyImageToBuffer) and UploadTexture (vkCmdCopyBufferToImage)
+//     around a CPU buffer. The pixel loop itself is untouched.
 //
-//     ONE DIFFERENCE INSIDE THE LOOP: the reference computes w = Width>>n and
-//     h = Height>>n with no clamp, so on a non-square texture the smaller
-//     dimension reaches 0 and those levels are locked, skipped and left
-//     holding whatever D3DXCreateTexture allocated. A mip level is never
-//     0 pixels -- the chain clamps at 1 -- and Read/UploadTexture need the
-//     level's real size, so the shift is clamped here and those levels are
-//     processed rather than left undefined.
+//     One difference inside the loop: the reference computes w = Width>>n with
+//     no clamp, so on a non-square texture the smaller dimension reaches 0 and
+//     those levels are locked, skipped and left holding whatever was
+//     allocated. A mip level is never 0 pixels, so the shift is clamped here
+//     and those levels are processed.
 //
-//  3. D3DXLoadSurfaceFromSurface per level into a DXT5, A8R8G8B8 or A4R4G4B4
-//     texture. TWO OF THE THREE HAVE NO COUNTERPART, and both refusals are
-//     decisions this port has already made rather than new ones:
+//  3. D3DXLoadSurfaceFromSurface per level into DXT5, A8R8G8B8 or A4R4G4B4.
+//     Two of the three have no counterpart: no Vulkan call produces BC blocks
+//     (vkCmdBlitImage converts between uncompressed formats only), and
+//     A4R4G4B4 is not a format this client creates. Both are refused by name
+//     rather than producing a file whose format lies about its contents. RGB8
+//     survives and is the identity -- pWork already is B8G8R8A8_UNORM.
 //
-//       DXT5 -- no Vulkan call produces BC blocks. Block compression is an
-//               offline step or a shader; vkCmdBlitImage converts between
-//               UNCOMPRESSED formats only. NatCompressSurface in
-//               VulkanSurface.cpp says exactly this and returns the surface
-//               uncompressed rather than one whose format lies about its
-//               contents. Refused by name here for the same reason: a
-//               "DXT5" file that is not DXT5 is worse than no file.
-//
-//       RGB4 -- D3DFMT_A4R4G4B4's exact counterpart is
-//               VK_FORMAT_A4R4G4B4_UNORM_PACK16, promoted from
-//               VK_EXT_4444_formats in Vulkan 1.3 and not guaranteed
-//               sampleable. Nothing in this client creates it:
-//               NatConvertFormat_OAPI_to_VK has no entry for it and
-//               StaticFormatSizeInBytes dropped it. See
-//               the porting notes.
-//
-//     RGB8 is the one that survives, and it is the identity: pWork already IS
-//     B8G8R8A8_UNORM, which is D3DFMT_A8R8G8B8 byte for byte. The copy into a
-//     separate pSave is kept anyway, so the ownership below stays exactly the
-//     reference's -- three textures, two destroyed.
-//
-//  4. D3DXSaveTextureToFileA(D3DXIFF_DDS) or vPlanet::SetMicroTexture.
-//
-//       Saving  -- NatSaveSurface, which REFUSES a .dds by name (no DDS
-//                  writer in this client) and writes PNG, BMP or JPG through
-//                  stb_image_write. It writes mip 0; D3DX wrote the chain.
-//                  The save filter in Create() was changed to match.
-//
-//       Assign  -- SAFE_RELEASE(pSave) FOLLOWS SetMicroTexture IN THE
-//                  REFERENCE AND MUST NOT BE CONVERTED. It dropped the
-//                  CALLER'S COM reference; vPlanet kept the one
-//                  SetMicroTexture took. Vulkan has no reference count, so
-//                  DestroyTexture there would hand the planet a destroyed
-//                  VkImage and the next frame would sample freed memory. The
-//                  texture belongs to the planet from that line on.
-//
-// HR() is not used on any of this: it now checks a VkResult (VulkanUtil.h) and
-// every call below returns a pointer or a bool.
+//  4. Saving goes through NatSaveSurface, which refuses a .dds by name and
+//     writes PNG, BMP or JPG; it writes mip 0 where D3DX wrote the chain.
+//     Assigning: the reference's SAFE_RELEASE(pSave) after SetMicroTexture
+//     dropped the caller's COM reference while vPlanet kept its own. Nothing
+//     here is reference counted, so DestroyTexture there would hand the planet
+//     a destroyed VkImage. The texture belongs to the planet from that line on.
 //
 bool Execute(HWND hWnd, LPOPENFILENAME pOF)
 {
@@ -1818,10 +1677,9 @@ bool Execute(HWND hWnd, LPOPENFILENAME pOF)
 				DWORD w = max(1u, width>>n);
 				DWORD h = max(1u, height>>n);
 
-				// LockRect on the source and the destination. The two buffers
-				// are exactly w*h DWORDs, so the row stride IS w -- which is
-				// what the loop below already assumed of D3DLOCKED_RECT
-				// without reading its Pitch.
+				// The two buffers are exactly w*h DWORDs, so the row stride is
+				// w -- which is what the loop below already assumed of
+				// D3DLOCKED_RECT without reading its Pitch.
 				std::vector<DWORD> vIn(size_t(w) * size_t(h));
 				std::vector<DWORD> vOut(size_t(w) * size_t(h));
 
@@ -1872,8 +1730,8 @@ bool Execute(HWND hWnd, LPOPENFILENAME pOF)
 					c = c - FVECTOR4(0.5f, 0.5f, 0.5f, 0.5f);
 					for (DWORD x=0;x<s;x++) {
 						FVECTOR4 q = FCOLOR_ARGB(pOut[x]);
-						// q.g and q.a are deliberately NOT corrected -- that
-						// is the reference's own line, kept as written.
+						// q.g and q.a are not corrected -- the reference's own
+						// line, kept as written.
 						pOut[x] = FVECTOR4(q.r-c.r, q.g, q.b-c.b, q.a).dword_argb();
 					}
 				}
@@ -1892,11 +1750,10 @@ bool Execute(HWND hWnd, LPOPENFILENAME pOF)
 
 			// Convert texture format --------------------------------------
 			//
-			// Was GetSurfaceLevel(n) on both textures and
+			// Was GetSurfaceLevel(n) on both textures with
 			// D3DXLoadSurfaceFromSurface between them, level by level.
-			// BlitTexture's whole-image form walks the chain itself, so the
-			// per-level loop has nothing left to do; the format conversion it
-			// performed is the blit.
+			// BlitTexture's whole-image form walks the chain itself, and the
+			// format conversion it performed is the blit.
 			if (!pDevice->BlitTexture(pSave, pWork)) {
 				LogErr("Texture format conversion Failed");
 				pDevice->DestroyTexture(pSave);
@@ -1931,8 +1788,8 @@ bool Execute(HWND hWnd, LPOPENFILENAME pOF)
 		if (Target==1 || Target==2 || Target==3) {
 			vPlanet *vP = g_client->GetScene()->GetCameraProxyVisual();	
 			if (vP) vP->SetMicroTexture(pSave, Target-1);
-			// SAFE_RELEASE(pSave) stood here. It must not be converted --
-			// see step 4 in the note above. The planet owns the texture now.
+			// SAFE_RELEASE(pSave) stood here and must not be converted -- see
+			// step 4 above. The planet owns the texture from here on.
 			return true;
 		}
 	}
@@ -1942,23 +1799,13 @@ bool Execute(HWND hWnd, LPOPENFILENAME pOF)
 			
 
 // =============================================================================================
-// Was D3DXSaveTextureToFileA("EnvMap.dds", D3DXIFF_DDS, cubeTexture).
+// Was D3DXSaveTextureToFileA("EnvMap.dds", D3DXIFF_DDS, cubeTexture). There is
+// no DDS writer here -- NatSaveSurface refuses a .dds by name and writes PNG,
+// BMP or JPG -- so the file is EnvMap.png. A DDS holds all six cube faces and a
+// PNG does not: NatSaveSurface reads mip 0 of the first array layer, so what
+// lands is the +X face alone.
 //
-// TWO THINGS THAT COULD NOT BE CARRIED OVER, both recorded rather than worked
-// around:
-//
-//   THERE IS NO DDS WRITER. NatSaveSurface refuses a .dds by name and writes
-//   PNG, BMP or JPG through stb_image_write; that decision is in
-//   VulkanSurface.cpp and the reason it is safe is that everything this client
-//   saves is a diagnostic dump nothing reads back. So the file is EnvMap.png.
-//
-//   A DDS CAN HOLD ALL SIX CUBE FACES AND A PNG CANNOT. NatSaveSurface reads
-//   mip 0 of the first array layer, so what lands is the +X face. The whole
-//   cube would need six files or a DDS writer, and neither is worth adding for
-//   a debug button -- but it is a real difference and not a rename.
-//
-// `LPDIRECT3DDEVICE9 pDevice = g_client->GetDevice();` stood at the top and
-// was never used, on Windows either. Dropped: GCC reports it.
+// An unused `LPDIRECT3DDEVICE9 pDevice` stood at the top, on Windows too.
 //
 void SaveEnvMap()
 {
@@ -2027,8 +1874,7 @@ void Refresh()
 void CreateSamplingKernel()
 {
 	int s = 27;
-	// `int k = 0;` stood here and is never read. Dropped for the same reason
-	// as the one in OpenDlgClbk.
+	// `int k = 0;` stood here and is never read.
 	
 	VECTOR3 *data = new VECTOR3[s];
 	
@@ -2100,12 +1946,8 @@ oapiWriteLogV("TotalWeight = %f", w);
 INT_PTR CALLBACK ViewProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
 	// `static bool isOpen = false;` and `DWORD Prp = DropdownList(...)` stood
-	// here. Neither is read anywhere in this procedure -- the first is a copy
-	// of WndProc's width latch that this dialog has no width control for, and
-	// the second is a copy of WndProc's material-property read that this
-	// dialog has no material controls for. Both are dropped and only the
-	// second had a call in it: DropdownList() is a lookup into a vector with
-	// no side effect, unlike the calls kept in WindowMgr.cpp for theirs.
+	// here; neither is read anywhere in this procedure. Both dropped --
+	// DropdownList() is a vector lookup with no side effect.
 	
 	switch (uMsg) {
 
@@ -2380,10 +2222,8 @@ INT_PTR CALLBACK WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 				break;
 
 			case IDC_DBG_RELOADSHD:
-				// The effect file and the folder it lives in follow the
-				// module: Modules/D3D9Client -> Modules/VulkanClient, which is
-				// the same path MeshShader's constructor in Mesh.h already
-				// spells.
+				// The effect folder follows the module:
+				// Modules/D3D9Client -> Modules/VulkanClient.
 				VulkanEffect::VulkanTechInit(g_client, g_client->GetDevice(), "VulkanClient");
 				break;
 

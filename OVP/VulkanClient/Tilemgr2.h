@@ -10,38 +10,9 @@
 // variable resolutions (new version).
 // =======================================================================
 //
-// CONVERTED FROM OVP/D3D9Client/Tilemgr2.h, read end to end (499 lines).
-//
-// This is a DECLARATION file: a quadtree of tiles, a loader thread, and the
-// two manager classes. The structure survives whole. What changes is a list
-// of types, and it is short:
-//
-//   LPDIRECT3DTEXTURE9 -> VulkanTexture*        (tex, overlay, hOcean,
-//                                                hCloudMicro, ...)
-//   LPDIRECT3DDEVICE9  -> VulkanDevice*         (Dev(), CreateTexture)
-//   D3DXMATRIX mWorld  -> FMATRIX4              (same 16 floats)
-//   D3DXVECTOR3        -> FVECTOR3              (same 3 floats)
-//   LPD3DXMATRIX pW    -> const FMATRIX4*
-//   oapi::D3D9Client   -> oapi::VulkanClient
-//   D3D9Pad            -> VulkanPad
-//
-// THE THREADING IS NOT CONVERTED, because it does not need to be. The
-// loader's HANDLE, CreateThread, CreateMutex, WaitForSingleObject and
-// ReleaseMutex are all Win32 -- not Direct3D -- and the shim supplies every
-// one of them (Src/Orbiter/Linux/windows.h:1220-1226). WINAPI is defined
-// empty there, so `static DWORD WINAPI Load_ThreadProc(void*)` stands as
-// written. Rewriting this on std::thread would be reinventing working code.
-//
-// FIVE RETURN TYPES LOSE A TOP-LEVEL const -- CbodySize, GridRes, ElevRes,
-// ElevMgr and CbodySize's neighbours below. `const double f() const` returns
-// a const PRVALUE, which the standard says to ignore; GCC reports it
-// (-Wignored-qualifiers) and MSVC does not. Nothing about the meaning
-// changes. This is the same finding recorded against OapiExtension.h and
-// VObject.h.
-//
-// The include of TileLabel.h that Surfmgr2.h needs is not here; this header
-// includes exactly what the Windows one did, with `TileMgr2.h`-style casing
-// corrected where the file on disk disagrees.
+// The loader's threading is Win32, not Direct3D: HANDLE, CreateThread,
+// CreateMutex, WaitForSingleObject and ReleaseMutex all come from the shim,
+// which implements them over pthreads, and WINAPI is defined empty there.
 // =======================================================================
 
 #ifndef __TILEMGR2_H
@@ -119,14 +90,11 @@ bool FileExists(const char* path);
 
 /// \brief Read a DDS file into a VulkanTexture. Defined in Tilemgr2.cpp.
 ///
-///        NO WINDOWS COUNTERPART, because on Windows this WAS one call --
-///        D3DXCreateTextureFromFileEx / D3DXCreateTextureFromFileA opened the
-///        file and decoded it in one step. There is no D3DX here, so the read
-///        and the decode are two operations. Declared beside FileExists
-///        because Surfmgr2.cpp needs it too, and writing it twice is how the
-///        two would drift apart.
-// bFullMipChain is D3DXCreateTextureFromFileEx's `MipLevels = 0, Filter =
-// D3DX_FILTER_BOX` pair, which Tile::LoadTextureFile passes bMipmaps to.
+///        No Windows counterpart: D3DXCreateTextureFromFileEx opened and
+///        decoded the file in one call, and there is no D3DX here. Declared
+///        beside FileExists because Surfmgr2.cpp needs it too.
+///        bFullMipChain is D3DXCreateTextureFromFileEx's
+///        `MipLevels = 0, Filter = D3DX_FILTER_BOX` pair.
 VulkanTexture *LoadDDSFile(const char *path, bool bFullMipChain = false);
 
 // =======================================================================
@@ -152,8 +120,8 @@ public:
 	inline void GetIndex(int *lng, int *lat) const { *lng = ilng, *lat = ilat; }
 	inline bool HasOwnTex() const { return owntex; }
 	inline bool HasOwnElev() const { return has_elevfile; }
-	// sizeof(D3DXMATRIX) was 64 bytes and so is sizeof(FMATRIX4); the callers
-	// pass an FMATRIX4* through a void*, which is why this is a memcpy at all.
+	// sizeof(D3DXMATRIX) was 64 bytes and so is sizeof(FMATRIX4). Callers pass
+	// an FMATRIX4* through the void*, so nothing checks the size for them.
 	inline void GetWorldMatrix(void *pOut) const { memcpy(pOut, &mWorld, sizeof(FMATRIX4)); }
 
 	bool PreDelete();
@@ -187,10 +155,9 @@ public:
 	// Returns the texture range that allows to access the appropriate subregion of the
 	// parent's texture
 
-	// The const overload was `const LPDIRECT3DTEXTURE9 Tex() const`, i.e. a
-	// const POINTER returned by value -- a top-level const the standard
-	// ignores. Dropped; the overload pair is still a pair, distinguished by
-	// the constness of *this.
+	// The const overload returned a const pointer by value -- a top-level
+	// const the standard ignores (-Wignored-qualifiers). Dropped; the two
+	// are still distinguished by the constness of *this.
 	inline VulkanTexture *Tex() { return tex; }
 	inline VulkanTexture *Tex() const { return tex; }
 
@@ -291,8 +258,6 @@ public:
 	void Unqueue (TileManager2Base *mgr);
 	// removes all tiles of a manager from the load queue (caller must own hLoadMutex)
 
-	// WaitForSingleObject and ReleaseMutex are Win32, not Direct3D, and the
-	// shim implements both over pthreads. Unchanged.
 	inline static DWORD WaitForMutex() { return ::WaitForSingleObject (hLoadMutex, INFINITE); }
 	inline static BOOL ReleaseMutex() { return ::ReleaseMutex (hLoadMutex); }
 
@@ -375,18 +340,15 @@ public:
 
 	/// \brief D3DRS_CULLMODE for the next Render(), as a ShaderClass::CullMode.
 	///
-	///        NEW, AND IT CARRIES A VALUE THAT USED TO TRAVEL AS DEVICE STATE.
-	///        vPlanet::RenderCloudLayer is called twice per frame with
-	///        different cull modes -- D3DCULL_NONE for the layer seen from
-	///        below and D3DCULL_CCW for the layer seen from above -- and on
-	///        Windows it simply set D3DRS_CULLMODE on the device before
-	///        calling the manager. Here the cull is baked into the pipeline
-	///        that TileManager2<CloudTile>::Render builds, so the value has
-	///        to reach that function; a public field on the manager is the
-	///        smallest thing that carries it without changing Render()'s
-	///        signature, which is virtual-by-specialisation across two tile
-	///        types. TileManager2<SurfTile>::Render ignores it and sets
-	///        CULL_CCW unconditionally, exactly as the Windows code does.
+	///        New field, carrying a value that used to travel as device state:
+	///        vPlanet::RenderCloudLayer runs twice per frame with different
+	///        cull modes (NONE for the layer seen from below, CCW from above)
+	///        and set D3DRS_CULLMODE on the device before calling the manager.
+	///        Cull is baked into the pipeline TileManager2<CloudTile>::Render
+	///        builds, so the value has to reach that function without changing
+	///        Render()'s signature, which is virtual-by-specialisation.
+	///        TileManager2<SurfTile>::Render ignores it and sets CULL_CCW
+	///        unconditionally, as the Windows code does.
 	int cullMode;
 
 	/**
@@ -453,10 +415,8 @@ public:
 	inline const OBJHANDLE &Cbody() const { return obj; }
 	inline const ConfigPrm &Cprm() const { return cprm; }
 	inline const char *CbodyName() const { return cbody_name; }
-	// The four below returned `const double` / `const int` / `const ELEVHANDLE`
-	// BY VALUE. A top-level const on a returned prvalue is ignored by the
-	// standard; GCC says so (-Wignored-qualifiers) and MSVC stays quiet. The
-	// values, and every call site, are unaffected.
+	// The four below returned const by value; a top-level const on a returned
+	// prvalue is ignored (-Wignored-qualifiers). No call site is affected.
 	inline double CbodySize() const { return obj_size; }
 	inline ELEVHANDLE ElevMgr() const { return emgr; }
 	inline int GridRes() const { return gridRes; }

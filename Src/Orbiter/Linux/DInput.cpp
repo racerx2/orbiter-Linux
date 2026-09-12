@@ -11,12 +11,11 @@
 // here caches state which GLFW refreshes each frame, and GetDeviceState hands
 // back that cache -- which is exactly what a polled DirectInput device does.
 //
-// KEYBOARD STATE
-//   Orbiter reads a 256-byte buffer indexed by DirectInput scan code, with
-//   0x80 set for a pressed key. GLFW reports by its own key enum, so a
-//   translation table maps one to the other. The scan codes matter: Orbiter's
-//   default key bindings and any saved keymap.cfg are written in terms of
-//   them, so a wrong entry silently rebinds a key rather than failing.
+// Orbiter reads a 256-byte keyboard buffer indexed by DirectInput scan code,
+// with 0x80 set for a pressed key. GLFW reports by its own key enum, so a
+// translation table maps one to the other. The scan codes matter: Orbiter's
+// default key bindings and any saved keymap.cfg are written in terms of them,
+// so a wrong entry silently rebinds a key rather than failing.
 
 #include <windows.h>
 #include <dinput.h>
@@ -42,48 +41,18 @@ namespace {
 // ---------------------------------------------------------------------------
 // GLFW key -> DirectInput scan code
 //
-// THE SPECIFICATION FOR THIS TABLE IS keyname[NKEY] IN Src/Orbiter/Keymap.cpp.
+// The specification for this table is keyname[NKEY] in Keymap.cpp: the
+// complete set of scan codes Orbiter is willing to bind, matched against a
+// keymap.cfg line by Keymap::ScanStr and written back out by
+// Keymap::PrintStr. Every one of its 95 entries must have a source here, or
+// the corresponding key is unbindable and -- if it is bound by default --
+// simply dead. An unmapped GLFW key sets no byte, which is preferable to
+// guessing a scan code and silently binding the wrong physical key.
 //
-// That array is the complete set of scan codes Orbiter is willing to bind: it
-// is what Keymap::ScanStr matches a keymap.cfg line against and what
-// Keymap::PrintStr writes back out. Every one of its 95 entries must therefore
-// have a source here, or the corresponding key is unbindable and -- if it is
-// bound BY DEFAULT -- simply dead.
-//
-// It had 74 of them, and the 21 that were missing were not an obscure tail.
-// Reading lkeyspec[] in Keymap.cpp, the default bindings that produced no key
-// state at all were:
-//
-//   ADD / SUBTRACT     IncMainThrust, DecMainThrust,
-//                      OverrideFullMainThrust, OverrideFullRetroThrust
-//   MULTIPLY           KillMainRetroThrust
-//   DECIMAL            DecHoverThrust
-//   DIVIDE             RCSMode, and RCSEnable with Ctrl
-//   LBRACKET/RBRACKET  NMPrograde, NMRetrograde
-//   SEMICOLON          NMNormal
-//   APOSTROPHE         NMAntinormal
-//   COMMA / PERIOD     WheelbrakeLeft, WheelbrakeRight
-//   PRIOR / NEXT       TrackCamRetreat, TrackCamAdvance
-//   SYSRQ              DlgCapture (with Ctrl)
-//
-// -- which is to say the main engine, the retros, RCS mode, hover-down, all
-// four navmode autopilots, both wheel brakes and the external camera's zoom.
-// The keys that DID work were the ones a QWERTY row happens to cover, so the
-// simulator looked responsive while none of the actual flight controls
-// existed.
-//
-// The rest (GRAVE, BACKSLASH, SLASH, CAPITAL, NUMLOCK, SCROLL, OEM_102,
-// NUMPADENTER) are not bound by default but are nameable in keymap.cfg, so a
-// user rebinding to one would have got silence.
-//
-// An unmapped GLFW key still sets no byte, which remains preferable to
-// guessing a scan code and silently binding the wrong physical key -- but
-// after this there is nothing left to guess about.
-//
-// GLFW_KEY_* are POSITIONAL codes named for the US layout, and DIK_* are
-// positional scan codes named the same way, so the correspondence is exact
-// and layout-independent on both sides. That is why this is a table of
-// constants and not a lookup through any keymap.
+// GLFW_KEY_* are positional codes named for the US layout, and DIK_* are
+// positional scan codes named the same way, so the correspondence is exact and
+// layout-independent on both sides. That is why this is a table of constants
+// and not a lookup through any keymap.
 // ---------------------------------------------------------------------------
 
 struct KeyMap { int glfw; int dik; };
@@ -132,8 +101,7 @@ const KeyMap kKeyMap[] = {
     { GLFW_KEY_KP_5, DIK_NUMPAD5 }, { GLFW_KEY_KP_6, DIK_NUMPAD6 },
     { GLFW_KEY_KP_1, DIK_NUMPAD1 }, { GLFW_KEY_KP_2, DIK_NUMPAD2 },
     { GLFW_KEY_KP_3, DIK_NUMPAD3 }, { GLFW_KEY_KP_0, DIK_NUMPAD0 },
-    // The keypad operator cluster: the main engine, the retros, hover-down
-    // and RCS mode. See the note above -- none of these existed.
+    // The keypad operator cluster: main engine, retros, hover-down, RCS mode.
     { GLFW_KEY_KP_SUBTRACT, DIK_SUBTRACT },     // DecMainThrust / retro
     { GLFW_KEY_KP_ADD,      DIK_ADD },          // IncMainThrust
     { GLFW_KEY_KP_MULTIPLY, DIK_MULTIPLY },     // KillMainRetroThrust
@@ -207,15 +175,12 @@ public:
                     keys[k.dik] = 0x80;   // DirectInput's "pressed" bit
             }
 
-            // WHAT GLFW ITSELF SEES, as opposed to what the table forwards.
-            //
+            // What GLFW itself sees, as opposed to what the table forwards.
             // Orbiter::UserInput's own ORBITER_TRACE_INPUT line reports the
-            // count AFTER this translation, so "no keys" there has two very
-            // different causes -- GLFW saw nothing, or GLFW saw something this
-            // table has no entry for -- and it cannot tell them apart. This
-            // scans every GLFW key code, not just the mapped ones, and also
-            // reports whether GLFW considers the window focused at all, which
-            // is the third possibility.
+            // count after translation, so "no keys" there cannot distinguish
+            // GLFW seeing nothing from GLFW seeing a key this table has no
+            // entry for. This scans every GLFW key code and also reports
+            // whether the window is focused, which is the third possibility.
             if (getenv("ORBITER_TRACE_INPUT")) {
                 int anyGlfw = 0, firstKey = -1, mapped = 0;
                 for (int g = GLFW_KEY_SPACE; g <= GLFW_KEY_LAST; ++g) {
@@ -236,30 +201,12 @@ public:
 
             // Merge in keys from a graphics client that owns its own window.
             //
-            // THE PREMISE THIS WAS WRITTEN FOR IS NO LONGER TRUE, and the old
-            // comment here asserted it as fact: "The Vulkan client creates an
-            // xcb window of its own, which GLFW knows nothing about -- so
-            // during a session glfwGetKey above sees nothing and no key ever
-            // reaches the simulation."
-            //
-            // The Vulkan client creates no window. It adopts UIHost's, which
-            // IS the GLFW window this function polls -- see the ownership note
-            // at the top of OVP/VulkanClient/VulkanDevice.h. MEASURED, in a
-            // live Delta-glider session on both backends, with keys injected
-            // through /dev/uinput (tests/kbdproof.sh):
-            //
-            //   DInput.kbd: win=0x... focused=1 glfwPressed=1
-            //               firstGlfwKey=334 mapped=1
-            //
-            // -- glfwGetKey sees the key during a session, on X11 and on
-            // Wayland, and the table above translates it.
-            //
-            // So nothing calls orbiter_RegisterClientInput and g_clientKeyState
-            // is always null. The hook is kept rather than deleted because a
-            // future client that DOES open its own window would need exactly
-            // it, and because a null check costs nothing -- but it is dead
-            // today, and a comment claiming the keyboard depends on it sends
-            // the next reader to the wrong file.
+            // Dead today: the Vulkan client creates no window of its own, it
+            // adopts UIHost's -- which is the GLFW window this function polls
+            // -- so glfwGetKey above does see keys during a session, on X11
+            // and on Wayland, and nothing calls orbiter_RegisterClientInput.
+            // The hook is kept for a future client that does open its own
+            // window; a null check costs nothing.
             //
             // Resolved through a registration call rather than dlsym: plugins
             // are RTLD_LOCAL and never enter the global scope.
@@ -351,18 +298,12 @@ public:
     HRESULT GetDeviceData(DWORD cbData, LPDIDEVICEOBJECTDATA rgdod,
                           LPDWORD count, DWORD flags) override
     {
-        // Buffered key EVENTS, as distinct from the polled state above.
-        //
-        // This used to report nothing, on the reasoning that Orbiter reads the
-        // keyboard through GetDeviceState. That is only half true: held keys
-        // come from the immediate path, but every ONE-SHOT key is a buffered
-        // event. Orbiter::KbdInputBuffered_System reads dod[i].dwOfs as the
-        // DIK scan code and acts on dwData & 0x80 for key-down, and that is
-        // where OAPI_LKEY_ToggleCamInternal lives -- the internal/external
-        // view toggle -- along with pause, quicksave, FOV steps and every
-        // dialog shortcut.
-        //
-        // Returning zero events meant none of those keys ever worked.
+        // Buffered key events, as distinct from the polled state above. Held
+        // keys come from the immediate path, but every one-shot key is a
+        // buffered event: Orbiter::KbdInputBuffered_System reads dod[i].dwOfs
+        // as the DIK scan code and acts on dwData & 0x80 for key-down. That is
+        // where the internal/external view toggle lives, along with pause,
+        // quicksave, FOV steps and every dialog shortcut.
         if (!count) return DIERR_INVALIDPARAM;
 
         if (m_kind != DeviceKind::Keyboard) { *count = 0; return DI_OK; }
@@ -370,11 +311,8 @@ public:
         const DWORD wanted = *count;
         DWORD n = 0;
 
-        // Edge detection against the previous poll: a key that is down now and
-        // was not before is a key-down event, and the reverse is a key-up.
         // DirectInput's own buffering is a queue filled by the driver; this
-        // derives the same events from the state GLFW and the graphics client
-        // provide.
+        // derives the same events by edge detection against the previous poll.
         BYTE now[256];
         memset(now, 0, sizeof(now));
         if (GLFWwindow *win = orbiter_GetGLFWWindow()) {
