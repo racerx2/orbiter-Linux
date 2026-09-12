@@ -20,6 +20,7 @@ endif()
 set(MODULE_COMMON_DIR ${CMAKE_CURRENT_SOURCE_DIR}/Common)
 
 # The subdirectories with individual plugin implementations
+add_subdirectory(CollisionDetection)
 add_subdirectory(ExtMFD)
 add_subdirectory(FlightData)
 add_subdirectory(Framerate)
@@ -106,6 +107,7 @@ if(NOT WIN32)
 	# the released module set -- so it is grouped with the other in-sim
 	# utility dialogs, which is where it belongs by function.
 	# ----------------------------------------------------------------------
+	set(_nocat_CollisionDetection "Simulation enhancements|Vessel-to-vessel collision detection. Contact is resolved against the actual mesh triangles of each vessel; no vessel, mesh or add-on file is modified.")
 	set(_nocat_ExtMFD     "Tools and dialogs|External MFD window. Opens an MFD in a separate resizable window outside the main Orbiter window.")
 	set(_nocat_FlightData "Tools and dialogs|Flight data monitor. Records and graphs vessel flight parameters during a session.")
 	set(_nocat_Framerate  "Tools and dialogs|Frame rate monitor. Displays the current frame rate and time step as a graph.")
@@ -113,7 +115,7 @@ if(NOT WIN32)
 	set(_nocat_Notes      "Tools and dialogs|Annotation notepad. Provides a free-text note window over the simulation view.")
 	set(_nocat_LuaConsole "Script tools and drivers|Interactive Lua console. Provides a command line for the Orbiter script interpreter.")
 
-	foreach(mod ExtMFD FlightData Framerate Rcontrol Notes LuaConsole)
+	foreach(mod CollisionDetection ExtMFD FlightData Framerate Rcontrol Notes LuaConsole)
 		if(TARGET ${mod})
 			string(REPLACE "|" ";" _parts "${_nocat_${mod}}")
 			list(GET _parts 0 _cat)

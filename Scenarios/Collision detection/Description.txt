@@ -1,0 +1,10 @@
+Test scenarios for the CollisionDetection add-on: reentry breakup, and
+vessel-to-vessel contact against the actual mesh triangles.
+
+These need two things switched on before they do anything:
+
+  Launchpad -> Modules    -> CollisionDetection
+  Launchpad -> Parameters -> Vessel -> "Damage and failure simulation"
+
+The damage setting is greyed out once a session has started, so it has to be
+ticked on the Launchpad. Both are reported in Orbiter.log at session start.

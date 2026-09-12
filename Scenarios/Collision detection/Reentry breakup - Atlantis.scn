@@ -1,0 +1,71 @@
+BEGIN_HYPERDESC
+<h1>Reentry breakup &mdash; Atlantis</h1>
+<p>An entry nobody walks away from: 100 km, <b>12 km/s</b>, 5.4&deg; below the
+horizon, belly-first at 40&deg; angle of attack. Superorbital and far too steep
+&mdash; a return from beyond the Moon flown straight in instead of skipped.</p>
+
+<p><b>Nothing happens for about thirty-five seconds.</b> Heating climbs as the
+air thickens; at roughly 67 km it passes the airframe's limit and the ship
+starts tearing pieces off its own mesh. Time-warp 10x through the quiet part if
+you would rather not wait for it.</p>
+
+<p>There is no attitude control running, and that is the point &mdash; it enters
+belly-first and the air takes the attitude away from it as dynamic pressure
+builds, so by the time it comes apart it is flying nose-on. Heating peaks near
+<b>250% of the limit</b> around 53 km. It sheds roughly two hundred pieces, then
+skips back out and coasts away as a hulk.</p>
+
+<p>Every failure writes a line to <tt>Orbiter.log</tt> naming the heating, the
+dynamic pressure, how many pieces came off and how much mass went with them.
+The pieces are connected components of Atlantis's own mesh &mdash; they leave a
+real hole in the collider as well as in the picture, and nothing in the vessel
+folder is touched.</p>
+
+<p>Needs <b>CollisionDetection</b> on the Launchpad's Modules tab and <b>"Damage
+and failure simulation"</b> on the Parameters tab, under Vessel. Both are
+reported in the log at session start. For the sparks at each tear, <b>Particle
+streams</b> has to be on in Visual effects.</p>
+END_HYPERDESC
+
+BEGIN_ENVIRONMENT
+  System Sol
+  Date MJD 52260.8778615857
+END_ENVIRONMENT
+
+BEGIN_FOCUS
+  Ship STS-101
+END_FOCUS
+
+BEGIN_CAMERA
+  TARGET STS-101
+  MODE Extern
+  POS 7.00 90.00 10.00
+  TRACKMODE TargetRelative
+  FOV 50.00
+END_CAMERA
+
+BEGIN_HUD
+  TYPE Surface
+END_HUD
+
+BEGIN_MFD Left
+  TYPE Surface
+END_MFD
+
+BEGIN_MFD Right
+  TYPE Map
+  REF Earth
+END_MFD
+
+BEGIN_SHIPS
+STS-101:Atlantis
+  STATUS Orbiting Earth
+  RPOS 309331.60 6203981.56 -1813531.68
+  RVEL 11688.613 -2249.414 -1643.385
+  AROT 122.36 -56.67 -109.61
+  FUEL 0.500
+  CONFIGURATION 3
+  CARGODOOR 0 0.0000
+  GEAR 0 0.0000
+END
+END_SHIPS

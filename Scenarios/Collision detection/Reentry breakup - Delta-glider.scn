@@ -1,0 +1,62 @@
+BEGIN_HYPERDESC
+<h1>Reentry breakup &mdash; Delta-glider</h1>
+<p>The same hopeless entry, flown by a 24-tonne glider instead of a 91-tonne
+orbiter: 100 km, <b>12 km/s</b>, 5.4&deg; below the horizon, belly-first at
+40&deg;.</p>
+
+<p>This is the vessel the heating limit was measured against. An entry it can
+survive &mdash; 90 km at 7.7 km/s, 2&deg; down &mdash; peaks at about 72% of the
+limit and loses nothing, which is the answer it should give. This one does not:
+the same limit, the same energy-per-square-metre and the same size rules take a
+ship of 649 m&sup2; apart the way they take one of 2399 m&sup2; apart, because
+every threshold is a share of the vessel's own hull rather than a number of
+joules. Both collider areas are printed in the log when the session starts.</p>
+
+<p>Worth flying next to the Atlantis scenario for exactly that reason: two ships
+a factor of four apart in hull area and mass, one set of constants.</p>
+
+<p>Needs <b>CollisionDetection</b> on the Launchpad's Modules tab and <b>"Damage
+and failure simulation"</b> on the Parameters tab, under Vessel.</p>
+END_HYPERDESC
+
+BEGIN_ENVIRONMENT
+  System Sol
+  Date MJD 52260.8778615857
+END_ENVIRONMENT
+
+BEGIN_FOCUS
+  Ship GL-01
+END_FOCUS
+
+BEGIN_CAMERA
+  TARGET GL-01
+  MODE Extern
+  POS 8.00 90.00 10.00
+  TRACKMODE TargetRelative
+  FOV 50.00
+END_CAMERA
+
+BEGIN_HUD
+  TYPE Surface
+END_HUD
+
+BEGIN_MFD Left
+  TYPE Surface
+END_MFD
+
+BEGIN_MFD Right
+  TYPE Map
+  REF Earth
+END_MFD
+
+BEGIN_SHIPS
+GL-01:DeltaGlider
+  STATUS Orbiting Earth
+  RPOS 309331.60 6203981.56 -1813531.68
+  RVEL 11688.613 -2249.414 -1643.385
+  AROT 122.36 -56.67 -109.61
+  FUEL 0.500
+  GEAR 0 0.0000
+  NOSECONE 0 0.0000
+END
+END_SHIPS
